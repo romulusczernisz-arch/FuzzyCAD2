@@ -3,15 +3,29 @@
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
+type ElementsResult = {
+  endpoint?: string;
+  status?: number;
+  ok?: boolean;
+  data?: unknown;
+  error?: string;
+  action?: string;
+  details?: unknown;
+};
+
 export default function FuzzyCADHome() {
   const params = useSearchParams();
   const allParams = Array.from(params.entries());
 
-  const [elementsResult, setElementsResult] = useState<any>(null);
+  const [elementsResult, setElementsResult] = useState<ElementsResult | null>(
+    null
+  );
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
+  const elementId = params.get("elementId");
   const server = params.get("server") || "https://cad.onshape.com";
+  const oauthStatus = params.get("oauth");
 
   async function loadElements() {
     const query = new URLSearchParams({
@@ -21,9 +35,17 @@ export default function FuzzyCADHome() {
     });
 
     const res = await fetch(`/api/onshape/elements?${query.toString()}`);
-    const data = await res.json();
+    const data = (await res.json()) as ElementsResult;
     setElementsResult(data);
   }
+
+  const connectHref = `/api/oauth/start?documentId=${encodeURIComponent(
+    documentId || ""
+  )}&workspaceId=${encodeURIComponent(
+    workspaceId || ""
+  )}&elementId=${encodeURIComponent(
+    elementId || ""
+  )}&server=${encodeURIComponent(server)}`;
 
   return (
     <main style={{ padding: 24, fontFamily: "Arial, sans-serif" }}>
@@ -40,11 +62,21 @@ export default function FuzzyCADHome() {
         <tbody>
           <tr>
             <td style={{ border: "1px solid #ccc", padding: 8 }}>documentId</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>{documentId}</td>
+            <td style={{ border: "1px solid #ccc", padding: 8 }}>
+              {documentId}
+            </td>
           </tr>
           <tr>
             <td style={{ border: "1px solid #ccc", padding: 8 }}>workspaceId</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>{workspaceId}</td>
+            <td style={{ border: "1px solid #ccc", padding: 8 }}>
+              {workspaceId}
+            </td>
+          </tr>
+          <tr>
+            <td style={{ border: "1px solid #ccc", padding: 8 }}>elementId</td>
+            <td style={{ border: "1px solid #ccc", padding: 8 }}>
+              {elementId}
+            </td>
           </tr>
           <tr>
             <td style={{ border: "1px solid #ccc", padding: 8 }}>server</td>
@@ -52,6 +84,31 @@ export default function FuzzyCADHome() {
           </tr>
         </tbody>
       </table>
+
+      <h2>Onshape Connection</h2>
+
+      <p>
+        Status:{" "}
+        <strong>
+          {oauthStatus === "connected" ? "Connected" : "Not connected"}
+        </strong>
+      </p>
+
+      <a
+        href={connectHref}
+        style={{
+          display: "inline-block",
+          padding: "8px 12px",
+          border: "1px solid #999",
+          borderRadius: 4,
+          textDecoration: "none",
+          color: "black",
+          background: "#f5f5f5",
+          marginBottom: 16,
+        }}
+      >
+        Connect Onshape
+      </a>
 
       <h2>All URL Parameters</h2>
 
@@ -69,7 +126,9 @@ export default function FuzzyCADHome() {
             {allParams.map(([key, value]) => (
               <tr key={key}>
                 <td style={{ border: "1px solid #ccc", padding: 8 }}>{key}</td>
-                <td style={{ border: "1px solid #ccc", padding: 8 }}>{value}</td>
+                <td style={{ border: "1px solid #ccc", padding: 8 }}>
+                  {value}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -97,6 +156,7 @@ export default function FuzzyCADHome() {
             padding: 16,
             background: "#f5f5f5",
             overflow: "auto",
+            whiteSpace: "pre-wrap",
           }}
         >
           {JSON.stringify(elementsResult, null, 2)}

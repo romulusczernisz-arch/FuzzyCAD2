@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import FuzzyCADHome from "./FuzzyCADHome";
+import FuzzyCADHome from "./fuzzycad-home";
 
 export default function Home() {
   return (
