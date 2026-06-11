@@ -19,6 +19,12 @@ type ApiResult = {
   error?: string;
   action?: string;
   details?: unknown;
+
+  // For FuzzyCAD assembly summary route
+  counts?: unknown;
+  occurrencesPreview?: unknown;
+  instancesPreview?: unknown;
+  featuresPreview?: unknown;
 };
 
 function isElementArray(data: unknown): data is OnshapeElement[] {
@@ -40,6 +46,9 @@ export default function FuzzyCADHome() {
 
   const [elementsResult, setElementsResult] = useState<ApiResult | null>(null);
   const [assemblyResult, setAssemblyResult] = useState<ApiResult | null>(null);
+  const [assemblySummaryResult, setAssemblySummaryResult] =
+    useState<ApiResult | null>(null);
+
   const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>("");
 
   const documentId = params.get("documentId");
@@ -58,6 +67,14 @@ export default function FuzzyCADHome() {
     return data.filter((element) => element.elementType === "ASSEMBLY");
   }, [elementsResult]);
 
+  const connectHref = `/api/oauth/start?documentId=${encodeURIComponent(
+    documentId || ""
+  )}&workspaceId=${encodeURIComponent(
+    workspaceId || ""
+  )}&elementId=${encodeURIComponent(elementId || "")}&server=${encodeURIComponent(
+    server
+  )}`;
+
   async function loadElements() {
     const query = new URLSearchParams({
       documentId: documentId || "",
@@ -67,6 +84,7 @@ export default function FuzzyCADHome() {
 
     const res = await fetch(`/api/onshape/elements?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
+
     setElementsResult(data);
 
     if (data.ok && isElementArray(data.data)) {
@@ -90,16 +108,23 @@ export default function FuzzyCADHome() {
 
     const res = await fetch(`/api/onshape/assembly?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
+
     setAssemblyResult(data);
   }
 
-  const connectHref = `/api/oauth/start?documentId=${encodeURIComponent(
-    documentId || ""
-  )}&workspaceId=${encodeURIComponent(
-    workspaceId || ""
-  )}&elementId=${encodeURIComponent(
-    elementId || ""
-  )}&server=${encodeURIComponent(server)}`;
+  async function loadAssemblySummary() {
+    const query = new URLSearchParams({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+    });
+
+    const res = await fetch(`/api/fuzzycad/assembly-summary?${query.toString()}`);
+    const data = (await res.json()) as ApiResult;
+
+    setAssemblySummaryResult(data);
+  }
 
   return (
     <main style={{ padding: 24, fontFamily: "Arial, sans-serif" }}>
@@ -226,10 +251,40 @@ export default function FuzzyCADHome() {
           borderRadius: 4,
           cursor: selectedAssemblyId ? "pointer" : "not-allowed",
           background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
+          marginRight: 8,
         }}
       >
         Load Selected Assembly Definition
       </button>
+
+      <button
+        onClick={loadAssemblySummary}
+        disabled={!selectedAssemblyId}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #999",
+          borderRadius: 4,
+          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+          background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
+        }}
+      >
+        Load FuzzyCAD Assembly Summary
+      </button>
+
+      {assemblySummaryResult && (
+        <pre
+          style={{
+            marginTop: 16,
+            padding: 16,
+            background: "#eef7ff",
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            maxHeight: 480,
+          }}
+        >
+          {JSON.stringify(assemblySummaryResult, null, 2)}
+        </pre>
+      )}
 
       {assemblyResult && (
         <pre
@@ -258,6 +313,7 @@ export default function FuzzyCADHome() {
               <th style={{ border: "1px solid #ccc", padding: 8 }}>Value</th>
             </tr>
           </thead>
+
           <tbody>
             {allParams.map(([key, value]) => (
               <tr key={key}>
