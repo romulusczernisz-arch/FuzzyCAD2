@@ -1,9 +1,17 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-type ElementsResult = {
+type OnshapeElement = {
+  id: string;
+  name: string;
+  type?: string;
+  elementType?: string;
+  dataType?: string;
+};
+
+type ApiResult = {
   endpoint?: string;
   status?: number;
   ok?: boolean;
@@ -13,19 +21,42 @@ type ElementsResult = {
   details?: unknown;
 };
 
+function isElementArray(data: unknown): data is OnshapeElement[] {
+  return (
+    Array.isArray(data) &&
+    data.every(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        "id" in item &&
+        "name" in item
+    )
+  );
+}
+
 export default function FuzzyCADHome() {
   const params = useSearchParams();
   const allParams = Array.from(params.entries());
 
-  const [elementsResult, setElementsResult] = useState<ElementsResult | null>(
-    null
-  );
+  const [elementsResult, setElementsResult] = useState<ApiResult | null>(null);
+  const [assemblyResult, setAssemblyResult] = useState<ApiResult | null>(null);
+  const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>("");
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
   const elementId = params.get("elementId");
   const server = params.get("server") || "https://cad.onshape.com";
   const oauthStatus = params.get("oauth");
+
+  const assemblyElements = useMemo(() => {
+    const data = elementsResult?.data;
+
+    if (!isElementArray(data)) {
+      return [];
+    }
+
+    return data.filter((element) => element.elementType === "ASSEMBLY");
+  }, [elementsResult]);
 
   async function loadElements() {
     const query = new URLSearchParams({
@@ -35,8 +66,31 @@ export default function FuzzyCADHome() {
     });
 
     const res = await fetch(`/api/onshape/elements?${query.toString()}`);
-    const data = (await res.json()) as ElementsResult;
+    const data = (await res.json()) as ApiResult;
     setElementsResult(data);
+
+    if (data.ok && isElementArray(data.data)) {
+      const firstAssembly = data.data.find(
+        (element) => element.elementType === "ASSEMBLY"
+      );
+
+      if (firstAssembly) {
+        setSelectedAssemblyId(firstAssembly.id);
+      }
+    }
+  }
+
+  async function loadAssemblyDefinition() {
+    const query = new URLSearchParams({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+    });
+
+    const res = await fetch(`/api/onshape/assembly?${query.toString()}`);
+    const data = (await res.json()) as ApiResult;
+    setAssemblyResult(data);
   }
 
   const connectHref = `/api/oauth/start?documentId=${encodeURIComponent(
@@ -110,6 +164,88 @@ export default function FuzzyCADHome() {
         Connect Onshape
       </a>
 
+      <h2>Document Elements</h2>
+
+      <button
+        onClick={loadElements}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #999",
+          borderRadius: 4,
+          cursor: "pointer",
+          marginRight: 8,
+        }}
+      >
+        Load Document Elements
+      </button>
+
+      {assemblyElements.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <label htmlFor="assembly-select">
+            <strong>Select Assembly: </strong>
+          </label>
+
+          <select
+            id="assembly-select"
+            value={selectedAssemblyId}
+            onChange={(event) => setSelectedAssemblyId(event.target.value)}
+            style={{ padding: 6, minWidth: 260 }}
+          >
+            {assemblyElements.map((assembly) => (
+              <option key={assembly.id} value={assembly.id}>
+                {assembly.name} — {assembly.id}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {elementsResult && (
+        <pre
+          style={{
+            marginTop: 16,
+            padding: 16,
+            background: "#f5f5f5",
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            maxHeight: 360,
+          }}
+        >
+          {JSON.stringify(elementsResult, null, 2)}
+        </pre>
+      )}
+
+      <h2>Assembly Definition</h2>
+
+      <button
+        onClick={loadAssemblyDefinition}
+        disabled={!selectedAssemblyId}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #999",
+          borderRadius: 4,
+          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+          background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
+        }}
+      >
+        Load Selected Assembly Definition
+      </button>
+
+      {assemblyResult && (
+        <pre
+          style={{
+            marginTop: 16,
+            padding: 16,
+            background: "#f5f5f5",
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            maxHeight: 480,
+          }}
+        >
+          {JSON.stringify(assemblyResult, null, 2)}
+        </pre>
+      )}
+
       <h2>All URL Parameters</h2>
 
       {allParams.length === 0 ? (
@@ -133,34 +269,6 @@ export default function FuzzyCADHome() {
             ))}
           </tbody>
         </table>
-      )}
-
-      <h2>Document Elements Probe</h2>
-
-      <button
-        onClick={loadElements}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #999",
-          borderRadius: 4,
-          cursor: "pointer",
-        }}
-      >
-        Load Document Elements
-      </button>
-
-      {elementsResult && (
-        <pre
-          style={{
-            marginTop: 16,
-            padding: 16,
-            background: "#f5f5f5",
-            overflow: "auto",
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {JSON.stringify(elementsResult, null, 2)}
-        </pre>
       )}
     </main>
   );

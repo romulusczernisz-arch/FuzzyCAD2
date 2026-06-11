@@ -8,7 +8,9 @@ type OAuthState = {
 };
 
 function decodeState(state: string | null): OAuthState {
-  if (!state) return {};
+  if (!state) {
+    return {};
+  }
 
   try {
     return JSON.parse(Buffer.from(state, "base64url").toString("utf8"));

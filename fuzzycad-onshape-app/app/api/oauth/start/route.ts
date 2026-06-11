@@ -15,7 +15,8 @@ export async function GET(req: NextRequest) {
   const documentId = req.nextUrl.searchParams.get("documentId") || "";
   const workspaceId = req.nextUrl.searchParams.get("workspaceId") || "";
   const elementId = req.nextUrl.searchParams.get("elementId") || "";
-  const server = req.nextUrl.searchParams.get("server") || "https://cad.onshape.com";
+  const server =
+    req.nextUrl.searchParams.get("server") || "https://cad.onshape.com";
 
   const state = Buffer.from(
     JSON.stringify({ documentId, workspaceId, elementId, server })
