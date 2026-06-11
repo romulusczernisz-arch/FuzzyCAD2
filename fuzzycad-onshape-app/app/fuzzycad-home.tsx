@@ -16,11 +16,10 @@ type ApiResult = {
   status?: number;
   ok?: boolean;
   data?: unknown;
+  graph?: unknown;
   error?: string;
   action?: string;
   details?: unknown;
-
-  // For FuzzyCAD assembly summary route
   counts?: unknown;
   occurrencesPreview?: unknown;
   instancesPreview?: unknown;
@@ -47,6 +46,8 @@ export default function FuzzyCADHome() {
   const [elementsResult, setElementsResult] = useState<ApiResult | null>(null);
   const [assemblyResult, setAssemblyResult] = useState<ApiResult | null>(null);
   const [assemblySummaryResult, setAssemblySummaryResult] =
+    useState<ApiResult | null>(null);
+  const [relationshipGraphResult, setRelationshipGraphResult] =
     useState<ApiResult | null>(null);
 
   const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>("");
@@ -124,6 +125,22 @@ export default function FuzzyCADHome() {
     const data = (await res.json()) as ApiResult;
 
     setAssemblySummaryResult(data);
+  }
+
+  async function buildRelationshipGraph() {
+    const query = new URLSearchParams({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+    });
+
+    const res = await fetch(
+      `/api/fuzzycad/relationship-graph?${query.toString()}`
+    );
+    const data = (await res.json()) as ApiResult;
+
+    setRelationshipGraphResult(data);
   }
 
   return (
@@ -233,14 +250,14 @@ export default function FuzzyCADHome() {
             background: "#f5f5f5",
             overflow: "auto",
             whiteSpace: "pre-wrap",
-            maxHeight: 360,
+            maxHeight: 280,
           }}
         >
           {JSON.stringify(elementsResult, null, 2)}
         </pre>
       )}
 
-      <h2>Assembly Definition</h2>
+      <h2>Assembly Data</h2>
 
       <button
         onClick={loadAssemblyDefinition}
@@ -254,7 +271,7 @@ export default function FuzzyCADHome() {
           marginRight: 8,
         }}
       >
-        Load Selected Assembly Definition
+        Load Raw Assembly Definition
       </button>
 
       <button
@@ -266,39 +283,78 @@ export default function FuzzyCADHome() {
           borderRadius: 4,
           cursor: selectedAssemblyId ? "pointer" : "not-allowed",
           background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
+          marginRight: 8,
         }}
       >
-        Load FuzzyCAD Assembly Summary
+        Load Assembly Summary
       </button>
 
+      <button
+        onClick={buildRelationshipGraph}
+        disabled={!selectedAssemblyId}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #333",
+          borderRadius: 4,
+          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+          background: selectedAssemblyId ? "#eaf2ff" : "#ddd",
+        }}
+      >
+        Build FuzzyCAD Relationship Graph
+      </button>
+
+      {relationshipGraphResult && (
+        <>
+          <h3>FuzzyCAD Relationship Graph</h3>
+          <pre
+            style={{
+              marginTop: 16,
+              padding: 16,
+              background: "#eaf2ff",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              maxHeight: 520,
+            }}
+          >
+            {JSON.stringify(relationshipGraphResult, null, 2)}
+          </pre>
+        </>
+      )}
+
       {assemblySummaryResult && (
-        <pre
-          style={{
-            marginTop: 16,
-            padding: 16,
-            background: "#eef7ff",
-            overflow: "auto",
-            whiteSpace: "pre-wrap",
-            maxHeight: 480,
-          }}
-        >
-          {JSON.stringify(assemblySummaryResult, null, 2)}
-        </pre>
+        <>
+          <h3>Assembly Summary</h3>
+          <pre
+            style={{
+              marginTop: 16,
+              padding: 16,
+              background: "#eef7ff",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              maxHeight: 360,
+            }}
+          >
+            {JSON.stringify(assemblySummaryResult, null, 2)}
+          </pre>
+        </>
       )}
 
       {assemblyResult && (
-        <pre
-          style={{
-            marginTop: 16,
-            padding: 16,
-            background: "#f5f5f5",
-            overflow: "auto",
-            whiteSpace: "pre-wrap",
-            maxHeight: 480,
-          }}
-        >
-          {JSON.stringify(assemblyResult, null, 2)}
-        </pre>
+        <>
+          <h3>Raw Assembly Definition</h3>
+          <pre
+            style={{
+              marginTop: 16,
+              padding: 16,
+              background: "#f5f5f5",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              maxHeight: 360,
+            }}
+          >
+            {JSON.stringify(assemblyResult, null, 2)}
+          </pre>
+        </>
       )}
 
       <h2>All URL Parameters</h2>
