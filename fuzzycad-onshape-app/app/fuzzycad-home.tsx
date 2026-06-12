@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -64,7 +65,9 @@ const [geometryLoadResult, setGeometryLoadResult] = useState<ApiResult | null>(
   null
 );
 
-
+const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
+const [selectedMeshNode, setSelectedMeshNode] =
+  useState<MeshGraphNode | null>(null);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -90,7 +93,10 @@ const [geometryLoadResult, setGeometryLoadResult] = useState<ApiResult | null>(
     server
   )}`;
 
-  async function loadAssemblyGeometry() {
+async function loadAssemblyGeometry() {
+  setMeshGraph([]);
+  setSelectedMeshNode(null);
+
   if (gltfUrl) {
     URL.revokeObjectURL(gltfUrl);
     setGltfUrl(null);
@@ -431,7 +437,132 @@ const [geometryLoadResult, setGeometryLoadResult] = useState<ApiResult | null>(
   Load Assembly Geometry
 </button>
 
-<FuzzyCADGeometryViewer gltfUrl={gltfUrl} />
+<FuzzyCADGeometryViewer
+  gltfUrl={gltfUrl}
+  onMeshGraph={setMeshGraph}
+  onSelectedNode={setSelectedMeshNode}
+/>
+
+{meshGraph.length > 0 && (
+  <>
+    <h3>Mesh Graph Inspector</h3>
+
+    <p>
+      Total objects: <strong>{meshGraph.length}</strong>; Mesh objects:{" "}
+      <strong>{meshGraph.filter((node) => node.isMesh).length}</strong>
+    </p>
+
+    {selectedMeshNode && (
+      <div
+        style={{
+          padding: 12,
+          marginBottom: 12,
+          background: "#fff7e6",
+          border: "1px solid #e0c27a",
+          borderRadius: 6,
+        }}
+      >
+        <strong>Selected Mesh/Object</strong>
+        <pre
+          style={{
+            marginTop: 8,
+            whiteSpace: "pre-wrap",
+            overflow: "auto",
+            maxHeight: 240,
+          }}
+        >
+          {JSON.stringify(selectedMeshNode, null, 2)}
+        </pre>
+      </div>
+    )}
+
+    <div
+      style={{
+        overflow: "auto",
+        maxHeight: 420,
+        border: "1px solid #ccc",
+      }}
+    >
+      <table
+        style={{
+          borderCollapse: "collapse",
+          width: "100%",
+          fontSize: 12,
+        }}
+      >
+        <thead>
+          <tr>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>#</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Name</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Type</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Parent</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Mesh</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Material</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Vertices</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Triangles</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>World Pos</th>
+            <th style={{ border: "1px solid #ccc", padding: 6 }}>Path</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {meshGraph.slice(0, 300).map((node, index) => (
+            <tr
+              key={node.nodeId}
+              style={{
+                background:
+                  selectedMeshNode?.nodeId === node.nodeId
+                    ? "#fff7e6"
+                    : node.isMesh
+                      ? "#ffffff"
+                      : "#f7f7f7",
+              }}
+            >
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {index}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.name || "(unnamed)"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.type}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.parentName || "—"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.isMesh ? "yes" : "no"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.materialName || "—"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.vertexCount ?? "—"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.triangleCount ?? "—"}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.worldPosition.x.toFixed(3)},{" "}
+                {node.worldPosition.y.toFixed(3)},{" "}
+                {node.worldPosition.z.toFixed(3)}
+              </td>
+              <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                {node.path}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    {meshGraph.length > 300 && (
+      <p style={{ fontSize: 12 }}>
+        Showing first 300 objects only. Full count: {meshGraph.length}.
+      </p>
+    )}
+  </>
+)}
 
 {geometryLoadResult && (
   <>
