@@ -138,7 +138,7 @@ export function buildPartNodeGraph(
     return out;
   }
 
-  const adj = new Map
+  const adj = new Map<
     string,
     { to: string; mateType: string | null; featureId: string | null }[]
   >();
