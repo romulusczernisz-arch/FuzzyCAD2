@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import JSZip from "jszip";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -58,6 +59,154 @@ function isGlb(arrayBuffer: ArrayBuffer): boolean {
     bytes[2] === 0x54 &&
     bytes[3] === 0x46
   );
+}
+
+function getMimeType(fileName: string): string {
+  const lower = fileName.toLowerCase();
+
+  if (lower.endsWith(".bin")) return "application/octet-stream";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gltf")) return "model/gltf+json";
+  if (lower.endsWith(".glb")) return "model/gltf-binary";
+
+  return "application/octet-stream";
+}
+
+function dirname(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index >= 0 ? path.slice(0, index + 1) : "";
+}
+
+function normalizePath(path: string): string {
+  const parts: string[] = [];
+
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+
+    if (part === "..") {
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+
+  return parts.join("/");
+}
+
+function resolveGltfUri(gltfPath: string, uri: string): string {
+  if (
+    uri.startsWith("data:") ||
+    uri.startsWith("http://") ||
+    uri.startsWith("https://")
+  ) {
+    return uri;
+  }
+
+  const decoded = decodeURIComponent(uri);
+  return normalizePath(`${dirname(gltfPath)}${decoded}`);
+}
+
+async function zipFileToDataUri(zip: JSZip, filePath: string): Promise<string> {
+  const file = zip.file(filePath);
+
+  if (!file) {
+    throw new Error(`Missing referenced glTF asset in ZIP: ${filePath}`);
+  }
+
+  const uint8 = await file.async("uint8array");
+  const base64 = Buffer.from(uint8).toString("base64");
+  const mime = getMimeType(filePath);
+
+  return `data:${mime};base64,${base64}`;
+}
+
+async function unpackZipToLoadableGltf(
+  arrayBuffer: ArrayBuffer
+): Promise<NextResponse> {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+
+  const fileNames = Object.keys(zip.files).filter(
+    (name) => !zip.files[name].dir
+  );
+
+  const glbName = fileNames.find((name) => name.toLowerCase().endsWith(".glb"));
+
+  if (glbName) {
+    const glbBuffer = await zip.file(glbName)?.async("arraybuffer");
+
+    if (!glbBuffer) {
+      throw new Error(`Failed to read GLB from ZIP: ${glbName}`);
+    }
+
+    return new NextResponse(glbBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "model/gltf-binary",
+        "Cache-Control": "no-store",
+        "X-FuzzyCAD-Zip-Mode": "extracted-glb",
+        "X-FuzzyCAD-Extracted-File": glbName,
+      },
+    });
+  }
+
+  const gltfName = fileNames.find((name) =>
+    name.toLowerCase().endsWith(".gltf")
+  );
+
+  if (!gltfName) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "ZIP did not contain a .glb or .gltf file.",
+        files: fileNames,
+      },
+      { status: 415 }
+    );
+  }
+
+  const gltfText = await zip.file(gltfName)?.async("string");
+
+  if (!gltfText) {
+    throw new Error(`Failed to read glTF from ZIP: ${gltfName}`);
+  }
+
+  const gltf = JSON.parse(gltfText) as UnknownRecord;
+
+  const buffers = Array.isArray(gltf.buffers) ? gltf.buffers : [];
+  for (const buffer of buffers) {
+    if (!isRecord(buffer)) continue;
+
+    const uri = getStringField(buffer, ["uri"]);
+    if (!uri || uri.startsWith("data:")) continue;
+
+    const resolved = resolveGltfUri(gltfName, uri);
+    buffer.uri = await zipFileToDataUri(zip, resolved);
+  }
+
+  const images = Array.isArray(gltf.images) ? gltf.images : [];
+  for (const image of images) {
+    if (!isRecord(image)) continue;
+
+    const uri = getStringField(image, ["uri"]);
+    if (!uri || uri.startsWith("data:")) continue;
+
+    const resolved = resolveGltfUri(gltfName, uri);
+    image.uri = await zipFileToDataUri(zip, resolved);
+  }
+
+  const embeddedJson = JSON.stringify(gltf);
+
+  return new NextResponse(embeddedJson, {
+    status: 200,
+    headers: {
+      "Content-Type": "model/gltf+json",
+      "Cache-Control": "no-store",
+      "X-FuzzyCAD-Zip-Mode": "embedded-gltf",
+      "X-FuzzyCAD-Extracted-File": gltfName,
+    },
+  });
 }
 
 async function getTranslationStatus(
@@ -145,55 +294,6 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  if (
-    exportContentType.includes("model/gltf-binary") ||
-    exportContentType.includes("model/gltf+json") ||
-    exportContentType.includes("application/octet-stream") ||
-    exportContentType.includes("application/zip")
-  ) {
-    const directBuffer = await exportRes.arrayBuffer();
-
-    if (isZip(directBuffer)) {
-      return NextResponse.json(
-        {
-          endpoint: exportEndpoint,
-          status: 415,
-          ok: false,
-          fileKind: "zip",
-          contentType: exportContentType,
-          error:
-            "Onshape returned a ZIP package. This cannot be passed directly to GLTFLoader; otherwise it causes the PK unexpected-token error.",
-          next:
-            "Next step: unzip it server-side and load the .gltf/.bin/textures inside, or request a single GLB if Onshape supports that option.",
-        },
-        { status: 415 }
-      );
-    }
-
-    if (!isGlb(directBuffer)) {
-      return NextResponse.json(
-        {
-          endpoint: exportEndpoint,
-          status: 415,
-          ok: false,
-          fileKind: "unknown-binary",
-          contentType: exportContentType,
-          firstBytes: Array.from(new Uint8Array(directBuffer.slice(0, 12))),
-          error: "Binary response was not ZIP, but also not GLB.",
-        },
-        { status: 415 }
-      );
-    }
-
-    return new NextResponse(directBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": "model/gltf-binary",
-        "Cache-Control": "no-store",
-      },
-    });
-  }
-
   const initialData = await parseResponse(exportRes);
 
   if (!isRecord(initialData)) {
@@ -228,7 +328,7 @@ export async function GET(req: NextRequest) {
 
   let statusData: UnknownRecord = initialData;
 
-  for (let attempt = 0; attempt < 15; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     const state = getStringField(statusData, ["requestState"]);
 
     if (state === "DONE" || state === "FAILED") {
@@ -312,48 +412,50 @@ export async function GET(req: NextRequest) {
   const downloadedBuffer = await downloadRes.arrayBuffer();
 
   if (isZip(downloadedBuffer)) {
-    return NextResponse.json(
-      {
-        endpoint: exportEndpoint,
-        translationHref,
-        downloadEndpoint,
-        status: 415,
-        ok: false,
-        fileKind: "zip",
-        contentType: downloadContentType,
-        error:
-          "Downloaded translation result is a ZIP package, not a direct GLB. Do not pass it to GLTFLoader.",
-        next:
-          "Next step is to unzip it and serve the contained .gltf/.bin/textures, or convert package to GLB.",
-      },
-      { status: 415 }
-    );
+    try {
+      return await unpackZipToLoadableGltf(downloadedBuffer);
+    } catch (error) {
+      return NextResponse.json(
+        {
+          endpoint: exportEndpoint,
+          translationHref,
+          downloadEndpoint,
+          status: 500,
+          ok: false,
+          fileKind: "zip",
+          contentType: downloadContentType,
+          error: "Failed to unpack ZIP glTF package.",
+          details: error instanceof Error ? error.message : String(error),
+        },
+        { status: 500 }
+      );
+    }
   }
 
-  if (!isGlb(downloadedBuffer)) {
-    return NextResponse.json(
-      {
-        endpoint: exportEndpoint,
-        translationHref,
-        downloadEndpoint,
-        status: 415,
-        ok: false,
-        fileKind: "unknown-binary",
-        contentType: downloadContentType,
-        firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
-        error: "Downloaded result was not ZIP and not GLB.",
+  if (isGlb(downloadedBuffer)) {
+    return new NextResponse(downloadedBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "model/gltf-binary",
+        "Cache-Control": "no-store",
+        "X-FuzzyCAD-Translation-Id": translationId || "",
+        "X-FuzzyCAD-External-Data-Id": externalDataId,
       },
-      { status: 415 }
-    );
+    });
   }
 
-  return new NextResponse(downloadedBuffer, {
-    status: 200,
-    headers: {
-      "Content-Type": "model/gltf-binary",
-      "Cache-Control": "no-store",
-      "X-FuzzyCAD-Translation-Id": translationId || "",
-      "X-FuzzyCAD-External-Data-Id": externalDataId,
+  return NextResponse.json(
+    {
+      endpoint: exportEndpoint,
+      translationHref,
+      downloadEndpoint,
+      status: 415,
+      ok: false,
+      fileKind: "unknown-binary",
+      contentType: downloadContentType,
+      firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
+      error: "Downloaded result was not ZIP and not GLB.",
     },
-  });
+    { status: 415 }
+  );
 }
