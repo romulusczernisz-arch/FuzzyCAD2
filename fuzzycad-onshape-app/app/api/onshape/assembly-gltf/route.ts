@@ -6,6 +6,29 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
 }
 
+function getStringField(record: UnknownRecord, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function getStringArrayField(record: UnknownRecord, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = record[key];
+
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string");
+    }
+  }
+
+  return [];
+}
+
 async function parseResponse(res: Response): Promise<unknown> {
   const contentType = res.headers.get("content-type") || "";
 
@@ -14,6 +37,33 @@ async function parseResponse(res: Response): Promise<unknown> {
   }
 
   return res.text();
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchTranslationStatus(
+  href: string,
+  accessToken: string
+): Promise<UnknownRecord> {
+  const res = await fetch(href, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  });
+
+  const data = await parseResponse(res);
+
+  if (!res.ok || !isRecord(data)) {
+    throw new Error(
+      `Failed to fetch translation status: ${res.status} ${JSON.stringify(data)}`
+    );
+  }
+
+  return data;
 }
 
 export async function GET(req: NextRequest) {
@@ -45,9 +95,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const endpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}/export/gltf`;
+  const exportEndpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}/export/gltf`;
 
-  const exportRes = await fetch(endpoint, {
+  const exportRes = await fetch(exportEndpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -60,63 +110,173 @@ export async function GET(req: NextRequest) {
     }),
   });
 
-  const contentType = exportRes.headers.get("content-type") || "";
+  const exportContentType = exportRes.headers.get("content-type") || "";
 
   if (!exportRes.ok) {
     const errorData = await parseResponse(exportRes);
 
     return NextResponse.json(
       {
-        endpoint,
+        endpoint: exportEndpoint,
         status: exportRes.status,
         ok: false,
-        contentType,
-        error: "Failed to export assembly glTF",
+        contentType: exportContentType,
+        error: "Failed to start assembly glTF export",
         details: errorData,
       },
       { status: exportRes.status }
     );
   }
 
+  // Case 1: Onshape directly returns a binary GLB/glTF.
   if (
-    contentType.includes("model/gltf-binary") ||
-    contentType.includes("model/gltf+json") ||
-    contentType.includes("application/octet-stream")
+    exportContentType.includes("model/gltf-binary") ||
+    exportContentType.includes("model/gltf+json") ||
+    exportContentType.includes("application/octet-stream")
   ) {
     const arrayBuffer = await exportRes.arrayBuffer();
 
     return new NextResponse(arrayBuffer, {
       status: 200,
       headers: {
-        "Content-Type": contentType || "model/gltf-binary",
+        "Content-Type": exportContentType || "model/gltf-binary",
         "Cache-Control": "no-store",
       },
     });
   }
 
-  const data = await parseResponse(exportRes);
+  const initialData = await parseResponse(exportRes);
 
-  if (!isRecord(data)) {
+  if (!isRecord(initialData)) {
     return NextResponse.json(
       {
-        endpoint,
+        endpoint: exportEndpoint,
         status: exportRes.status,
         ok: false,
-        contentType,
+        contentType: exportContentType,
         error: "Unexpected glTF export response",
-        details: data,
+        details: initialData,
       },
       { status: 500 }
     );
   }
 
-  return NextResponse.json({
-    endpoint,
-    status: exportRes.status,
-    ok: true,
-    contentType,
-    message:
-      "Onshape returned JSON instead of a direct glTF/GLB file. We need to inspect this response and possibly add translation polling/download.",
-    data,
+  const translationHref = getStringField(initialData, ["href"]);
+  const translationId = getStringField(initialData, ["id", "requestId"]);
+  const initialState = getStringField(initialData, ["requestState"]);
+
+  if (!translationHref) {
+    return NextResponse.json(
+      {
+        endpoint: exportEndpoint,
+        status: exportRes.status,
+        ok: false,
+        contentType: exportContentType,
+        error: "Export returned JSON but no translation href",
+        data: initialData,
+      },
+      { status: 500 }
+    );
+  }
+
+  let statusData: UnknownRecord = initialData;
+
+  // Poll briefly inside this route. If it is still ACTIVE, the frontend can click again.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = getStringField(statusData, ["requestState"]);
+
+    if (state === "DONE" || state === "FAILED") {
+      break;
+    }
+
+    await sleep(1000);
+    statusData = await fetchTranslationStatus(translationHref, accessToken);
+  }
+
+  const finalState = getStringField(statusData, ["requestState"]);
+
+  if (finalState !== "DONE") {
+    return NextResponse.json({
+      endpoint: exportEndpoint,
+      status: 202,
+      ok: false,
+      message: "Translation is not done yet. Click Load Assembly Geometry again.",
+      initialState,
+      finalState,
+      translationHref,
+      translationId,
+      data: statusData,
+    });
+  }
+
+  const resultDocumentId =
+    getStringField(statusData, ["resultDocumentId", "documentId"]) || documentId;
+
+  const resultExternalDataIds = getStringArrayField(statusData, [
+    "resultExternalDataIds",
+  ]);
+
+  // Most robust: use returned resultExternalDataIds[0].
+  // Fallback: some forum examples use the translation id itself.
+  const externalDataId =
+    resultExternalDataIds[0] ||
+    getStringField(statusData, ["resultExternalDataId"]) ||
+    translationId;
+
+  if (!externalDataId) {
+    return NextResponse.json(
+      {
+        endpoint: exportEndpoint,
+        status: 500,
+        ok: false,
+        error: "Translation finished but no external data id was found",
+        data: statusData,
+      },
+      { status: 500 }
+    );
+  }
+
+  const downloadEndpoint = `${server}/api/documents/d/${resultDocumentId}/externaldata/${externalDataId}`;
+
+  const downloadRes = await fetch(downloadEndpoint, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept:
+        "model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+    },
+  });
+
+  const downloadContentType =
+    downloadRes.headers.get("content-type") || "application/octet-stream";
+
+  if (!downloadRes.ok) {
+    const downloadError = await parseResponse(downloadRes);
+
+    return NextResponse.json(
+      {
+        endpoint: exportEndpoint,
+        translationHref,
+        downloadEndpoint,
+        status: downloadRes.status,
+        ok: false,
+        error: "Failed to download translated glTF external data",
+        translation: statusData,
+        details: downloadError,
+      },
+      { status: downloadRes.status }
+    );
+  }
+
+  const arrayBuffer = await downloadRes.arrayBuffer();
+
+  return new NextResponse(arrayBuffer, {
+    status: 200,
+    headers: {
+      "Content-Type": downloadContentType,
+      "Cache-Control": "no-store",
+      "X-FuzzyCAD-Translation-Id": translationId || "",
+      "X-FuzzyCAD-External-Data-Id": externalDataId,
+    },
   });
 }
