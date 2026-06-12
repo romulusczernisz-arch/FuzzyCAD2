@@ -1,8 +1,8 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import dynamic from "next/dynamic";
 import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
 
 const FuzzyCADGeometryViewer = dynamic(
@@ -33,6 +33,9 @@ type ApiResult = {
   occurrencesPreview?: unknown;
   instancesPreview?: unknown;
   featuresPreview?: unknown;
+  manifest?: unknown;
+  mode?: string;
+  message?: string;
 };
 
 function isElementArray(data: unknown): data is OnshapeElement[] {
@@ -60,14 +63,16 @@ export default function FuzzyCADHome() {
     useState<ApiResult | null>(null);
 
   const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>("");
-const [gltfUrl, setGltfUrl] = useState<string | null>(null);
-const [geometryLoadResult, setGeometryLoadResult] = useState<ApiResult | null>(
-  null
-);
 
-const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
-const [selectedMeshNode, setSelectedMeshNode] =
-  useState<MeshGraphNode | null>(null);
+  const [gltfUrl, setGltfUrl] = useState<string | null>(null);
+  const [geometryLoadResult, setGeometryLoadResult] =
+    useState<ApiResult | null>(null);
+  const [geometryZipManifest, setGeometryZipManifest] =
+    useState<ApiResult | null>(null);
+
+  const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
+  const [selectedMeshNode, setSelectedMeshNode] =
+    useState<MeshGraphNode | null>(null);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -93,51 +98,79 @@ const [selectedMeshNode, setSelectedMeshNode] =
     server
   )}`;
 
-async function loadAssemblyGeometry() {
-  setMeshGraph([]);
-  setSelectedMeshNode(null);
+  function resetGeometryState() {
+    setMeshGraph([]);
+    setSelectedMeshNode(null);
+    setGeometryLoadResult(null);
 
-  if (gltfUrl) {
-    URL.revokeObjectURL(gltfUrl);
-    setGltfUrl(null);
+    if (gltfUrl) {
+      URL.revokeObjectURL(gltfUrl);
+      setGltfUrl(null);
+    }
   }
 
-  const query = new URLSearchParams({
-    documentId: documentId || "",
-    workspaceId: workspaceId || "",
-    assemblyElementId: selectedAssemblyId,
-    server,
-  });
+  async function loadAssemblyGeometry() {
+    resetGeometryState();
 
-  const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
-
-  const contentType = res.headers.get("content-type") || "";
-
-  if (
-    res.ok &&
-    (contentType.includes("model/gltf-binary") ||
-      contentType.includes("model/gltf+json") ||
-      contentType.includes("application/octet-stream"))
-  ) {
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-
-    setGltfUrl(url);
-    setGeometryLoadResult({
-      status: res.status,
-      ok: true,
-      data: {
-        contentType,
-        size: blob.size,
-      },
+    const query = new URLSearchParams({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
     });
 
-    return;
+    const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
+    const contentType = res.headers.get("content-type") || "";
+
+    if (
+      res.ok &&
+      (contentType.includes("model/gltf-binary") ||
+        contentType.includes("model/gltf+json"))
+    ) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      setGltfUrl(url);
+      setGeometryLoadResult({
+        status: res.status,
+        ok: true,
+        data: {
+          contentType,
+          size: blob.size,
+          zipMode: res.headers.get("x-fuzzycad-zip-mode"),
+          extractedFile: res.headers.get("x-fuzzycad-extracted-file"),
+          gltfCandidates: res.headers.get("x-fuzzycad-gltf-candidates"),
+          selectedNodes: res.headers.get("x-fuzzycad-selected-nodes"),
+          selectedMeshes: res.headers.get("x-fuzzycad-selected-meshes"),
+          selectedScenes: res.headers.get("x-fuzzycad-selected-scenes"),
+          translationId: res.headers.get("x-fuzzycad-translation-id"),
+          externalDataId: res.headers.get("x-fuzzycad-external-data-id"),
+        },
+      });
+
+      return;
+    }
+
+    const data = (await res.json()) as ApiResult;
+    setGeometryLoadResult(data);
   }
 
-  const data = (await res.json()) as ApiResult;
-  setGeometryLoadResult(data);
-}
+  async function inspectAssemblyGeometryZip() {
+    setGeometryZipManifest(null);
+
+    const query = new URLSearchParams({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+      debugZip: "1",
+    });
+
+    const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
+    const data = (await res.json()) as ApiResult;
+
+    setGeometryZipManifest(data);
+  }
 
   async function loadElements() {
     const query = new URLSearchParams({
@@ -293,8 +326,12 @@ async function loadAssemblyGeometry() {
           <select
             id="assembly-select"
             value={selectedAssemblyId}
-            onChange={(event) => setSelectedAssemblyId(event.target.value)}
-            style={{ padding: 6, minWidth: 260 }}
+            onChange={(event) => {
+              setSelectedAssemblyId(event.target.value);
+              resetGeometryState();
+              setGeometryZipManifest(null);
+            }}
+            style={{ padding: 6, minWidth: 360 }}
           >
             {assemblyElements.map((assembly) => (
               <option key={assembly.id} value={assembly.id}>
@@ -422,165 +459,209 @@ async function loadAssemblyGeometry() {
 
       <h2>Geometry Viewer</h2>
 
-<button
-  onClick={loadAssemblyGeometry}
-  disabled={!selectedAssemblyId}
-  style={{
-    padding: "8px 12px",
-    border: "1px solid #333",
-    borderRadius: 4,
-    cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-    background: selectedAssemblyId ? "#e8ffe8" : "#ddd",
-    marginBottom: 12,
-  }}
->
-  Load Assembly Geometry
-</button>
-
-<FuzzyCADGeometryViewer
-  gltfUrl={gltfUrl}
-  onMeshGraph={setMeshGraph}
-  onSelectedNode={setSelectedMeshNode}
-/>
-
-{meshGraph.length > 0 && (
-  <>
-    <h3>Mesh Graph Inspector</h3>
-
-    <p>
-      Total objects: <strong>{meshGraph.length}</strong>; Mesh objects:{" "}
-      <strong>{meshGraph.filter((node) => node.isMesh).length}</strong>
-    </p>
-
-    {selectedMeshNode && (
-      <div
+      <button
+        onClick={loadAssemblyGeometry}
+        disabled={!selectedAssemblyId}
         style={{
-          padding: 12,
+          padding: "8px 12px",
+          border: "1px solid #333",
+          borderRadius: 4,
+          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+          background: selectedAssemblyId ? "#e8ffe8" : "#ddd",
           marginBottom: 12,
-          background: "#fff7e6",
-          border: "1px solid #e0c27a",
-          borderRadius: 6,
         }}
       >
-        <strong>Selected Mesh/Object</strong>
-        <pre
-          style={{
-            marginTop: 8,
-            whiteSpace: "pre-wrap",
-            overflow: "auto",
-            maxHeight: 240,
-          }}
-        >
-          {JSON.stringify(selectedMeshNode, null, 2)}
-        </pre>
-      </div>
-    )}
+        Load Assembly Geometry
+      </button>
 
-    <div
-      style={{
-        overflow: "auto",
-        maxHeight: 420,
-        border: "1px solid #ccc",
-      }}
-    >
-      <table
+      <button
+        onClick={inspectAssemblyGeometryZip}
+        disabled={!selectedAssemblyId}
         style={{
-          borderCollapse: "collapse",
-          width: "100%",
-          fontSize: 12,
+          padding: "8px 12px",
+          border: "1px solid #333",
+          borderRadius: 4,
+          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+          background: selectedAssemblyId ? "#fff7e6" : "#ddd",
+          marginLeft: 8,
+          marginBottom: 12,
         }}
       >
-        <thead>
-          <tr>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>#</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Name</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Type</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Parent</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Mesh</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Material</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Vertices</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Triangles</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>World Pos</th>
-            <th style={{ border: "1px solid #ccc", padding: 6 }}>Path</th>
-          </tr>
-        </thead>
+        Inspect Geometry ZIP
+      </button>
 
-        <tbody>
-          {meshGraph.slice(0, 300).map((node, index) => (
-            <tr
-              key={node.nodeId}
+      <FuzzyCADGeometryViewer
+        gltfUrl={gltfUrl}
+        onMeshGraph={setMeshGraph}
+        onSelectedNode={setSelectedMeshNode}
+      />
+
+      {meshGraph.length > 0 && (
+        <>
+          <h3>Mesh Graph Inspector</h3>
+
+          <p>
+            Total objects: <strong>{meshGraph.length}</strong>; Mesh objects:{" "}
+            <strong>{meshGraph.filter((node) => node.isMesh).length}</strong>
+          </p>
+
+          {selectedMeshNode && (
+            <div
               style={{
-                background:
-                  selectedMeshNode?.nodeId === node.nodeId
-                    ? "#fff7e6"
-                    : node.isMesh
-                      ? "#ffffff"
-                      : "#f7f7f7",
+                padding: 12,
+                marginBottom: 12,
+                background: "#fff7e6",
+                border: "1px solid #e0c27a",
+                borderRadius: 6,
               }}
             >
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {index}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.name || "(unnamed)"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.type}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.parentName || "—"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.isMesh ? "yes" : "no"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.materialName || "—"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.vertexCount ?? "—"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.triangleCount ?? "—"}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.worldPosition.x.toFixed(3)},{" "}
-                {node.worldPosition.y.toFixed(3)},{" "}
-                {node.worldPosition.z.toFixed(3)}
-              </td>
-              <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                {node.path}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+              <strong>Selected Mesh/Object</strong>
+              <pre
+                style={{
+                  marginTop: 8,
+                  whiteSpace: "pre-wrap",
+                  overflow: "auto",
+                  maxHeight: 240,
+                }}
+              >
+                {JSON.stringify(selectedMeshNode, null, 2)}
+              </pre>
+            </div>
+          )}
 
-    {meshGraph.length > 300 && (
-      <p style={{ fontSize: 12 }}>
-        Showing first 300 objects only. Full count: {meshGraph.length}.
-      </p>
-    )}
-  </>
-)}
+          <div
+            style={{
+              overflow: "auto",
+              maxHeight: 420,
+              border: "1px solid #ccc",
+            }}
+          >
+            <table
+              style={{
+                borderCollapse: "collapse",
+                width: "100%",
+                fontSize: 12,
+              }}
+            >
+              <thead>
+                <tr>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>#</th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Name</th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Type</th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
+                    Parent
+                  </th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Mesh</th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
+                    Material
+                  </th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
+                    Vertices
+                  </th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
+                    Triangles
+                  </th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
+                    World Pos
+                  </th>
+                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Path</th>
+                </tr>
+              </thead>
 
-{geometryLoadResult && (
-  <>
-    <h3>Geometry Load Result</h3>
-    <pre
-      style={{
-        marginTop: 16,
-        padding: 16,
-        background: "#f2fff2",
-        overflow: "auto",
-        whiteSpace: "pre-wrap",
-        maxHeight: 280,
-      }}
-    >
-      {JSON.stringify(geometryLoadResult, null, 2)}
-    </pre>
-  </>
-)}
+              <tbody>
+                {meshGraph.slice(0, 300).map((node, index) => (
+                  <tr
+                    key={node.nodeId}
+                    style={{
+                      background:
+                        selectedMeshNode?.nodeId === node.nodeId
+                          ? "#fff7e6"
+                          : node.isMesh
+                            ? "#ffffff"
+                            : "#f7f7f7",
+                    }}
+                  >
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {index}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.name || "(unnamed)"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.type}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.parentName || "—"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.isMesh ? "yes" : "no"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.materialName || "—"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.vertexCount ?? "—"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.triangleCount ?? "—"}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.worldPosition.x.toFixed(3)},{" "}
+                      {node.worldPosition.y.toFixed(3)},{" "}
+                      {node.worldPosition.z.toFixed(3)}
+                    </td>
+                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
+                      {node.path}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {meshGraph.length > 300 && (
+            <p style={{ fontSize: 12 }}>
+              Showing first 300 objects only. Full count: {meshGraph.length}.
+            </p>
+          )}
+        </>
+      )}
+
+      {geometryLoadResult && (
+        <>
+          <h3>Geometry Load Result</h3>
+          <pre
+            style={{
+              marginTop: 16,
+              padding: 16,
+              background: "#f2fff2",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              maxHeight: 280,
+            }}
+          >
+            {JSON.stringify(geometryLoadResult, null, 2)}
+          </pre>
+        </>
+      )}
+
+      {geometryZipManifest && (
+        <>
+          <h3>Geometry ZIP Manifest</h3>
+          <pre
+            style={{
+              marginTop: 16,
+              padding: 16,
+              background: "#fff7e6",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              maxHeight: 520,
+            }}
+          >
+            {JSON.stringify(geometryZipManifest, null, 2)}
+          </pre>
+        </>
+      )}
 
       <h2>All URL Parameters</h2>
 

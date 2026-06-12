@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 
+export const runtime = "nodejs";
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -47,17 +49,19 @@ function sleep(ms: number) {
 
 function isZip(arrayBuffer: ArrayBuffer): boolean {
   const bytes = new Uint8Array(arrayBuffer);
+
   return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
 }
 
 function isGlb(arrayBuffer: ArrayBuffer): boolean {
   const bytes = new Uint8Array(arrayBuffer);
+
   return (
     bytes.length >= 4 &&
-    bytes[0] === 0x67 &&
-    bytes[1] === 0x6c &&
-    bytes[2] === 0x54 &&
-    bytes[3] === 0x46
+    bytes[0] === 0x67 && // g
+    bytes[1] === 0x6c && // l
+    bytes[2] === 0x54 && // T
+    bytes[3] === 0x46 // F
   );
 }
 
@@ -122,6 +126,126 @@ async function zipFileToDataUri(zip: JSZip, filePath: string): Promise<string> {
   return `data:${mime};base64,${base64}`;
 }
 
+function countArrayField(record: UnknownRecord, key: string): number {
+  const value = record[key];
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function scoreGltfCandidate(gltf: UnknownRecord, jsonSize: number): number {
+  const nodeCount = countArrayField(gltf, "nodes");
+  const meshCount = countArrayField(gltf, "meshes");
+  const sceneCount = countArrayField(gltf, "scenes");
+  const bufferCount = countArrayField(gltf, "buffers");
+  const imageCount = countArrayField(gltf, "images");
+  const materialCount = countArrayField(gltf, "materials");
+
+  return (
+    nodeCount * 2000 +
+    meshCount * 1500 +
+    sceneCount * 200 +
+    bufferCount * 100 +
+    materialCount * 30 +
+    imageCount * 30 +
+    jsonSize
+  );
+}
+
+async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+
+  const fileNames = Object.keys(zip.files).filter(
+    (name) => !zip.files[name].dir
+  );
+
+  const extensionCounts: Record<string, number> = {};
+
+  for (const name of fileNames) {
+    const dotIndex = name.lastIndexOf(".");
+    const ext = dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : "(none)";
+    extensionCounts[ext] = (extensionCounts[ext] || 0) + 1;
+  }
+
+  const gltfFiles = [];
+
+  for (const name of fileNames) {
+    if (!name.toLowerCase().endsWith(".gltf")) continue;
+
+    const text = await zip.file(name)?.async("string");
+    if (!text) continue;
+
+    try {
+      const gltf = JSON.parse(text) as UnknownRecord;
+
+      const nodes = Array.isArray(gltf.nodes) ? gltf.nodes : [];
+      const meshes = Array.isArray(gltf.meshes) ? gltf.meshes : [];
+      const materials = Array.isArray(gltf.materials) ? gltf.materials : [];
+      const buffers = Array.isArray(gltf.buffers) ? gltf.buffers : [];
+      const images = Array.isArray(gltf.images) ? gltf.images : [];
+      const scenes = Array.isArray(gltf.scenes) ? gltf.scenes : [];
+
+      gltfFiles.push({
+        name,
+        jsonSize: text.length,
+        score: scoreGltfCandidate(gltf, text.length),
+        scenes: scenes.length,
+        nodes: nodes.length,
+        meshes: meshes.length,
+        materials: materials.length,
+        buffers: buffers.length,
+        images: images.length,
+        scene: gltf.scene ?? null,
+        asset: gltf.asset ?? null,
+        nodeNames: nodes
+          .map((node) =>
+            isRecord(node) && typeof node.name === "string" ? node.name : ""
+          )
+          .filter(Boolean)
+          .slice(0, 80),
+        meshNames: meshes
+          .map((mesh) =>
+            isRecord(mesh) && typeof mesh.name === "string" ? mesh.name : ""
+          )
+          .filter(Boolean)
+          .slice(0, 80),
+        bufferUris: buffers
+          .map((buffer) =>
+            isRecord(buffer) && typeof buffer.uri === "string"
+              ? buffer.uri
+              : ""
+          )
+          .filter(Boolean),
+        imageUris: images
+          .map((image) =>
+            isRecord(image) && typeof image.uri === "string" ? image.uri : ""
+          )
+          .filter(Boolean),
+      });
+    } catch {
+      gltfFiles.push({
+        name,
+        error: "Could not parse glTF JSON",
+        jsonSize: text.length,
+      });
+    }
+  }
+
+  return {
+    totalFiles: fileNames.length,
+    extensionCounts,
+    files: fileNames.map((name) => ({
+      name,
+      extension: name.includes(".")
+        ? name.slice(name.lastIndexOf(".")).toLowerCase()
+        : "(none)",
+    })),
+    gltfFiles: gltfFiles.sort((a, b) => {
+      const aScore = "score" in a ? Number(a.score) : 0;
+      const bScore = "score" in b ? Number(b.score) : 0;
+      return bScore - aScore;
+    }),
+  };
+}
+
 async function unpackZipToLoadableGltf(
   arrayBuffer: ArrayBuffer
 ): Promise<NextResponse> {
@@ -151,11 +275,11 @@ async function unpackZipToLoadableGltf(
     });
   }
 
-  const gltfName = fileNames.find((name) =>
+  const gltfNames = fileNames.filter((name) =>
     name.toLowerCase().endsWith(".gltf")
   );
 
-  if (!gltfName) {
+  if (gltfNames.length === 0) {
     return NextResponse.json(
       {
         ok: false,
@@ -166,13 +290,59 @@ async function unpackZipToLoadableGltf(
     );
   }
 
-  const gltfText = await zip.file(gltfName)?.async("string");
+  const candidates: {
+    name: string;
+    gltf: UnknownRecord;
+    text: string;
+    score: number;
+    nodeCount: number;
+    meshCount: number;
+    sceneCount: number;
+    jsonSize: number;
+  }[] = [];
 
-  if (!gltfText) {
-    throw new Error(`Failed to read glTF from ZIP: ${gltfName}`);
+  for (const gltfName of gltfNames) {
+    const gltfText = await zip.file(gltfName)?.async("string");
+
+    if (!gltfText) {
+      continue;
+    }
+
+    try {
+      const gltf = JSON.parse(gltfText) as UnknownRecord;
+
+      candidates.push({
+        name: gltfName,
+        gltf,
+        text: gltfText,
+        score: scoreGltfCandidate(gltf, gltfText.length),
+        nodeCount: countArrayField(gltf, "nodes"),
+        meshCount: countArrayField(gltf, "meshes"),
+        sceneCount: countArrayField(gltf, "scenes"),
+        jsonSize: gltfText.length,
+      });
+    } catch {
+      // Ignore invalid glTF JSON files in package.
+    }
   }
 
-  const gltf = JSON.parse(gltfText) as UnknownRecord;
+  if (candidates.length === 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "ZIP contained .gltf files, but none could be parsed.",
+        gltfNames,
+        files: fileNames,
+      },
+      { status: 415 }
+    );
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const selected = candidates[0];
+  const gltfName = selected.name;
+  const gltf = selected.gltf;
 
   const buffers = Array.isArray(gltf.buffers) ? gltf.buffers : [];
   for (const buffer of buffers) {
@@ -205,6 +375,11 @@ async function unpackZipToLoadableGltf(
       "Cache-Control": "no-store",
       "X-FuzzyCAD-Zip-Mode": "embedded-gltf",
       "X-FuzzyCAD-Extracted-File": gltfName,
+      "X-FuzzyCAD-Gltf-Candidates": String(candidates.length),
+      "X-FuzzyCAD-Selected-Score": String(selected.score),
+      "X-FuzzyCAD-Selected-Nodes": String(selected.nodeCount),
+      "X-FuzzyCAD-Selected-Meshes": String(selected.meshCount),
+      "X-FuzzyCAD-Selected-Scenes": String(selected.sceneCount),
     },
   });
 }
@@ -225,11 +400,84 @@ async function getTranslationStatus(
 
   if (!res.ok || !isRecord(data)) {
     throw new Error(
-      `Failed to fetch translation status: ${res.status} ${JSON.stringify(data)}`
+      `Failed to fetch translation status: ${res.status} ${JSON.stringify(
+        data
+      )}`
     );
   }
 
   return data;
+}
+
+async function handleGeometryBuffer(
+  downloadedBuffer: ArrayBuffer,
+  debugZip: boolean,
+  context: {
+    exportEndpoint: string;
+    translationHref?: string | null;
+    downloadEndpoint?: string | null;
+    downloadContentType?: string;
+  }
+): Promise<NextResponse> {
+  if (isZip(downloadedBuffer)) {
+    if (debugZip) {
+      const manifest = await inspectGltfZip(downloadedBuffer);
+
+      return NextResponse.json({
+        ok: true,
+        mode: "debugZip",
+        endpoint: context.exportEndpoint,
+        translationHref: context.translationHref ?? null,
+        downloadEndpoint: context.downloadEndpoint ?? null,
+        contentType: context.downloadContentType ?? null,
+        manifest,
+      });
+    }
+
+    try {
+      return await unpackZipToLoadableGltf(downloadedBuffer);
+    } catch (error) {
+      return NextResponse.json(
+        {
+          endpoint: context.exportEndpoint,
+          translationHref: context.translationHref ?? null,
+          downloadEndpoint: context.downloadEndpoint ?? null,
+          status: 500,
+          ok: false,
+          fileKind: "zip",
+          contentType: context.downloadContentType ?? null,
+          error: "Failed to unpack ZIP glTF package.",
+          details: error instanceof Error ? error.message : String(error),
+        },
+        { status: 500 }
+      );
+    }
+  }
+
+  if (isGlb(downloadedBuffer)) {
+    return new NextResponse(downloadedBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "model/gltf-binary",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
+  return NextResponse.json(
+    {
+      endpoint: context.exportEndpoint,
+      translationHref: context.translationHref ?? null,
+      downloadEndpoint: context.downloadEndpoint ?? null,
+      status: 415,
+      ok: false,
+      fileKind: "unknown-binary",
+      contentType: context.downloadContentType ?? null,
+      firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
+      error: "Downloaded result was not ZIP and not GLB.",
+    },
+    { status: 415 }
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -239,6 +487,7 @@ export async function GET(req: NextRequest) {
   const documentId = searchParams.get("documentId");
   const workspaceId = searchParams.get("workspaceId");
   const assemblyElementId = searchParams.get("assemblyElementId");
+  const debugZip = searchParams.get("debugZip") === "1";
 
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
@@ -273,6 +522,7 @@ export async function GET(req: NextRequest) {
     },
     body: JSON.stringify({
       storeInDocument: false,
+      formatName: "GLTF",
     }),
   });
 
@@ -292,6 +542,19 @@ export async function GET(req: NextRequest) {
       },
       { status: exportRes.status }
     );
+  }
+
+  if (
+    exportContentType.includes("model/gltf-binary") ||
+    exportContentType.includes("application/octet-stream") ||
+    exportContentType.includes("application/zip")
+  ) {
+    const directBuffer = await exportRes.arrayBuffer();
+
+    return handleGeometryBuffer(directBuffer, debugZip, {
+      exportEndpoint,
+      downloadContentType: exportContentType,
+    });
   }
 
   const initialData = await parseResponse(exportRes);
@@ -341,12 +604,28 @@ export async function GET(req: NextRequest) {
 
   const finalState = getStringField(statusData, ["requestState"]);
 
+  if (finalState === "FAILED") {
+    return NextResponse.json(
+      {
+        endpoint: exportEndpoint,
+        status: 500,
+        ok: false,
+        message: "Translation failed.",
+        translationHref,
+        translationId,
+        requestState: finalState,
+        data: statusData,
+      },
+      { status: 500 }
+    );
+  }
+
   if (finalState !== "DONE") {
     return NextResponse.json({
       endpoint: exportEndpoint,
       status: 202,
       ok: false,
-      message: "Translation is still not done. Click Load Assembly Geometry again.",
+      message: "Translation is still not done. Click Load/Inspect again.",
       translationHref,
       translationId,
       requestState: finalState,
@@ -411,51 +690,15 @@ export async function GET(req: NextRequest) {
 
   const downloadedBuffer = await downloadRes.arrayBuffer();
 
-  if (isZip(downloadedBuffer)) {
-    try {
-      return await unpackZipToLoadableGltf(downloadedBuffer);
-    } catch (error) {
-      return NextResponse.json(
-        {
-          endpoint: exportEndpoint,
-          translationHref,
-          downloadEndpoint,
-          status: 500,
-          ok: false,
-          fileKind: "zip",
-          contentType: downloadContentType,
-          error: "Failed to unpack ZIP glTF package.",
-          details: error instanceof Error ? error.message : String(error),
-        },
-        { status: 500 }
-      );
-    }
-  }
+  const response = await handleGeometryBuffer(downloadedBuffer, debugZip, {
+    exportEndpoint,
+    translationHref,
+    downloadEndpoint,
+    downloadContentType,
+  });
 
-  if (isGlb(downloadedBuffer)) {
-    return new NextResponse(downloadedBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": "model/gltf-binary",
-        "Cache-Control": "no-store",
-        "X-FuzzyCAD-Translation-Id": translationId || "",
-        "X-FuzzyCAD-External-Data-Id": externalDataId,
-      },
-    });
-  }
+  response.headers.set("X-FuzzyCAD-Translation-Id", translationId || "");
+  response.headers.set("X-FuzzyCAD-External-Data-Id", externalDataId);
 
-  return NextResponse.json(
-    {
-      endpoint: exportEndpoint,
-      translationHref,
-      downloadEndpoint,
-      status: 415,
-      ok: false,
-      fileKind: "unknown-binary",
-      contentType: downloadContentType,
-      firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
-      error: "Downloaded result was not ZIP and not GLB.",
-    },
-    { status: 415 }
-  );
+  return response;
 }
