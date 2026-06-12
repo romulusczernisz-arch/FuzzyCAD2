@@ -4,6 +4,14 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
+import {
+  buildPartNodeGraph,
+  getLinkedGroup,
+  type LogicalOccurrence,
+  type LogicalMateEdge,
+  type MatchedInstance,
+} from "./lib/partGraph";
+
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -97,6 +105,41 @@ export default function FuzzyCADHome() {
   )}&elementId=${encodeURIComponent(elementId || "")}&server=${encodeURIComponent(
     server
   )}`;
+
+const partGraph = useMemo(() => {
+    const g = relationshipGraphResult?.graph as
+      | {
+          occurrences?: LogicalOccurrence[];
+          pathMatches?: {
+            occurrencePathKey: string;
+            matchedInstance: MatchedInstance;
+          }[];
+          mateEdges?: LogicalMateEdge[];
+        }
+      | undefined;
+
+    if (!g?.occurrences || meshGraph.length === 0) return null;
+
+    const pathKeyToInstance = new Map<string, MatchedInstance>(
+      (g.pathMatches ?? []).map((m) => [m.occurrencePathKey, m.matchedInstance])
+    );
+
+    return buildPartNodeGraph(
+      g.occurrences,
+      pathKeyToInstance,
+      g.mateEdges ?? [],
+      meshGraph
+    );
+  }, [relationshipGraphResult, meshGraph]);
+
+  const linkedGroup = useMemo(() => {
+    if (!partGraph || !selectedMeshNode) return null;
+    const pathKey = partGraph.byMeshUuid.get(selectedMeshNode.nodeId);
+    if (!pathKey) return null;
+    return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
+  }, [partGraph, selectedMeshNode]);
+
+
 
   function resetGeometryState() {
     setMeshGraph([]);
@@ -661,6 +704,54 @@ export default function FuzzyCADHome() {
             {JSON.stringify(geometryZipManifest, null, 2)}
           </pre>
         </>
+      )}
+
+      <h2>FuzzyCAD Part Graph</h2>
+      {!partGraph ? (
+        <p>Build the relationship graph and load geometry first.</p>
+      ) : (
+        <div
+          style={{
+            padding: 12,
+            background: "#f0f7ff",
+            border: "1px solid #b8d4f0",
+            borderRadius: 6,
+            marginBottom: 16,
+          }}
+        >
+          <p>
+            Matched parts:{" "}
+            <strong>
+              {partGraph.residualStats.matched}/{partGraph.residualStats.total}
+            </strong>{" "}
+            · mean residual:{" "}
+            <strong>{partGraph.residualStats.mean.toFixed(5)}</strong> · scale:{" "}
+            <strong>{partGraph.scale}</strong> · mate edges:{" "}
+            <strong>
+              {
+                (
+                  (relationshipGraphResult?.graph as { mateEdges?: unknown[] })
+                    ?.mateEdges ?? []
+                ).length
+              }
+            </strong>
+          </p>
+
+          {selectedMeshNode && (
+            <p>
+              Clicked part:{" "}
+              <strong>
+                {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "(no match)"}
+              </strong>
+              {linkedGroup ? (
+                <>
+                  {" "}
+                  · linked parts: <strong>{linkedGroup.length}</strong>
+                </>
+              ) : null}
+            </p>
+          )}
+        </div>
       )}
 
       <h2>All URL Parameters</h2>

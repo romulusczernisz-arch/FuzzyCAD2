@@ -126,6 +126,140 @@ async function zipFileToDataUri(zip: JSZip, filePath: string): Promise<string> {
   return `data:${mime};base64,${base64}`;
 }
 
+type GltfDoc = Record<string, any>;
+
+async function embedGltfBuffers(zip: JSZip, gltfName: string, gltf: GltfDoc) {
+  for (const buffer of Array.isArray(gltf.buffers) ? gltf.buffers : []) {
+    if (!isRecord(buffer)) continue;
+    const uri = getStringField(buffer, ["uri"]);
+    if (!uri || uri.startsWith("data:")) continue;
+    buffer.uri = await zipFileToDataUri(zip, resolveGltfUri(gltfName, uri));
+  }
+  for (const image of Array.isArray(gltf.images) ? gltf.images : []) {
+    if (!isRecord(image)) continue;
+    const uri = getStringField(image, ["uri"]);
+    if (!uri || uri.startsWith("data:")) continue;
+    image.uri = await zipFileToDataUri(zip, resolveGltfUri(gltfName, uri));
+  }
+}
+
+function remapMaterial(m: GltfDoc, texOff: number): GltfDoc {
+  const c: GltfDoc = JSON.parse(JSON.stringify(m));
+  const bump = (t: any) => {
+    if (t && typeof t.index === "number") t.index += texOff;
+  };
+  if (c.pbrMetallicRoughness) {
+    bump(c.pbrMetallicRoughness.baseColorTexture);
+    bump(c.pbrMetallicRoughness.metallicRoughnessTexture);
+  }
+  bump(c.normalTexture);
+  bump(c.occlusionTexture);
+  bump(c.emissiveTexture);
+  return c;
+}
+
+function remapPrimitive(p: GltfDoc, accOff: number, matOff: number): GltfDoc {
+  const c: GltfDoc = { ...p };
+  if (p.attributes) {
+    c.attributes = {};
+    for (const [k, v] of Object.entries(p.attributes))
+      c.attributes[k] = (v as number) + accOff;
+  }
+  if (typeof p.indices === "number") c.indices = p.indices + accOff;
+  if (typeof p.material === "number") c.material = p.material + matOff;
+  if (Array.isArray(p.targets)) {
+    c.targets = p.targets.map((t: Record<string, number>) => {
+      const nt: Record<string, number> = {};
+      for (const [k, v] of Object.entries(t)) nt[k] = v + accOff;
+      return nt;
+    });
+  }
+  return c;
+}
+
+function mergeGltfDocuments(docs: GltfDoc[]): GltfDoc {
+  const merged: GltfDoc = {
+    asset: { version: "2.0", generator: "FuzzyCAD-merge" },
+    buffers: [], bufferViews: [], accessors: [],
+    images: [], samplers: [], textures: [],
+    materials: [], meshes: [], nodes: [], scenes: [],
+  };
+  const rootNodes: number[] = [];
+
+  for (const doc of docs) {
+    const arr = (k: string): any[] => (Array.isArray(doc[k]) ? doc[k] : []);
+    const off = {
+      buffer: merged.buffers.length, bufferView: merged.bufferViews.length,
+      accessor: merged.accessors.length, image: merged.images.length,
+      sampler: merged.samplers.length, texture: merged.textures.length,
+      material: merged.materials.length, mesh: merged.meshes.length,
+      node: merged.nodes.length,
+    };
+
+    for (const b of arr("buffers")) merged.buffers.push({ ...b });
+    for (const bv of arr("bufferViews"))
+      merged.bufferViews.push({ ...bv, buffer: bv.buffer + off.buffer });
+
+    for (const acc of arr("accessors")) {
+      const c: GltfDoc = { ...acc };
+      if (typeof c.bufferView === "number") c.bufferView += off.bufferView;
+      if (c.sparse) {
+        c.sparse = JSON.parse(JSON.stringify(c.sparse));
+        if (c.sparse.indices) c.sparse.indices.bufferView += off.bufferView;
+        if (c.sparse.values) c.sparse.values.bufferView += off.bufferView;
+      }
+      merged.accessors.push(c);
+    }
+
+    for (const img of arr("images")) {
+      const c: GltfDoc = { ...img };
+      if (typeof c.bufferView === "number") c.bufferView += off.bufferView;
+      merged.images.push(c);
+    }
+    for (const s of arr("samplers")) merged.samplers.push({ ...s });
+
+    for (const t of arr("textures")) {
+      const c: GltfDoc = { ...t };
+      if (typeof c.source === "number") c.source += off.image;
+      if (typeof c.sampler === "number") c.sampler += off.sampler;
+      merged.textures.push(c);
+    }
+
+    for (const m of arr("materials"))
+      merged.materials.push(remapMaterial(m, off.texture));
+
+    for (const mesh of arr("meshes"))
+      merged.meshes.push({
+        ...mesh,
+        primitives: (mesh.primitives || []).map((p: GltfDoc) =>
+          remapPrimitive(p, off.accessor, off.material)
+        ),
+      });
+
+    for (const n of arr("nodes")) {
+      const c: GltfDoc = { ...n };
+      if (typeof c.mesh === "number") c.mesh += off.mesh;
+      if (Array.isArray(c.children))
+        c.children = c.children.map((x: number) => x + off.node);
+      merged.nodes.push(c);
+    }
+
+    const scenes = arr("scenes");
+    const scene = scenes[typeof doc.scene === "number" ? doc.scene : 0] || scenes[0];
+    if (scene && Array.isArray(scene.nodes)) {
+      for (const idx of scene.nodes) rootNodes.push(idx + off.node);
+    } else {
+      for (let i = 0; i < arr("nodes").length; i++) rootNodes.push(i + off.node);
+    }
+  }
+
+  merged.scene = 0;
+  merged.scenes = [{ nodes: rootNodes }];
+  for (const k of ["images", "samplers", "textures", "materials"])
+    if (merged[k].length === 0) delete merged[k];
+  return merged;
+}
+
 function countArrayField(record: UnknownRecord, key: string): number {
   const value = record[key];
   return Array.isArray(value) ? value.length : 0;
@@ -340,46 +474,29 @@ async function unpackZipToLoadableGltf(
 
   candidates.sort((a, b) => b.score - a.score);
 
-  const selected = candidates[0];
-  const gltfName = selected.name;
-  const gltf = selected.gltf;
-
-  const buffers = Array.isArray(gltf.buffers) ? gltf.buffers : [];
-  for (const buffer of buffers) {
-    if (!isRecord(buffer)) continue;
-
-    const uri = getStringField(buffer, ["uri"]);
-    if (!uri || uri.startsWith("data:")) continue;
-
-    const resolved = resolveGltfUri(gltfName, uri);
-    buffer.uri = await zipFileToDataUri(zip, resolved);
+ for (const candidate of candidates) {
+    await embedGltfBuffers(zip, candidate.name, candidate.gltf as GltfDoc);
   }
 
-  const images = Array.isArray(gltf.images) ? gltf.images : [];
-  for (const image of images) {
-    if (!isRecord(image)) continue;
+  const mergedGltf =
+    candidates.length === 1
+      ? (candidates[0].gltf as GltfDoc)
+      : mergeGltfDocuments(candidates.map((c) => c.gltf as GltfDoc));
 
-    const uri = getStringField(image, ["uri"]);
-    if (!uri || uri.startsWith("data:")) continue;
-
-    const resolved = resolveGltfUri(gltfName, uri);
-    image.uri = await zipFileToDataUri(zip, resolved);
-  }
-
-  const embeddedJson = JSON.stringify(gltf);
-
-  return new NextResponse(embeddedJson, {
+  return new NextResponse(JSON.stringify(mergedGltf), {
     status: 200,
     headers: {
       "Content-Type": "model/gltf+json",
       "Cache-Control": "no-store",
-      "X-FuzzyCAD-Zip-Mode": "embedded-gltf",
-      "X-FuzzyCAD-Extracted-File": gltfName,
+      "X-FuzzyCAD-Zip-Mode":
+        candidates.length === 1 ? "embedded-gltf" : "merged-gltf",
       "X-FuzzyCAD-Gltf-Candidates": String(candidates.length),
-      "X-FuzzyCAD-Selected-Score": String(selected.score),
-      "X-FuzzyCAD-Selected-Nodes": String(selected.nodeCount),
-      "X-FuzzyCAD-Selected-Meshes": String(selected.meshCount),
-      "X-FuzzyCAD-Selected-Scenes": String(selected.sceneCount),
+      "X-FuzzyCAD-Merged-Nodes": String(
+        Array.isArray(mergedGltf.nodes) ? mergedGltf.nodes.length : 0
+      ),
+      "X-FuzzyCAD-Merged-Meshes": String(
+        Array.isArray(mergedGltf.meshes) ? mergedGltf.meshes.length : 0
+      ),
     },
   });
 }

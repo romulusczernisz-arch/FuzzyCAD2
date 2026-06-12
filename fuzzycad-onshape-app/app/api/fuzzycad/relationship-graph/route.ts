@@ -103,6 +103,8 @@ type FuzzyCADRelationshipGraph = {
   pathMatches: PathMatch[];
   sameSourceGroups: SameSourceGroup[];
   features: FeatureNode[];
+  mateFeatures: MateFeatureNode[];
+  mateEdges: MateEdge[];
   candidateOperations: {
     id: string;
     type: string;
@@ -461,6 +463,105 @@ function buildFeatures(blocks: { path: string; record: UnknownRecord }[]): Featu
   return features;
 }
 
+type MateMember = {
+  occurrencePath: string[];
+  occurrencePathKey: string;
+  connectorOrigin: number[] | null;
+};
+type MateFeatureNode = {
+  featureId: string | null;
+  name: string | null;
+  mateType: string | null;
+  members: MateMember[];
+};
+type MateEdge = {
+  a: string;
+  b: string;
+  mateType: string | null;
+  featureId: string | null;
+  connectorA: number[] | null;
+  connectorB: number[] | null;
+};
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string")
+    : [];
+}
+
+function getOrigin(cs: unknown): number[] | null {
+  if (!isRecord(cs)) return null;
+  const origin = cs.origin;
+  return Array.isArray(origin) && origin.every((n) => typeof n === "number")
+    ? (origin as number[])
+    : null;
+}
+
+function extractMateMembers(featureData: UnknownRecord): MateMember[] {
+  return asArray(featureData.matedEntities)
+    .map((entity) => {
+      if (!isRecord(entity)) return null;
+      const path = asStringArray(
+        entity.matedOccurrence ?? entity.occurrence ?? entity.matedOccurrencePath
+      );
+      if (path.length === 0) return null;
+      const cs = entity.matedCS ?? entity.coordSystem ?? entity.matedCoordinateSystem;
+      return {
+        occurrencePath: path,
+        occurrencePathKey: path.join("/"),
+        connectorOrigin: getOrigin(cs),
+      };
+    })
+    .filter((m): m is MateMember => m !== null);
+}
+
+function buildMateFeatures(
+  blocks: { path: string; record: UnknownRecord }[]
+): MateFeatureNode[] {
+  const result: MateFeatureNode[] = [];
+  for (const block of blocks) {
+    for (const item of asArray(block.record.features)) {
+      if (!isRecord(item)) continue;
+      const featureData = isRecord(item.featureData) ? item.featureData : item;
+      const members = extractMateMembers(featureData);
+      if (members.length === 0) continue;
+      result.push({
+        featureId: getStringField(item, ["id", "featureId", "nodeId"]),
+        name:
+          getStringField(featureData, ["name"]) ??
+          getStringField(item, ["name", "featureName"]),
+        mateType:
+          getStringField(featureData, ["mateType"]) ??
+          getStringField(item, ["mateType", "featureType", "type"]),
+        members,
+      });
+    }
+  }
+  return result;
+}
+
+function buildMateEdges(mates: MateFeatureNode[]): MateEdge[] {
+  const edges: MateEdge[] = [];
+  for (const mate of mates) {
+    for (let i = 0; i < mate.members.length; i++) {
+      for (let j = i + 1; j < mate.members.length; j++) {
+        const a = mate.members[i];
+        const b = mate.members[j];
+        if (a.occurrencePathKey === b.occurrencePathKey) continue;
+        edges.push({
+          a: a.occurrencePathKey,
+          b: b.occurrencePathKey,
+          mateType: mate.mateType,
+          featureId: mate.featureId,
+          connectorA: a.connectorOrigin,
+          connectorB: b.connectorOrigin,
+        });
+      }
+    }
+  }
+  return edges;
+}
+
 function buildPathMatches(
   occurrences: OccurrenceNode[],
   instances: InstanceNode[]
@@ -644,6 +745,8 @@ export async function GET(req: NextRequest) {
   const pathMatches = buildPathMatches(occurrences, instances);
   const sameSourceGroups = buildSameSourceGroups(instances);
   const features = buildFeatures(assemblyBlocks);
+  const mateFeatures = buildMateFeatures(assemblyBlocks);
+  const mateEdges = buildMateEdges(mateFeatures);
 
   const graph: FuzzyCADRelationshipGraph = {
     graphVersion: "0.2.0",
@@ -667,6 +770,8 @@ export async function GET(req: NextRequest) {
     pathMatches,
     sameSourceGroups,
     features,
+    mateFeatures,
+    mateEdges,
     candidateOperations: buildCandidateOperations(sameSourceGroups),
     debug: {
       rootAssemblyKeys: Object.keys(rootAssembly),

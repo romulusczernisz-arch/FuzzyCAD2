@@ -29,6 +29,8 @@ export type MeshGraphNode = {
     y: number;
     z: number;
   };
+  modelMatrix: number[];
+  modelPosition: { x: number; y: number; z: number };
 };
 
 type FuzzyCADGeometryViewerProps = {
@@ -62,6 +64,7 @@ function getMaterialName(material: THREE.Material | THREE.Material[] | null) {
 
 function buildMeshGraph(scene: THREE.Object3D): MeshGraphNode[] {
   scene.updateMatrixWorld(true);
+  const sceneInverse = new THREE.Matrix4().copy(scene.matrixWorld).invert();
 
   const nodes: MeshGraphNode[] = [];
 
@@ -90,6 +93,12 @@ function buildMeshGraph(scene: THREE.Object3D): MeshGraphNode[] {
     const worldPosition = new THREE.Vector3();
     worldPosition.setFromMatrixPosition(object.matrixWorld);
 
+    const modelMatrix = new THREE.Matrix4().multiplyMatrices(
+      sceneInverse,
+      object.matrixWorld
+    );
+    const modelPosition = new THREE.Vector3().setFromMatrixPosition(modelMatrix);
+
     nodes.push({
       nodeId: object.uuid,
       name: object.name || "",
@@ -109,10 +118,16 @@ function buildMeshGraph(scene: THREE.Object3D): MeshGraphNode[] {
 
       localMatrix: object.matrix.toArray(),
       worldMatrix: object.matrixWorld.toArray(),
-      worldPosition: {
+    worldPosition: {
         x: worldPosition.x,
         y: worldPosition.y,
         z: worldPosition.z,
+      },
+      modelMatrix: modelMatrix.toArray(),
+      modelPosition: {
+        x: modelPosition.x,
+        y: modelPosition.y,
+        z: modelPosition.z,
       },
     });
   });
