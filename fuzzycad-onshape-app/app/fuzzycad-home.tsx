@@ -2,6 +2,14 @@
 
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+
+const FuzzyCADGeometryViewer = dynamic(
+  () => import("./components/FuzzyCADGeometryViewer"),
+  {
+    ssr: false,
+  }
+);
 
 type OnshapeElement = {
   id: string;
@@ -51,6 +59,12 @@ export default function FuzzyCADHome() {
     useState<ApiResult | null>(null);
 
   const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>("");
+const [gltfUrl, setGltfUrl] = useState<string | null>(null);
+const [geometryLoadResult, setGeometryLoadResult] = useState<ApiResult | null>(
+  null
+);
+
+
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -75,6 +89,49 @@ export default function FuzzyCADHome() {
   )}&elementId=${encodeURIComponent(elementId || "")}&server=${encodeURIComponent(
     server
   )}`;
+
+  async function loadAssemblyGeometry() {
+  if (gltfUrl) {
+    URL.revokeObjectURL(gltfUrl);
+    setGltfUrl(null);
+  }
+
+  const query = new URLSearchParams({
+    documentId: documentId || "",
+    workspaceId: workspaceId || "",
+    assemblyElementId: selectedAssemblyId,
+    server,
+  });
+
+  const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
+
+  const contentType = res.headers.get("content-type") || "";
+
+  if (
+    res.ok &&
+    (contentType.includes("model/gltf-binary") ||
+      contentType.includes("model/gltf+json") ||
+      contentType.includes("application/octet-stream"))
+  ) {
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    setGltfUrl(url);
+    setGeometryLoadResult({
+      status: res.status,
+      ok: true,
+      data: {
+        contentType,
+        size: blob.size,
+      },
+    });
+
+    return;
+  }
+
+  const data = (await res.json()) as ApiResult;
+  setGeometryLoadResult(data);
+}
 
   async function loadElements() {
     const query = new URLSearchParams({
@@ -356,6 +413,43 @@ export default function FuzzyCADHome() {
           </pre>
         </>
       )}
+
+      <h2>Geometry Viewer</h2>
+
+<button
+  onClick={loadAssemblyGeometry}
+  disabled={!selectedAssemblyId}
+  style={{
+    padding: "8px 12px",
+    border: "1px solid #333",
+    borderRadius: 4,
+    cursor: selectedAssemblyId ? "pointer" : "not-allowed",
+    background: selectedAssemblyId ? "#e8ffe8" : "#ddd",
+    marginBottom: 12,
+  }}
+>
+  Load Assembly Geometry
+</button>
+
+<FuzzyCADGeometryViewer gltfUrl={gltfUrl} />
+
+{geometryLoadResult && (
+  <>
+    <h3>Geometry Load Result</h3>
+    <pre
+      style={{
+        marginTop: 16,
+        padding: 16,
+        background: "#f2fff2",
+        overflow: "auto",
+        whiteSpace: "pre-wrap",
+        maxHeight: 280,
+      }}
+    >
+      {JSON.stringify(geometryLoadResult, null, 2)}
+    </pre>
+  </>
+)}
 
       <h2>All URL Parameters</h2>
 
