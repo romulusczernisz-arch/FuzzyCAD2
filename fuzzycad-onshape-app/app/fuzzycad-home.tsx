@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   MeshGraphNode,
   PartPlacement,
@@ -142,29 +142,76 @@ const partGraph = useMemo(() => {
     return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
   }, [partGraph, selectedMeshNode]);
 
-const placements = useMemo<PartPlacement[]>(() => {
-    const g = relationshipGraphResult?.graph as
-      | {
-          occurrences?: { pathKey: string; transform: number[] | null }[];
-          pathMatches?: {
-            occurrencePathKey: string;
-            matchedInstance: { name: string | null } | null;
-          }[];
+
+const [placements, setPlacements] = useState<PartPlacement[]>([]);
+
+ useEffect(() => {
+    const asm = (relationshipGraphResult?.graph as {
+      assembly?: {
+        documentId?: string;
+        workspaceId?: string;
+        assemblyElementId?: string;
+        server?: string;
+      };
+    } | undefined)?.assembly;
+
+    let cancelled = false;
+
+    (async () => {
+      if (!asm?.documentId || !asm?.workspaceId || !asm?.assemblyElementId) {
+        if (!cancelled) setPlacements([]);
+        return;
+      }
+
+      const base = new URLSearchParams({
+        documentId: asm.documentId,
+        workspaceId: asm.workspaceId,
+        assemblyElementId: asm.assemblyElementId,
+        server: asm.server || "https://cad.onshape.com",
+      });
+
+      try {
+        const res = await fetch("/api/onshape/assembly?" + base.toString());
+        const json = await res.json();
+        const def = json?.data ?? json;
+        const root = def?.rootAssembly ?? def;
+        const occurrences = Array.isArray(root?.occurrences) ? root.occurrences : [];
+        const subs = Array.isArray(def?.subAssemblies) ? def.subAssemblies : [];
+
+        const nameById = new Map<string, string>();
+        const add = (arr: unknown) => {
+          if (!Array.isArray(arr)) return;
+          for (const inst of arr) {
+            const i = inst as { id?: unknown; name?: unknown };
+            if (typeof i?.id === "string") {
+              nameById.set(i.id, typeof i.name === "string" ? i.name : i.id);
+            }
+          }
+        };
+        add(root?.instances);
+        for (const s of subs) add((s as { instances?: unknown })?.instances);
+
+        const next: PartPlacement[] = [];
+        for (const o of occurrences) {
+          const occ = o as { transform?: unknown; path?: unknown };
+          if (!Array.isArray(occ.transform) || occ.transform.length !== 16) continue;
+          if (!Array.isArray(occ.path) || occ.path.length === 0) continue;
+          const leafId = occ.path[occ.path.length - 1] as string;
+          next.push({
+            partName: nameById.get(leafId) ?? null,
+            transform: occ.transform as number[],
+          });
         }
-      | undefined;
-    if (!g?.occurrences) return [];
-    const nameByKey = new Map(
-      (g.pathMatches ?? []).map((m) => [
-        m.occurrencePathKey,
-        m.matchedInstance?.name ?? null,
-      ])
-    );
-    return g.occurrences
-      .filter((o) => o.transform && o.transform.length === 16)
-      .map((o) => ({
-        partName: nameByKey.get(o.pathKey) ?? null,
-        transform: o.transform as number[],
-      }));
+
+        if (!cancelled) setPlacements(next);
+      } catch {
+        if (!cancelled) setPlacements([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [relationshipGraphResult]);
 
   function resetGeometryState() {
