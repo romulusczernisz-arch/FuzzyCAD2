@@ -10,12 +10,26 @@ export type PartPlacement = {
   transform: number[]; // Onshape 4x4 行主序，绝对（装配空间）
 };
 
-function normName(s: string | null | undefined): string {
+function sanitize(s: string | null | undefined): string {
   return (s || "")
-    .replace(/\s*<\s*\d+\s*>\s*$/, "")
-    .replace(/_\d+$/, "")
+    .replace(/\s*<\s*\d+\s*>\s*$/, "") // 去掉 Onshape 的 " <2>"
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_") // 非字母数字（含空格）→ 下划线
+    .replace(/^_+|_+$/g, "");
+}
+
+// 组名可能带 three.js 的重复后缀 _N。只有"剥掉后能落回某个已知零件名"才算后缀。
+function groupBaseKey(groupKey: string, baseSet: Set<string>): string | null {
+  if (baseSet.has(groupKey)) return groupKey;
+  let k = groupKey;
+  for (;;) {
+    const m = k.match(/^(.*)_\d+$/);
+    if (!m) break;
+    k = m[1];
+    if (baseSet.has(k)) return k;
+  }
+  return null;
 }
 
 function isAncestor(anc: THREE.Object3D, node: THREE.Object3D): boolean {
@@ -62,55 +76,69 @@ function placeGroup(
   g.matrixWorldNeedsUpdate = true;
 }
 
-function applyPlacements(scene: THREE.Object3D, placements: PartPlacement[]) {
-  if (!placements || placements.length === 0) return;
+function applyPlacements(
+  scene: THREE.Object3D,
+  placements: PartPlacement[]
+): PlacementReport {
+  const report: PlacementReport = {
+    groupCount: 0,
+    placementCount: placements?.length ?? 0,
+    placedByName: 0,
+    placedByOrder: 0,
+    groupNames: [],
+    placementNames: (placements ?? []).map((p) => p.partName),
+  };
+  if (!placements || placements.length === 0) return report;
+
   scene.updateMatrixWorld(true);
-
   const groups = collectPartGroups(scene);
+  report.groupCount = groups.length;
+  report.groupNames = groups.map((g) => g.name);
 
-  const byName = new Map<string, number[][]>();
+  // 已知零件名（instance 叶子名规范化后）-> 该名下所有 transform
+  const byBase = new Map<string, number[][]>();
   for (const p of placements) {
-    const k = normName(p.partName);
-    if (!byName.has(k)) byName.set(k, []);
-    byName.get(k)!.push(p.transform);
+    const k = sanitize(p.partName);
+    if (!k) continue;
+    if (!byBase.has(k)) byBase.set(k, []);
+    byBase.get(k)!.push(p.transform);
   }
+  const baseSet = new Set(byBase.keys());
 
   const sceneInv = scene.matrixWorld.clone().invert();
   const cursor = new Map<string, number>();
   const unmatched: THREE.Object3D[] = [];
-  let placedByName = 0;
 
   for (const g of groups) {
-    const k = normName(g.name);
-    const list = byName.get(k);
-    const i = cursor.get(k) ?? 0;
-    if (!list || i >= list.length) {
+    const base = groupBaseKey(sanitize(g.name), baseSet);
+    if (!base) {
       unmatched.push(g);
       continue;
     }
-    cursor.set(k, i + 1);
+    const list = byBase.get(base)!;
+    const i = cursor.get(base) ?? 0;
+    if (i >= list.length) {
+      unmatched.push(g);
+      continue;
+    }
+    cursor.set(base, i + 1);
     placeGroup(g, list[i], sceneInv);
-    placedByName++;
+    report.placedByName++;
   }
 
   // 兜底：名字没对上的，按顺序配剩下的 transform
   if (unmatched.length > 0) {
     const leftovers: number[][] = [];
-    for (const [k, list] of byName) {
-      const used = cursor.get(k) ?? 0;
+    for (const [b, list] of byBase) {
+      const used = cursor.get(b) ?? 0;
       for (let i = used; i < list.length; i++) leftovers.push(list[i]);
     }
     for (let i = 0; i < unmatched.length && i < leftovers.length; i++) {
       placeGroup(unmatched[i], leftovers[i], sceneInv);
+      report.placedByOrder++;
     }
-    console.warn(
-      `[FuzzyCAD] placement: 按名字摆了 ${placedByName}/${groups.length}，` +
-        `按顺序兜底 ${Math.min(unmatched.length, leftovers.length)}。` +
-        `组名: [${groups.map((g) => g.name).join(", ")}]`
-    );
-  } else {
-    console.log(`[FuzzyCAD] placement: 全部按名字摆好 ${placedByName}/${groups.length}`);
   }
+  return report;
 }
 
 export type MeshGraphNode = {
