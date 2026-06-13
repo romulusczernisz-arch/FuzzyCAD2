@@ -322,6 +322,7 @@ function Model({
     });
 
     applyPlacements(cloned, placements ?? []);
+    cloned.rotation.x = -Math.PI / 2; // Onshape Z-up -> three.js Y-up
     return cloned;
   }, [gltf.scene, placements]);
 
