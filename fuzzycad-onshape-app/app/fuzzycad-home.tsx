@@ -3,7 +3,10 @@
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
+import type {
+  MeshGraphNode,
+  PartPlacement,
+} from "./components/FuzzyCADGeometryViewer";
 import {
   buildPartNodeGraph,
   getLinkedGroup,
@@ -139,7 +142,30 @@ const partGraph = useMemo(() => {
     return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
   }, [partGraph, selectedMeshNode]);
 
-
+const placements = useMemo<PartPlacement[]>(() => {
+    const g = relationshipGraphResult?.graph as
+      | {
+          occurrences?: { pathKey: string; transform: number[] | null }[];
+          pathMatches?: {
+            occurrencePathKey: string;
+            matchedInstance: { name: string | null } | null;
+          }[];
+        }
+      | undefined;
+    if (!g?.occurrences) return [];
+    const nameByKey = new Map(
+      (g.pathMatches ?? []).map((m) => [
+        m.occurrencePathKey,
+        m.matchedInstance?.name ?? null,
+      ])
+    );
+    return g.occurrences
+      .filter((o) => o.transform && o.transform.length === 16)
+      .map((o) => ({
+        partName: nameByKey.get(o.pathKey) ?? null,
+        transform: o.transform as number[],
+      }));
+  }, [relationshipGraphResult]);
 
   function resetGeometryState() {
     setMeshGraph([]);
@@ -533,8 +559,9 @@ const partGraph = useMemo(() => {
         Inspect Geometry ZIP
       </button>
 
-      <FuzzyCADGeometryViewer
+<FuzzyCADGeometryViewer
         gltfUrl={gltfUrl}
+        placements={placements}
         onMeshGraph={setMeshGraph}
         onSelectedNode={setSelectedMeshNode}
       />
