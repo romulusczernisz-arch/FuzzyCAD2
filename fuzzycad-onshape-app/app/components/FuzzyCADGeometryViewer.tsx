@@ -76,6 +76,15 @@ function placeGroup(
   g.matrixWorldNeedsUpdate = true;
 }
 
+export type PlacementReport = {
+  groupCount: number;
+  placementCount: number;
+  placedByName: number;
+  placedByOrder: number;
+  groupNames: string[];
+  placementNames: (string | null)[];
+};
+
 function applyPlacements(
   scene: THREE.Object3D,
   placements: PartPlacement[]
@@ -138,6 +147,9 @@ function applyPlacements(
       report.placedByOrder++;
     }
   }
+  console.log(
+    `[FuzzyCAD] placement: 按名字摆了 ${report.placedByName}/${report.groupCount}，按顺序兜底 ${report.placedByOrder}。组名: [${report.groupNames.join(", ")}]`
+  );
   return report;
 }
 
