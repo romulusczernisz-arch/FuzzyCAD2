@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import styles from "./fuzzycad-home.module.css";
 import FuzzyCADSidebar from "./components/FuzzyCADSidebar";
+import DevPanel from "./components/DevPanel";
 import type {
   MeshGraphNode,
   PartPlacement,
@@ -473,6 +474,18 @@ export default function FuzzyCADHome() {
   setGeometryZipManifest(null);
 }
 
+const devGraphStats = partGraph
+  ? {
+      matched: partGraph.residualStats.matched,
+      total: partGraph.residualStats.total,
+      scale: partGraph.scale,
+      clickedPathKey: selectedMeshNode
+        ? partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—"
+        : null,
+      linkedCount: linkedGroup ? linkedGroup.length : null,
+    }
+  : null;
+
   const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
   return (
@@ -504,127 +517,36 @@ export default function FuzzyCADHome() {
   highlightedPathKey={highlightedPathKey}
   onMeshGraph={setMeshGraph}
   onSelectedNode={setSelectedMeshNode}
-  onSelectedPathKey={(pathKey) => {
-    setHighlightedPathKey(pathKey);
-  }}
+ onSelectedPathKey={setHighlightedPathKey}
 />
       </div>
 
-      {dev ? (
-       <div className={styles.devOverlay}>
-<button
-  onClick={() => {
-    setDev(false);
-  }}
-  className={styles.devCloseButton}
->
-  Close
-</button>
-
-          <h2>Actions</h2>
-
-         <div className={styles.devActions}>
-            <a href={connectHref}>Connect Onshape</a>
-
-            <button onClick={loadElements}>Load Elements</button>
-
-            <button
-              onClick={loadAssemblyDefinition}
-              disabled={!selectedAssemblyId}
-            >
-              Raw Assembly
-            </button>
-
-            <button
-              onClick={loadAssemblySummary}
-              disabled={!selectedAssemblyId}
-            >
-              Summary
-            </button>
-
-            <button
-              onClick={buildRelationshipGraph}
-              disabled={!selectedAssemblyId}
-            >
-              Build Graph
-            </button>
-
-            <button
-              onClick={loadAssemblyGeometry}
-              disabled={!selectedAssemblyId}
-            >
-              Load Geometry
-            </button>
-
-            <button
-              onClick={inspectAssemblyGeometryZip}
-              disabled={!selectedAssemblyId}
-            >
-              Inspect ZIP
-            </button>
-          </div>
-
-{partGraph ? (
-  <p className={styles.devStats}>
-    Matched: {partGraph.residualStats.matched}/
-    {partGraph.residualStats.total} · scale {partGraph.scale}
-    {selectedMeshNode ? (
-      <>
-        {" "}
-        · clicked{" "}
-        {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—"}
-        {linkedGroup ? <> · linked {linkedGroup.length}</> : null}
-      </>
-    ) : null}
-  </p>
-) : null}   
-
-          {meshGraph.length > 0 ? (
-            <p>
-              Objects: {meshGraph.length}; Mesh:{" "}
-              {meshGraph.filter((node) => node.isMesh).length}
-            </p>
-          ) : null}
-
-         {(
-  [
-    ["Relationship Graph", relationshipGraphResult],
-    ["Assembly Summary", assemblySummaryResult],
-    ["Raw Assembly", assemblyResult],
-    ["Elements", elementsResult],
-    ["Geometry Load", geometryLoadResult],
-    ["Geometry ZIP", geometryZipManifest],
-  ] as [string, ApiResult | null][]
-).map(([title, value]) =>
-  value ? (
-    <details key={title} className={styles.debugDetails}>
-      <summary className={styles.debugSummary}>{title}</summary>
-
-      <pre className={styles.debugPre}>
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    </details>
-  ) : null
-)}
-
-         <details className={styles.debugDetails}>
-  <summary className={styles.debugSummary}>
-    All URL Parameters
-  </summary>
-
-  <table className={styles.paramsTable}>
-              <tbody>
-                {allParams.map(([key, value]) => (
-                  <tr key={key}>
-                  <td className={styles.paramsCell}>{key}</td>
-<td className={styles.paramsCell}>{value}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </details>
-        </div>
-      ) : null}
+{dev ? (
+  <DevPanel
+    connectHref={connectHref}
+    selectedAssemblyId={selectedAssemblyId}
+    graphStats={devGraphStats}
+    meshGraph={meshGraph}
+    debugResults={[
+  { title: "Relationship Graph", value: relationshipGraphResult },
+  { title: "Assembly Summary", value: assemblySummaryResult },
+  { title: "Raw Assembly", value: assemblyResult },
+  { title: "Elements", value: elementsResult },
+  { title: "Geometry Load", value: geometryLoadResult },
+  { title: "Geometry ZIP", value: geometryZipManifest },
+]}
+    allParams={allParams}
+    onClose={() => {
+      setDev(false);
+    }}
+    onLoadElements={loadElements}
+    onLoadRawAssembly={loadAssemblyDefinition}
+    onLoadSummary={loadAssemblySummary}
+    onBuildGraph={buildRelationshipGraph}
+    onLoadGeometry={loadAssemblyGeometry}
+    onInspectZip={inspectAssemblyGeometryZip}
+  />
+) : null}
     </main>
   );
 }
