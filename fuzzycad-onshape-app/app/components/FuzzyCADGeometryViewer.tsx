@@ -9,6 +9,7 @@ import { buildMeshGraph, type MeshGraphNode } from "./viewer/meshGraph";
 import { findFuzzyPathKey } from "./viewer/selection";
 import { applyPlacements, type PartPlacement } from "./viewer/placement";
 import { applyPathHighlight } from "./viewer/highlight";
+import { prepareRenderableMeshes } from "./viewer/materials";
 
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
@@ -43,32 +44,14 @@ function Model({
   const graphRef = useRef<MeshGraphNode[]>([]);
 
   const scene = useMemo(() => {
-    const cloned = gltf.scene.clone(true);
+  const cloned = gltf.scene.clone(true);
 
-    cloned.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        object.castShadow = true;
-        object.receiveShadow = true;
-        if (object.material) {
-          if (Array.isArray(object.material)) {
-            object.material = object.material.map((material) => {
-              const m = material.clone();
-              m.side = THREE.DoubleSide;
-              return m;
-            });
-          } else {
-            const m = object.material.clone();
-            m.side = THREE.DoubleSide;
-            object.material = m;
-          }
-        }
-      }
-    });
+  prepareRenderableMeshes(cloned);
+  applyPlacements(cloned, placements ?? []);
+  cloned.rotation.x = -Math.PI / 2;
 
-    applyPlacements(cloned, placements ?? []);
-    cloned.rotation.x = -Math.PI / 2; // Onshape Z-up -> three.js Y-up
-    return cloned;
-  }, [gltf.scene, placements]);
+  return cloned;
+}, [gltf.scene, placements]);
 
   useEffect(() => {
     const graph = buildMeshGraph(scene);
