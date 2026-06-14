@@ -410,12 +410,10 @@ export default function FuzzyCADGeometryViewer({
 
 
   return (
-    <div
+<div
       style={{
         width: "100%",
-        height: 560,
-        border: "1px solid #ccc",
-        borderRadius: 8,
+        height: "100%",
         overflow: "hidden",
         background: "#f6f7f8",
       }}

@@ -15,12 +15,9 @@ import {
   type MatchedInstance,
 } from "./lib/partGraph";
 
-
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
-  {
-    ssr: false,
-  }
+  { ssr: false }
 );
 
 type OnshapeElement = {
@@ -51,7 +48,6 @@ type ApiResult = {
 
 type TreeItem = { pathKey: string; name: string };
 type TreeGroup = { key: string; name: string; items: TreeItem[] };
-
 
 function isElementArray(data: unknown): data is OnshapeElement[] {
   return (
@@ -89,8 +85,14 @@ export default function FuzzyCADHome() {
   const [selectedMeshNode, setSelectedMeshNode] =
     useState<MeshGraphNode | null>(null);
 
+  const [placements, setPlacements] = useState<PartPlacement[]>([]);
+  const [partTree, setPartTree] = useState<TreeGroup[]>([]);
+  const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
+    null
+  );
 
-    
+  const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
+  const [busy, setBusy] = useState(false);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -100,11 +102,7 @@ export default function FuzzyCADHome() {
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
-
-    if (!isElementArray(data)) {
-      return [];
-    }
-
+    if (!isElementArray(data)) return [];
     return data.filter((element) => element.elementType === "ASSEMBLY");
   }, [elementsResult]);
 
@@ -112,11 +110,11 @@ export default function FuzzyCADHome() {
     documentId || ""
   )}&workspaceId=${encodeURIComponent(
     workspaceId || ""
-  )}&elementId=${encodeURIComponent(elementId || "")}&server=${encodeURIComponent(
-    server
-  )}`;
+  )}&elementId=${encodeURIComponent(
+    elementId || ""
+  )}&server=${encodeURIComponent(server)}`;
 
-const partGraph = useMemo(() => {
+  const partGraph = useMemo(() => {
     const g = relationshipGraphResult?.graph as
       | {
           occurrences?: LogicalOccurrence[];
@@ -149,21 +147,20 @@ const partGraph = useMemo(() => {
     return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
   }, [partGraph, selectedMeshNode]);
 
-
-const [placements, setPlacements] = useState<PartPlacement[]>([]);
-const [partTree, setPartTree] = useState<TreeGroup[]>([]);
-const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(null);
-
- 
-useEffect(() => {
-    const asm = (relationshipGraphResult?.graph as {
-      assembly?: {
-        documentId?: string;
-        workspaceId?: string;
-        assemblyElementId?: string;
-        server?: string;
-      };
-    } | undefined)?.assembly;
+  // 装配定义 -> placements + 零件树
+  useEffect(() => {
+    const asm = (
+      relationshipGraphResult?.graph as
+        | {
+            assembly?: {
+              documentId?: string;
+              workspaceId?: string;
+              assemblyElementId?: string;
+              server?: string;
+            };
+          }
+        | undefined
+    )?.assembly;
 
     let cancelled = false;
 
@@ -188,7 +185,9 @@ useEffect(() => {
         const json = await res.json();
         const def = json?.data ?? json;
         const root = def?.rootAssembly ?? def;
-        const occurrences = Array.isArray(root?.occurrences) ? root.occurrences : [];
+        const occurrences = Array.isArray(root?.occurrences)
+          ? root.occurrences
+          : [];
         const subs = Array.isArray(def?.subAssemblies) ? def.subAssemblies : [];
 
         const nameById = new Map<string, string>();
@@ -215,10 +214,11 @@ useEffect(() => {
           const leafId = path[path.length - 1];
           const leafName = nameById.get(leafId) ?? leafId;
 
-          // 树：按子装配分组（顶层 instance 名），叶子每条单列
           const nested = path.length > 1;
           const subKey = nested ? path[0] : "__root__";
-          const subName = nested ? nameById.get(path[0]) ?? path[0] : "(顶层零件)";
+          const subName = nested
+            ? nameById.get(path[0]) ?? path[0]
+            : "(顶层零件)";
           let grp = groupsMap.get(subKey);
           if (!grp) {
             grp = { key: subKey, name: subName, items: [] };
@@ -226,7 +226,6 @@ useEffect(() => {
           }
           grp.items.push({ pathKey, name: leafName });
 
-          // 摆放：需要 16 元 transform
           if (Array.isArray(occ.transform) && occ.transform.length === 16) {
             next.push({
               pathKey,
@@ -253,15 +252,17 @@ useEffect(() => {
     };
   }, [relationshipGraphResult]);
 
+  // 打开就自动拉 elements（没连接会返回空，下面提示连接）
+  useEffect(() => {
+    if (documentId && workspaceId) loadElements();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId, workspaceId]);
 
-
-
-function resetGeometryState() {
+  function resetGeometryState() {
     setMeshGraph([]);
     setSelectedMeshNode(null);
     setHighlightedPathKey(null);
     setGeometryLoadResult(null);
-
     if (gltfUrl) {
       URL.revokeObjectURL(gltfUrl);
       setGltfUrl(null);
@@ -270,7 +271,6 @@ function resetGeometryState() {
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
-
     const query = new URLSearchParams({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
@@ -288,7 +288,6 @@ function resetGeometryState() {
     ) {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-
       setGltfUrl(url);
       setGeometryLoadResult({
         status: res.status,
@@ -299,14 +298,10 @@ function resetGeometryState() {
           zipMode: res.headers.get("x-fuzzycad-zip-mode"),
           extractedFile: res.headers.get("x-fuzzycad-extracted-file"),
           gltfCandidates: res.headers.get("x-fuzzycad-gltf-candidates"),
-          selectedNodes: res.headers.get("x-fuzzycad-selected-nodes"),
-          selectedMeshes: res.headers.get("x-fuzzycad-selected-meshes"),
-          selectedScenes: res.headers.get("x-fuzzycad-selected-scenes"),
           translationId: res.headers.get("x-fuzzycad-translation-id"),
           externalDataId: res.headers.get("x-fuzzycad-external-data-id"),
         },
       });
-
       return;
     }
 
@@ -316,7 +311,6 @@ function resetGeometryState() {
 
   async function inspectAssemblyGeometryZip() {
     setGeometryZipManifest(null);
-
     const query = new URLSearchParams({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
@@ -324,10 +318,8 @@ function resetGeometryState() {
       server,
       debugZip: "1",
     });
-
     const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
-
     setGeometryZipManifest(data);
   }
 
@@ -337,20 +329,15 @@ function resetGeometryState() {
       workspaceId: workspaceId || "",
       server,
     });
-
     const res = await fetch(`/api/onshape/elements?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
-
     setElementsResult(data);
 
     if (data.ok && isElementArray(data.data)) {
       const firstAssembly = data.data.find(
         (element) => element.elementType === "ASSEMBLY"
       );
-
-      if (firstAssembly) {
-        setSelectedAssemblyId(firstAssembly.id);
-      }
+      if (firstAssembly) setSelectedAssemblyId(firstAssembly.id);
     }
   }
 
@@ -361,11 +348,8 @@ function resetGeometryState() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
-
     const res = await fetch(`/api/onshape/assembly?${query.toString()}`);
-    const data = (await res.json()) as ApiResult;
-
-    setAssemblyResult(data);
+    setAssemblyResult((await res.json()) as ApiResult);
   }
 
   async function loadAssemblySummary() {
@@ -375,11 +359,8 @@ function resetGeometryState() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
-
     const res = await fetch(`/api/fuzzycad/assembly-summary?${query.toString()}`);
-    const data = (await res.json()) as ApiResult;
-
-    setAssemblySummaryResult(data);
+    setAssemblySummaryResult((await res.json()) as ApiResult);
   }
 
   async function buildRelationshipGraph() {
@@ -389,285 +370,125 @@ function resetGeometryState() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
-
     const res = await fetch(
       `/api/fuzzycad/relationship-graph?${query.toString()}`
     );
-    const data = (await res.json()) as ApiResult;
-
-    setRelationshipGraphResult(data);
+    setRelationshipGraphResult((await res.json()) as ApiResult);
   }
 
+  // 主操作：一键 建图 + 加载几何
+  async function loadSelectedAssembly() {
+    if (!selectedAssemblyId) return;
+    setBusy(true);
+    try {
+      await Promise.all([buildRelationshipGraph(), loadAssemblyGeometry()]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const connected =
+    oauthStatus === "connected" || assemblyElements.length > 0;
+
   return (
-    <main style={{ padding: 24, fontFamily: "Arial, sans-serif" }}>
-      <h1>FuzzyCAD Dev</h1>
-
-      <p>
-        FuzzyCAD is an Onshape application workspace for exploring
-        uncertainty-aware CAD operations between Part Studios and Assemblies.
-      </p>
-
-      <h2>Current Onshape Context</h2>
-
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <tbody>
-          <tr>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>documentId</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>
-              {documentId}
-            </td>
-          </tr>
-          <tr>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>workspaceId</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>
-              {workspaceId}
-            </td>
-          </tr>
-          <tr>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>elementId</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>
-              {elementId}
-            </td>
-          </tr>
-          <tr>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>server</td>
-            <td style={{ border: "1px solid #ccc", padding: 8 }}>{server}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>Onshape Connection</h2>
-
-      <p>
-        Status:{" "}
-        <strong>
-          {oauthStatus === "connected" ? "Connected" : "Not connected"}
-        </strong>
-      </p>
-
-      <a
-        href={connectHref}
+    <main
+      style={{
+        position: "fixed",
+        inset: 0,
+        display: "flex",
+        fontFamily: "Arial, sans-serif",
+        overflow: "hidden",
+      }}
+    >
+      {/* 左侧栏 */}
+      <aside
         style={{
-          display: "inline-block",
-          padding: "8px 12px",
-          border: "1px solid #999",
-          borderRadius: 4,
-          textDecoration: "none",
-          color: "black",
-          background: "#f5f5f5",
-          marginBottom: 16,
+          width: 280,
+          flexShrink: 0,
+          height: "100%",
+          boxSizing: "border-box",
+          borderRight: "1px solid #e3e3e3",
+          background: "#fafafa",
+          padding: 12,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
         }}
       >
-        Connect Onshape
-      </a>
+        <div style={{ fontWeight: 700 }}>FuzzyCAD</div>
 
-      <h2>Document Elements</h2>
-
-      <button
-        onClick={loadElements}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #999",
-          borderRadius: 4,
-          cursor: "pointer",
-          marginRight: 8,
-        }}
-      >
-        Load Document Elements
-      </button>
-
-      {assemblyElements.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <label htmlFor="assembly-select">
-            <strong>Select Assembly: </strong>
-          </label>
-
-          <select
-            id="assembly-select"
-            value={selectedAssemblyId}
-            onChange={(event) => {
-              setSelectedAssemblyId(event.target.value);
-              resetGeometryState();
-              setGeometryZipManifest(null);
+        {!connected && (
+          
+            href={connectHref}
+            style={{
+              display: "block",
+              textAlign: "center",
+              padding: "8px 12px",
+              border: "1px solid #999",
+              borderRadius: 6,
+              textDecoration: "none",
+              color: "#000",
+              background: "#fff",
             }}
-            style={{ padding: 6, minWidth: 360 }}
           >
-            {assemblyElements.map((assembly) => (
-              <option key={assembly.id} value={assembly.id}>
-                {assembly.name} — {assembly.id}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+            连接 Onshape
+          </a>
+        )}
 
-      {elementsResult && (
-        <pre
+        {assemblyElements.length > 0 ? (
+          <>
+            <label style={{ fontSize: 12, color: "#666" }}>装配</label>
+            <select
+              value={selectedAssemblyId}
+              onChange={(e) => {
+                setSelectedAssemblyId(e.target.value);
+                resetGeometryState();
+                setGeometryZipManifest(null);
+              }}
+              style={{ padding: 6, width: "100%" }}
+            >
+              {assemblyElements.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+
+            <button
+              onClick={loadSelectedAssembly}
+              disabled={!selectedAssemblyId || busy}
+              style={{
+                padding: "9px 12px",
+                border: "1px solid #2b6cff",
+                borderRadius: 6,
+                cursor: selectedAssemblyId && !busy ? "pointer" : "not-allowed",
+                background: selectedAssemblyId && !busy ? "#2b6cff" : "#bcd0ff",
+                color: "#fff",
+                fontWeight: 600,
+              }}
+            >
+              {busy ? "加载中…" : "加载装配"}
+            </button>
+          </>
+        ) : (
+          <p style={{ fontSize: 13, color: "#888" }}>
+            {connected ? "没找到装配。" : "请先连接 Onshape。"}
+          </p>
+        )}
+
+        {/* 零件树 */}
+        <div
           style={{
-            marginTop: 16,
-            padding: 16,
-            background: "#f5f5f5",
+            flex: 1,
             overflow: "auto",
-            whiteSpace: "pre-wrap",
-            maxHeight: 280,
-          }}
-        >
-          {JSON.stringify(elementsResult, null, 2)}
-        </pre>
-      )}
-
-      <h2>Assembly Data</h2>
-
-      <button
-        onClick={loadAssemblyDefinition}
-        disabled={!selectedAssemblyId}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #999",
-          borderRadius: 4,
-          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-          background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
-          marginRight: 8,
-        }}
-      >
-        Load Raw Assembly Definition
-      </button>
-
-      <button
-        onClick={loadAssemblySummary}
-        disabled={!selectedAssemblyId}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #999",
-          borderRadius: 4,
-          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-          background: selectedAssemblyId ? "#f5f5f5" : "#ddd",
-          marginRight: 8,
-        }}
-      >
-        Load Assembly Summary
-      </button>
-
-      <button
-        onClick={buildRelationshipGraph}
-        disabled={!selectedAssemblyId}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #333",
-          borderRadius: 4,
-          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-          background: selectedAssemblyId ? "#eaf2ff" : "#ddd",
-        }}
-      >
-        Build FuzzyCAD Relationship Graph
-      </button>
-
-      {relationshipGraphResult && (
-        <>
-          <h3>FuzzyCAD Relationship Graph</h3>
-          <pre
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: "#eaf2ff",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              maxHeight: 520,
-            }}
-          >
-            {JSON.stringify(relationshipGraphResult, null, 2)}
-          </pre>
-        </>
-      )}
-
-      {assemblySummaryResult && (
-        <>
-          <h3>Assembly Summary</h3>
-          <pre
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: "#eef7ff",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              maxHeight: 360,
-            }}
-          >
-            {JSON.stringify(assemblySummaryResult, null, 2)}
-          </pre>
-        </>
-      )}
-
-      {assemblyResult && (
-        <>
-          <h3>Raw Assembly Definition</h3>
-          <pre
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: "#f5f5f5",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              maxHeight: 360,
-            }}
-          >
-            {JSON.stringify(assemblyResult, null, 2)}
-          </pre>
-        </>
-      )}
-
-      <h2>Geometry Viewer</h2>
-
-      <button
-        onClick={loadAssemblyGeometry}
-        disabled={!selectedAssemblyId}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #333",
-          borderRadius: 4,
-          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-          background: selectedAssemblyId ? "#e8ffe8" : "#ddd",
-          marginBottom: 12,
-        }}
-      >
-        Load Assembly Geometry
-      </button>
-
-      <button
-        onClick={inspectAssemblyGeometryZip}
-        disabled={!selectedAssemblyId}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #333",
-          borderRadius: 4,
-          cursor: selectedAssemblyId ? "pointer" : "not-allowed",
-          background: selectedAssemblyId ? "#fff7e6" : "#ddd",
-          marginLeft: 8,
-          marginBottom: 12,
-        }}
-      >
-        Inspect Geometry ZIP
-      </button>
-
-<div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <aside
-          style={{
-            width: 260,
-            flexShrink: 0,
-            maxHeight: 560,
-            overflow: "auto",
-            border: "1px solid #ccc",
-            borderRadius: 8,
-            padding: 10,
+            marginTop: 4,
+            borderTop: "1px solid #e3e3e3",
+            paddingTop: 8,
             fontSize: 13,
-            background: "#fafafa",
           }}
         >
-          <strong style={{ display: "block", marginBottom: 6 }}>零件</strong>
           {partTree.length === 0 ? (
-            <p style={{ color: "#888", margin: 0 }}>
-              先 Build Relationship Graph，再 Load Assembly Geometry。
-            </p>
+            <p style={{ color: "#aaa", margin: 0 }}>加载后这里显示零件。</p>
           ) : (
             partTree.map((grp) => (
               <details key={grp.key} open>
@@ -702,258 +523,188 @@ function resetGeometryState() {
               </details>
             ))
           )}
-        </aside>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <FuzzyCADGeometryViewer
-            gltfUrl={gltfUrl}
-            placements={placements}
-            highlightedPathKey={highlightedPathKey}
-            onMeshGraph={setMeshGraph}
-            onSelectedNode={setSelectedMeshNode}
-          />
         </div>
+
+        <button
+          onClick={() => setDev((v) => !v)}
+          style={{
+            padding: "6px 10px",
+            border: "1px solid #ccc",
+            borderRadius: 6,
+            background: "#fff",
+            cursor: "pointer",
+            fontSize: 12,
+            color: "#666",
+          }}
+        >
+          {dev ? "隐藏调试面板" : "调试面板"}
+        </button>
+      </aside>
+
+      {/* 右侧 3D 充满 */}
+      <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
+        <FuzzyCADGeometryViewer
+          gltfUrl={gltfUrl}
+          placements={placements}
+          highlightedPathKey={highlightedPathKey}
+          onMeshGraph={setMeshGraph}
+          onSelectedNode={setSelectedMeshNode}
+        />
       </div>
 
-      {meshGraph.length > 0 && (
-        <>
-          <h3>Mesh Graph Inspector</h3>
-
-          <p>
-            Total objects: <strong>{meshGraph.length}</strong>; Mesh objects:{" "}
-            <strong>{meshGraph.filter((node) => node.isMesh).length}</strong>
-          </p>
-
-          {selectedMeshNode && (
-            <div
-              style={{
-                padding: 12,
-                marginBottom: 12,
-                background: "#fff7e6",
-                border: "1px solid #e0c27a",
-                borderRadius: 6,
-              }}
-            >
-              <strong>Selected Mesh/Object</strong>
-              <pre
-                style={{
-                  marginTop: 8,
-                  whiteSpace: "pre-wrap",
-                  overflow: "auto",
-                  maxHeight: 240,
-                }}
-              >
-                {JSON.stringify(selectedMeshNode, null, 2)}
-              </pre>
-            </div>
-          )}
-
-          <div
+      {/* 调试覆盖层：原来那一整套都搬这里 */}
+      {dev && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(255,255,255,0.98)",
+            overflow: "auto",
+            padding: 24,
+            zIndex: 10,
+          }}
+        >
+          <button
+            onClick={() => setDev(false)}
             style={{
-              overflow: "auto",
-              maxHeight: 420,
-              border: "1px solid #ccc",
+              float: "right",
+              padding: "6px 12px",
+              border: "1px solid #999",
+              borderRadius: 6,
+              cursor: "pointer",
             }}
           >
-            <table
+            关闭
+          </button>
+
+          <h1>FuzzyCAD Dev</h1>
+
+          <h2>Current Onshape Context</h2>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <tbody>
+              {[
+                ["documentId", documentId],
+                ["workspaceId", workspaceId],
+                ["elementId", elementId],
+                ["server", server],
+              ].map(([k, v]) => (
+                <tr key={k as string}>
+                  <td style={{ border: "1px solid #ccc", padding: 8 }}>{k}</td>
+                  <td style={{ border: "1px solid #ccc", padding: 8 }}>{v}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h2>Actions</h2>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            
+              href={connectHref}
               style={{
-                borderCollapse: "collapse",
-                width: "100%",
-                fontSize: 12,
+                padding: "8px 12px",
+                border: "1px solid #999",
+                borderRadius: 4,
+                textDecoration: "none",
+                color: "black",
+                background: "#f5f5f5",
               }}
             >
-              <thead>
-                <tr>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>#</th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Name</th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Type</th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
-                    Parent
-                  </th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Mesh</th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
-                    Material
-                  </th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
-                    Vertices
-                  </th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
-                    Triangles
-                  </th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>
-                    World Pos
-                  </th>
-                  <th style={{ border: "1px solid #ccc", padding: 6 }}>Path</th>
-                </tr>
-              </thead>
+              Connect Onshape
+            </a>
+            <button onClick={loadElements}>Load Document Elements</button>
+            <button onClick={loadAssemblyDefinition} disabled={!selectedAssemblyId}>
+              Load Raw Assembly Definition
+            </button>
+            <button onClick={loadAssemblySummary} disabled={!selectedAssemblyId}>
+              Load Assembly Summary
+            </button>
+            <button onClick={buildRelationshipGraph} disabled={!selectedAssemblyId}>
+              Build Relationship Graph
+            </button>
+            <button onClick={loadAssemblyGeometry} disabled={!selectedAssemblyId}>
+              Load Assembly Geometry
+            </button>
+            <button onClick={inspectAssemblyGeometryZip} disabled={!selectedAssemblyId}>
+              Inspect Geometry ZIP
+            </button>
+          </div>
 
+          {partGraph && (
+            <p style={{ marginTop: 16 }}>
+              Matched parts:{" "}
+              <strong>
+                {partGraph.residualStats.matched}/{partGraph.residualStats.total}
+              </strong>{" "}
+              · mean residual:{" "}
+              <strong>{partGraph.residualStats.mean.toFixed(5)}</strong> · scale:{" "}
+              <strong>{partGraph.scale}</strong>
+              {selectedMeshNode && (
+                <>
+                  {" "}
+                  · clicked:{" "}
+                  <strong>
+                    {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ??
+                      "(no match)"}
+                  </strong>
+                  {linkedGroup ? <> · linked: {linkedGroup.length}</> : null}
+                </>
+              )}
+            </p>
+          )}
+
+          {meshGraph.length > 0 && (
+            <p>
+              Total objects: <strong>{meshGraph.length}</strong>; Mesh:{" "}
+              <strong>{meshGraph.filter((n) => n.isMesh).length}</strong>
+            </p>
+          )}
+
+          {[
+            ["Relationship Graph", relationshipGraphResult],
+            ["Assembly Summary", assemblySummaryResult],
+            ["Raw Assembly", assemblyResult],
+            ["Elements", elementsResult],
+            ["Geometry Load", geometryLoadResult],
+            ["Geometry ZIP", geometryZipManifest],
+          ].map(([title, val]) =>
+            val ? (
+              <details key={title as string} style={{ marginTop: 12 }}>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                  {title as string}
+                </summary>
+                <pre
+                  style={{
+                    padding: 12,
+                    background: "#f5f5f5",
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    maxHeight: 360,
+                  }}
+                >
+                  {JSON.stringify(val, null, 2)}
+                </pre>
+              </details>
+            ) : null
+          )}
+
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+              All URL Parameters
+            </summary>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <tbody>
-                {meshGraph.slice(0, 300).map((node, index) => (
-                  <tr
-                    key={node.nodeId}
-                    style={{
-                      background:
-                        selectedMeshNode?.nodeId === node.nodeId
-                          ? "#fff7e6"
-                          : node.isMesh
-                            ? "#ffffff"
-                            : "#f7f7f7",
-                    }}
-                  >
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {index}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.name || "(unnamed)"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.type}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.parentName || "—"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.isMesh ? "yes" : "no"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.materialName || "—"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.vertexCount ?? "—"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.triangleCount ?? "—"}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.worldPosition.x.toFixed(3)},{" "}
-                      {node.worldPosition.y.toFixed(3)},{" "}
-                      {node.worldPosition.z.toFixed(3)}
-                    </td>
-                    <td style={{ border: "1px solid #ccc", padding: 6 }}>
-                      {node.path}
+                {allParams.map(([key, value]) => (
+                  <tr key={key}>
+                    <td style={{ border: "1px solid #ccc", padding: 8 }}>{key}</td>
+                    <td style={{ border: "1px solid #ccc", padding: 8 }}>
+                      {value}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-
-          {meshGraph.length > 300 && (
-            <p style={{ fontSize: 12 }}>
-              Showing first 300 objects only. Full count: {meshGraph.length}.
-            </p>
-          )}
-        </>
-      )}
-
-      {geometryLoadResult && (
-        <>
-          <h3>Geometry Load Result</h3>
-          <pre
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: "#f2fff2",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              maxHeight: 280,
-            }}
-          >
-            {JSON.stringify(geometryLoadResult, null, 2)}
-          </pre>
-        </>
-      )}
-
-      {geometryZipManifest && (
-        <>
-          <h3>Geometry ZIP Manifest</h3>
-          <pre
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: "#fff7e6",
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              maxHeight: 520,
-            }}
-          >
-            {JSON.stringify(geometryZipManifest, null, 2)}
-          </pre>
-        </>
-      )}
-
-      <h2>FuzzyCAD Part Graph</h2>
-      {!partGraph ? (
-        <p>Build the relationship graph and load geometry first.</p>
-      ) : (
-        <div
-          style={{
-            padding: 12,
-            background: "#f0f7ff",
-            border: "1px solid #b8d4f0",
-            borderRadius: 6,
-            marginBottom: 16,
-          }}
-        >
-          <p>
-            Matched parts:{" "}
-            <strong>
-              {partGraph.residualStats.matched}/{partGraph.residualStats.total}
-            </strong>{" "}
-            · mean residual:{" "}
-            <strong>{partGraph.residualStats.mean.toFixed(5)}</strong> · scale:{" "}
-            <strong>{partGraph.scale}</strong> · mate edges:{" "}
-            <strong>
-              {
-                (
-                  (relationshipGraphResult?.graph as { mateEdges?: unknown[] })
-                    ?.mateEdges ?? []
-                ).length
-              }
-            </strong>
-          </p>
-
-          {selectedMeshNode && (
-            <p>
-              Clicked part:{" "}
-              <strong>
-                {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "(no match)"}
-              </strong>
-              {linkedGroup ? (
-                <>
-                  {" "}
-                  · linked parts: <strong>{linkedGroup.length}</strong>
-                </>
-              ) : null}
-            </p>
-          )}
+          </details>
         </div>
-      )}
-
-      <h2>All URL Parameters</h2>
-
-      {allParams.length === 0 ? (
-        <p>No query parameters received yet.</p>
-      ) : (
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              <th style={{ border: "1px solid #ccc", padding: 8 }}>Key</th>
-              <th style={{ border: "1px solid #ccc", padding: 8 }}>Value</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {allParams.map(([key, value]) => (
-              <tr key={key}>
-                <td style={{ border: "1px solid #ccc", padding: 8 }}>{key}</td>
-                <td style={{ border: "1px solid #ccc", padding: 8 }}>
-                  {value}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       )}
     </main>
   );
