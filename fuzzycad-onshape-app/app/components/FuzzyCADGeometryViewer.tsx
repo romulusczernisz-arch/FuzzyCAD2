@@ -4,6 +4,7 @@ import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { Bounds, Center, OrbitControls, useGLTF } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import styles from "./FuzzyCADGeometryViewer.module.css";
 
 export type PartPlacement = {
   pathKey: string;
@@ -432,19 +433,12 @@ export default function FuzzyCADGeometryViewer({
 }: FuzzyCADGeometryViewerProps) {
 
 
-  return (
-<div
-      style={{
-        width: "100%",
-        height: "100%",
-        overflow: "hidden",
-        background: "#f6f7f8",
-      }}
-    >
+ return (
+  <div className={styles.root}>
       {!gltfUrl ? (
-        <div style={{ padding: 16 }}>
-          No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
-        </div>
+       <div className={styles.emptyState}>
+  No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
+</div>
       ) : (
         <Canvas
           camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
