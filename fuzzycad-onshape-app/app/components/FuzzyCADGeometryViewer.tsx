@@ -335,21 +335,19 @@ function Model({
       if (object instanceof THREE.Mesh) {
         object.castShadow = true;
         object.receiveShadow = true;
-       if (object.material) {
-  if (Array.isArray(object.material)) {
-    object.material = object.material.map((material) => {
-      const m = material.clone();
-      m.side = THREE.DoubleSide;
-      m.wireframe = true;
-      return m;
-    });
-  } else {
-    const m = object.material.clone();
-    m.side = THREE.DoubleSide;
-    m.wireframe = true;
-    object.material = m;
-  }
-}
+        if (object.material) {
+          if (Array.isArray(object.material)) {
+            object.material = object.material.map((material) => {
+              const m = material.clone();
+              m.side = THREE.DoubleSide;
+              return m;
+            });
+          } else {
+            const m = object.material.clone();
+            m.side = THREE.DoubleSide;
+            object.material = m;
+          }
+        }
       }
     });
 
