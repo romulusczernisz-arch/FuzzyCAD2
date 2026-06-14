@@ -639,13 +639,16 @@ export default function FuzzyCADHome() {
       </aside>
 
       <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
-        <FuzzyCADGeometryViewer
-          gltfUrl={gltfUrl}
-          placements={placements}
-          highlightedPathKey={highlightedPathKey}
-          onMeshGraph={setMeshGraph}
-          onSelectedNode={setSelectedMeshNode}
-        />
+<FuzzyCADGeometryViewer
+  gltfUrl={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  onMeshGraph={setMeshGraph}
+  onSelectedNode={setSelectedMeshNode}
+  onSelectedPathKey={(pathKey) => {
+    setHighlightedPathKey(pathKey);
+  }}
+/>
       </div>
 
       {dev ? (

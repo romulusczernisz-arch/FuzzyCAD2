@@ -195,7 +195,24 @@ type FuzzyCADGeometryViewerProps = {
   highlightedPathKey?: string | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
+  onSelectedPathKey?: (pathKey: string | null) => void;
 };
+
+function findFuzzyPathKey(object: THREE.Object3D): string | null {
+  let current: THREE.Object3D | null = object;
+
+  while (current) {
+    const pathKey = current.userData?.fuzzyPathKey;
+
+    if (typeof pathKey === "string" && pathKey.length > 0) {
+      return pathKey;
+    }
+
+    current = current.parent;
+  }
+
+  return null;
+}
 
 function getObjectPath(object: THREE.Object3D): string {
   const names: string[] = [];
@@ -299,12 +316,14 @@ function Model({
   highlightedPathKey,
   onMeshGraph,
   onSelectedNode,
+  onSelectedPathKey,
 }: {
   url: string;
   placements?: PartPlacement[];
   highlightedPathKey?: string | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
+  onSelectedPathKey?: (pathKey: string | null) => void;
 }) {
   const gltf = useGLTF(url);
   const graphRef = useRef<MeshGraphNode[]>([]);
@@ -385,17 +404,20 @@ useEffect(() => {
     for (const t of targets) applyEmissive(t, 0x2b6cff, 0.7);
   }, [scene, highlightedPathKey]);
 
-  function handlePointerDown(event: ThreeEvent<PointerEvent>) {
-    event.stopPropagation();
+function handlePointerDown(event: ThreeEvent<PointerEvent>) {
+  event.stopPropagation();
 
-    const selectedObject = event.object;
-    const graph = graphRef.current;
+  const selectedObject = event.object;
+  const graph = graphRef.current;
 
-    const selectedNode =
-      graph.find((node) => node.nodeId === selectedObject.uuid) ?? null;
+  const selectedNode =
+    graph.find((node) => node.nodeId === selectedObject.uuid) ?? null;
 
-    onSelectedNode?.(selectedNode);
-  }
+  const selectedPathKey = findFuzzyPathKey(selectedObject);
+
+  onSelectedNode?.(selectedNode);
+  onSelectedPathKey?.(selectedPathKey);
+}
 
   return <primitive object={scene} onPointerDown={handlePointerDown} />;
 }
@@ -406,6 +428,7 @@ export default function FuzzyCADGeometryViewer({
   highlightedPathKey,
   onMeshGraph,
   onSelectedNode,
+  onSelectedPathKey,
 }: FuzzyCADGeometryViewerProps) {
 
 
@@ -437,12 +460,13 @@ export default function FuzzyCADGeometryViewer({
             <Bounds fit clip observe margin={1.2}>
               <Center>
 <Model
-                  url={gltfUrl}
-                  placements={placements}
-                  highlightedPathKey={highlightedPathKey}
-                  onMeshGraph={onMeshGraph}
-                  onSelectedNode={onSelectedNode}
-                />
+  url={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  onMeshGraph={onMeshGraph}
+  onSelectedNode={onSelectedNode}
+  onSelectedPathKey={onSelectedPathKey}
+/>
               </Center>
             </Bounds>
           </Suspense>
