@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import styles from "./fuzzycad-home.module.css";
+import FuzzyCADSidebar from "./components/FuzzyCADSidebar";
 import type {
   MeshGraphNode,
   PartPlacement,
@@ -15,7 +16,7 @@ import {
   type LogicalMateEdge,
   type MatchedInstance,
 } from "./lib/partGraph";
-import PartTree, { type TreeGroup } from "./components/PartTree";
+import { type TreeGroup } from "./components/PartTree";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -253,7 +254,7 @@ export default function FuzzyCADHome() {
           const groupKey = nested ? path[0] : "__root__";
           const groupName = nested
             ? nameById.get(path[0]) ?? path[0]
-            : "(顶层零件)";
+            : "Main";
 
           let group = groupsMap.get(groupKey);
 
@@ -466,68 +467,35 @@ export default function FuzzyCADHome() {
     }
   }
 
+  function handleAssemblyChange(assemblyId: string) {
+  setSelectedAssemblyId(assemblyId);
+  resetGeometryState();
+  setGeometryZipManifest(null);
+}
+
   const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
   return (
 <main className={styles.root}>
-      <aside className={styles.sidebar}>
-       <div className={styles.brand}>FuzzyCAD</div>
-
-        {!connected ? (
-         <a href={connectHref} className={styles.connectButton}>
-  Connect to Onshape
-</a>
-        ) : null}
-
-        {assemblyElements.length > 0 ? (
-          <>
-           <label className={styles.assemblyLabel}>Assembly</label>
-
-<select
-  value={selectedAssemblyId}
-  onChange={(event) => {
-    setSelectedAssemblyId(event.target.value);
-    resetGeometryState();
-    setGeometryZipManifest(null);
-  }}
-  className={styles.assemblySelect}
->
-              {assemblyElements.map((assembly) => (
-                <option key={assembly.id} value={assembly.id}>
-                  {assembly.name}
-                </option>
-              ))}
-            </select>
-
-<button
-  onClick={loadSelectedAssembly}
-  disabled={!selectedAssemblyId || busy}
-  className={styles.primaryButton}
->
-  {busy ? "Loading..." : "Loading assembly"}
-</button>
-          </>
-        ) : (
-          <p className={styles.emptyMessage}>
-  {connected ? "Assembly not found." : "Please connect Onshape first."}
-</p>
-        )}
-
-<PartTree
-  groups={partTree}
-  selectedPathKey={highlightedPathKey}
+      
+<FuzzyCADSidebar
+  connected={connected}
+  connectHref={connectHref}
+  assemblyElements={assemblyElements}
+  selectedAssemblyId={selectedAssemblyId}
+  busy={busy}
+  partTree={partTree}
+  highlightedPathKey={highlightedPathKey}
+  dev={dev}
+  onAssemblyChange={handleAssemblyChange}
+  onLoadAssembly={loadSelectedAssembly}
   onSelectPathKey={setHighlightedPathKey}
-/>
-
-        <button
-  onClick={() => {
+  onToggleDev={() => {
     setDev((value) => !value);
   }}
-  className={styles.secondaryButton}
->
-  {dev ? "Hide Debug Panel" : "Debug Panel"}
-</button>
-      </aside>
+/>
+
+      
 
 <div className={styles.viewerPane}>
   <FuzzyCADGeometryViewer
