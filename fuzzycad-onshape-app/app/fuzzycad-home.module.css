@@ -1,1 +1,165 @@
-fuzzycad-home.module.css
+.root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  font-family: Arial, sans-serif;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  height: 100%;
+  box-sizing: border-box;
+  border-right: 1px solid #e3e3e3;
+  background: #fafafa;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.brand {
+  font-weight: 700;
+}
+
+.connectButton {
+  display: block;
+  text-align: center;
+  padding: 8px 12px;
+  border: 1px solid #999;
+  border-radius: 6px;
+  text-decoration: none;
+  color: #000;
+  background: #fff;
+}
+
+.assemblyLabel {
+  font-size: 12px;
+  color: #666;
+}
+
+.assemblySelect {
+  padding: 6px;
+  width: 100%;
+}
+
+.primaryButton {
+  padding: 9px 12px;
+  border: 1px solid #2b6cff;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #2b6cff;
+  color: #fff;
+  font-weight: 600;
+}
+
+.primaryButton:disabled {
+  cursor: not-allowed;
+  background: #bcd0ff;
+}
+
+.emptyMessage {
+  font-size: 13px;
+  color: #888;
+}
+
+.partTree {
+  flex: 1;
+  overflow: auto;
+  margin-top: 4px;
+  border-top: 1px solid #e3e3e3;
+  padding-top: 8px;
+  font-size: 13px;
+}
+
+.partTreeEmpty {
+  color: #aaa;
+  margin: 0;
+}
+
+.partGroupSummary {
+  cursor: pointer;
+  font-weight: 600;
+  margin: 6px 0;
+}
+
+.partItem {
+  cursor: pointer;
+  padding: 3px 8px;
+  margin-left: 8px;
+  border-radius: 4px;
+  background: transparent;
+  color: #222;
+}
+
+.partItemSelected {
+  background: #2b6cff;
+  color: #fff;
+}
+
+.secondaryButton {
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  color: #666;
+}
+
+.viewerPane {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.devOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.98);
+  overflow: auto;
+  padding: 24px;
+  z-index: 10;
+}
+
+.devCloseButton {
+  float: right;
+  padding: 6px 12px;
+  border: 1px solid #999;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.devActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.debugDetails {
+  margin-top: 12px;
+}
+
+.debugSummary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.debugPre {
+  padding: 12px;
+  background: #f5f5f5;
+  overflow: auto;
+  white-space: pre-wrap;
+  max-height: 360px;
+}
+
+.paramsTable {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.paramsCell {
+  border: 1px solid #ccc;
+  padding: 8px;
+}
