@@ -18,6 +18,16 @@ import {
   type MatchedInstance,
 } from "./lib/partGraph";
 import { type TreeGroup } from "./components/PartTree";
+import {
+  fetchFuzzycadAssemblySummary,
+  fetchFuzzycadRelationshipGraph,
+  fetchOnshapeAssembly,
+  fetchOnshapeAssemblyGltf,
+  fetchOnshapeAssemblyZipManifest,
+  fetchOnshapeElements,
+  type ApiResult,
+  type OnshapeElement,
+} from "./lib/onshapeClient";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -26,31 +36,7 @@ const FuzzyCADGeometryViewer = dynamic(
   }
 );
 
-type OnshapeElement = {
-  id: string;
-  name: string;
-  type?: string;
-  elementType?: string;
-  dataType?: string;
-};
 
-type ApiResult = {
-  endpoint?: string;
-  status?: number;
-  ok?: boolean;
-  data?: unknown;
-  graph?: unknown;
-  error?: string;
-  action?: string;
-  details?: unknown;
-  counts?: unknown;
-  occurrencesPreview?: unknown;
-  instancesPreview?: unknown;
-  featuresPreview?: unknown;
-  manifest?: unknown;
-  mode?: string;
-  message?: string;
-};
 
 
 
@@ -190,19 +176,26 @@ export default function FuzzyCADHome() {
         return;
       }
 
-      const base = new URLSearchParams({
-        documentId: asm.documentId,
-        workspaceId: asm.workspaceId,
-        assemblyElementId: asm.assemblyElementId,
-        server: asm.server || "https://cad.onshape.com",
-      });
 
-      try {
-        const res = await fetch("/api/onshape/assembly?" + base.toString());
-        const json = await res.json();
 
-        const def = json?.data ?? json;
-        const root = def?.rootAssembly ?? def;
+try {
+  const json = await fetchOnshapeAssembly({
+    documentId: asm.documentId,
+    workspaceId: asm.workspaceId,
+    assemblyElementId: asm.assemblyElementId,
+    server: asm.server || "https://cad.onshape.com",
+  });
+
+const def = (json?.data ?? json) as {
+  rootAssembly?: unknown;
+  subAssemblies?: unknown;
+};
+const root = (def.rootAssembly ?? def) as {
+  occurrences?: unknown;
+  instances?: unknown;
+};
+
+
         const occurrences = Array.isArray(root?.occurrences)
           ? root.occurrences
           : [];
@@ -324,14 +317,12 @@ export default function FuzzyCADHome() {
   async function loadAssemblyGeometry() {
     resetGeometryState();
 
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
-
-    const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
+const res = await fetchOnshapeAssemblyGltf({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+});
     const contentType = res.headers.get("content-type") || "";
 
     if (
@@ -370,29 +361,22 @@ export default function FuzzyCADHome() {
   async function inspectAssemblyGeometryZip() {
     setGeometryZipManifest(null);
 
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-      debugZip: "1",
-    });
+const data = await fetchOnshapeAssemblyZipManifest({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+});
 
-    const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
-    const data = (await res.json()) as ApiResult;
-
-    setGeometryZipManifest(data);
+setGeometryZipManifest(data);
   }
 
   async function loadElements() {
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      server,
-    });
-
-    const res = await fetch(`/api/onshape/elements?${query.toString()}`);
-    const data = (await res.json()) as ApiResult;
+const data = await fetchOnshapeElements({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  server,
+});
 
     setElementsResult(data);
 
@@ -408,49 +392,36 @@ export default function FuzzyCADHome() {
   }
 
   async function loadAssemblyDefinition() {
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+   const data = await fetchOnshapeAssembly({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+});
 
-    const res = await fetch(`/api/onshape/assembly?${query.toString()}`);
-    const data = (await res.json()) as ApiResult;
-
-    setAssemblyResult(data);
+setAssemblyResult(data);
   }
 
   async function loadAssemblySummary() {
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+   const data = await fetchFuzzycadAssemblySummary({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+});
 
-    const res = await fetch(
-      `/api/fuzzycad/assembly-summary?${query.toString()}`
-    );
-    const data = (await res.json()) as ApiResult;
-
-    setAssemblySummaryResult(data);
+setAssemblySummaryResult(data);
   }
 
   async function buildRelationshipGraph() {
-    const query = new URLSearchParams({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+const data = await fetchFuzzycadRelationshipGraph({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+});
 
-    const res = await fetch(
-      `/api/fuzzycad/relationship-graph?${query.toString()}`
-    );
-    const data = (await res.json()) as ApiResult;
-
-    setRelationshipGraphResult(data);
+setRelationshipGraphResult(data);
   }
 
   async function loadSelectedAssembly() {
