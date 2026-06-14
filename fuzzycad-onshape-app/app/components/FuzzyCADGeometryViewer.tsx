@@ -8,6 +8,7 @@ import styles from "./FuzzyCADGeometryViewer.module.css";
 import { buildMeshGraph, type MeshGraphNode } from "./viewer/meshGraph";
 import { findFuzzyPathKey } from "./viewer/selection";
 import { applyPlacements, type PartPlacement } from "./viewer/placement";
+import { applyPathHighlight } from "./viewer/highlight";
 
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
@@ -76,46 +77,9 @@ function Model({
     onSelectedNode?.(null);
   }, [scene, onMeshGraph, onSelectedNode]);
 
-  // 点树 -> 高亮对应零件（改 emissive，可逆，不破坏原材质）
   useEffect(() => {
-    const applyEmissive = (
-      root: THREE.Object3D,
-      hex: number | null,
-      intensity: number,
-    ) => {
-      root.traverse((o) => {
-        if (!(o instanceof THREE.Mesh)) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-          const mm = m as THREE.MeshStandardMaterial;
-          if (!mm || !mm.emissive) continue;
-          if (mm.userData.fuzzyOrigEmissive === undefined) {
-            mm.userData.fuzzyOrigEmissive = mm.emissive.getHex();
-            mm.userData.fuzzyOrigEmissiveIntensity = mm.emissiveIntensity ?? 1;
-          }
-          if (hex === null) {
-            mm.emissive.setHex(mm.userData.fuzzyOrigEmissive as number);
-            mm.emissiveIntensity = mm.userData
-              .fuzzyOrigEmissiveIntensity as number;
-          } else {
-            mm.emissive.setHex(hex);
-            mm.emissiveIntensity = intensity;
-          }
-        }
-      });
-    };
-
-    applyEmissive(scene, null, 1); // 先全部恢复
-    if (!highlightedPathKey) return;
-
-    const targets: THREE.Object3D[] = [];
-    scene.traverse((o) => {
-      if (o.userData && o.userData.fuzzyPathKey === highlightedPathKey) {
-        targets.push(o);
-      }
-    });
-    for (const t of targets) applyEmissive(t, 0x2b6cff, 0.7);
-  }, [scene, highlightedPathKey]);
+  applyPathHighlight(scene, highlightedPathKey);
+}, [scene, highlightedPathKey]);
 
   function handlePointerDown(event: ThreeEvent<PointerEvent>) {
     event.stopPropagation();
