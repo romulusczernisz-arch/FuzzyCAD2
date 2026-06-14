@@ -19,8 +19,6 @@ import {
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
 
-
-
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
   placements?: PartPlacement[];
@@ -59,14 +57,14 @@ function Model({
   const { camera, gl } = useThree();
 
   const scene = useMemo(() => {
-  const cloned = gltf.scene.clone(true);
+    const cloned = gltf.scene.clone(true);
 
-  prepareRenderableMeshes(cloned);
-  applyPlacements(cloned, placements ?? []);
-  cloned.rotation.x = -Math.PI / 2;
+    prepareRenderableMeshes(cloned);
+    applyPlacements(cloned, placements ?? []);
+    cloned.rotation.x = -Math.PI / 2;
 
-  return cloned;
-}, [gltf.scene, placements]);
+    return cloned;
+  }, [gltf.scene, placements]);
 
   useEffect(() => {
     const graph = buildMeshGraph(scene);
@@ -76,28 +74,28 @@ function Model({
   }, [scene, onMeshGraph, onSelectedNode]);
 
   useEffect(() => {
-  if (!lassoPolygon || lassoPolygon.length < 3) {
-    return;
-  }
+    if (!lassoPolygon || lassoPolygon.length < 3) {
+      return;
+    }
 
-  const pathKeys = selectPathKeysByLasso(
-    scene,
-    camera,
-    gl.domElement,
-    lassoPolygon,
-  );
+    const pathKeys = selectPathKeysByLasso(
+      scene,
+      camera,
+      gl.domElement,
+      lassoPolygon,
+    );
 
-  onObjectLassoSelection?.(pathKeys);
-}, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
+    onObjectLassoSelection?.(pathKeys);
+  }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
 
-useEffect(() => {
-  const activeHighlights =
-    selectedPathKeys && selectedPathKeys.length > 0
-      ? selectedPathKeys
-      : highlightedPathKey;
+  useEffect(() => {
+    const activeHighlights =
+      selectedPathKeys && selectedPathKeys.length > 0
+        ? selectedPathKeys
+        : highlightedPathKey;
 
-  applyPathHighlight(scene, activeHighlights);
-}, [scene, highlightedPathKey, selectedPathKeys]);
+    applyPathHighlight(scene, activeHighlights);
+  }, [scene, highlightedPathKey, selectedPathKeys]);
 
   function handlePointerDown(event: ThreeEvent<PointerEvent>) {
     event.stopPropagation();
@@ -131,52 +129,52 @@ export default function FuzzyCADGeometryViewer({
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
   return (
     <div className={styles.root}>
-    {!gltfUrl ? (
-  <div className={styles.emptyState}>
-    No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
-  </div>
-) : (
-  <>
-    <Canvas
-      camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
-      shadows
-      gl={{ antialias: true }}
-    >
-      <ambientLight intensity={0.8} />
-      <directionalLight position={[5, 6, 5]} intensity={1.2} castShadow />
-      <gridHelper args={[2, 20]} />
-      <axesHelper args={[0.25]} />
+      {!gltfUrl ? (
+        <div className={styles.emptyState}>
+          No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
+        </div>
+      ) : (
+        <>
+          <Canvas
+            camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
+            shadows
+            gl={{ antialias: true }}
+          >
+            <ambientLight intensity={0.8} />
+            <directionalLight position={[5, 6, 5]} intensity={1.2} castShadow />
+            <gridHelper args={[2, 20]} />
+            <axesHelper args={[0.25]} />
 
-      <Suspense fallback={null}>
-        <Bounds fit clip observe margin={1.2}>
-          <Center>
-            <Model
-              url={gltfUrl}
-              placements={placements}
-              highlightedPathKey={highlightedPathKey}
-              selectedPathKeys={selectedPathKeys}
-              lassoPolygon={lassoPolygon}
-              onMeshGraph={onMeshGraph}
-              onSelectedNode={onSelectedNode}
-              onSelectedPathKey={onSelectedPathKey}
-              onObjectLassoSelection={onObjectLassoSelection}
+            <Suspense fallback={null}>
+              <Bounds fit clip observe margin={1.2}>
+                <Center>
+                  <Model
+                    url={gltfUrl}
+                    placements={placements}
+                    highlightedPathKey={highlightedPathKey}
+                    selectedPathKeys={selectedPathKeys}
+                    lassoPolygon={lassoPolygon}
+                    onMeshGraph={onMeshGraph}
+                    onSelectedNode={onSelectedNode}
+                    onSelectedPathKey={onSelectedPathKey}
+                    onObjectLassoSelection={onObjectLassoSelection}
+                  />
+                </Center>
+              </Bounds>
+            </Suspense>
+
+            <OrbitControls makeDefault enabled={activeTool !== "lasso"} />
+          </Canvas>
+
+          {activeTool === "lasso" ? (
+            <LassoOverlay
+              onComplete={(points) => {
+                setLassoPolygon(points);
+              }}
             />
-          </Center>
-        </Bounds>
-      </Suspense>
-
-<OrbitControls makeDefault enabled={activeTool !== "lasso"} />
-    </Canvas>
-
-    {activeTool === "lasso" ? (
-      <LassoOverlay
-        onComplete={(points) => {
-          setLassoPolygon(points);
-        }}
-      />
-    ) : null}
-  </>
-)}
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
