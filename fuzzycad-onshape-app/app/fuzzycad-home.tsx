@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import styles from "./fuzzycad-home.module.css";
 import type {
   MeshGraphNode,
   PartPlacement,
@@ -476,65 +477,29 @@ export default function FuzzyCADHome() {
   const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
   return (
-    <main
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        fontFamily: "Arial, sans-serif",
-        overflow: "hidden",
-      }}
-    >
-      <aside
-        style={{
-          width: 280,
-          flexShrink: 0,
-          height: "100%",
-          boxSizing: "border-box",
-          borderRight: "1px solid #e3e3e3",
-          background: "#fafafa",
-          padding: 12,
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        <div style={{ fontWeight: 700 }}>FuzzyCAD</div>
+<main className={styles.root}>
+      <aside className={styles.sidebar}>
+       <div className={styles.brand}>FuzzyCAD</div>
 
         {!connected ? (
-          <a
-            href={connectHref}
-            style={{
-              display: "block",
-              textAlign: "center",
-              padding: "8px 12px",
-              border: "1px solid #999",
-              borderRadius: 6,
-              textDecoration: "none",
-              color: "#000",
-              background: "#fff",
-            }}
-          >
-            连接 Onshape
-          </a>
+         <a href={connectHref} className={styles.connectButton}>
+  Connect to Onshape
+</a>
         ) : null}
 
         {assemblyElements.length > 0 ? (
           <>
-            <label style={{ fontSize: 12, color: "#666" }}>装配</label>
+           <label className={styles.assemblyLabel}>Assembly</label>
 
-            <select
-              value={selectedAssemblyId}
-              onChange={(event) => {
-                setSelectedAssemblyId(event.target.value);
-                resetGeometryState();
-                setGeometryZipManifest(null);
-              }}
-              style={{
-                padding: 6,
-                width: "100%",
-              }}
-            >
+<select
+  value={selectedAssemblyId}
+  onChange={(event) => {
+    setSelectedAssemblyId(event.target.value);
+    resetGeometryState();
+    setGeometryZipManifest(null);
+  }}
+  className={styles.assemblySelect}
+>
               {assemblyElements.map((assembly) => (
                 <option key={assembly.id} value={assembly.id}>
                   {assembly.name}
@@ -542,78 +507,44 @@ export default function FuzzyCADHome() {
               ))}
             </select>
 
-            <button
-              onClick={loadSelectedAssembly}
-              disabled={!selectedAssemblyId || busy}
-              style={{
-                padding: "9px 12px",
-                border: "1px solid #2b6cff",
-                borderRadius: 6,
-                cursor: selectedAssemblyId && !busy ? "pointer" : "not-allowed",
-                background: selectedAssemblyId && !busy ? "#2b6cff" : "#bcd0ff",
-                color: "#fff",
-                fontWeight: 600,
-              }}
-            >
-              {busy ? "加载中…" : "加载装配"}
-            </button>
+<button
+  onClick={loadSelectedAssembly}
+  disabled={!selectedAssemblyId || busy}
+  className={styles.primaryButton}
+>
+  {busy ? "Loading..." : "Loading assembly"}
+</button>
           </>
         ) : (
-          <p style={{ fontSize: 13, color: "#888" }}>
-            {connected ? "没找到装配。" : "请先连接 Onshape。"}
-          </p>
+          <p className={styles.emptyMessage}>
+  {connected ? "Assembly not found." : "Please connect Onshape first."}
+</p>
         )}
 
-        <div
-          style={{
-            flex: 1,
-            overflow: "auto",
-            marginTop: 4,
-            borderTop: "1px solid #e3e3e3",
-            paddingTop: 8,
-            fontSize: 13,
-          }}
-        >
+        <div className={styles.partTree}>
           {partTree.length === 0 ? (
-            <p style={{ color: "#aaa", margin: 0 }}>加载后这里显示零件。</p>
+            <p className={styles.partTreeEmpty}>Loaded parts will appear here.</p>
           ) : (
             partTree.map((group) => (
               <details key={group.key} open>
-                <summary
-                  style={{
-                    cursor: "pointer",
-                    fontWeight: 600,
-                    margin: "6px 0",
-                  }}
-                >
-                  {group.name} ({group.items.length})
-                </summary>
+<summary className={styles.partGroupSummary}>
+  {group.name} ({group.items.length})
+</summary>
 
                 {group.items.map((item) => (
-                  <div
-                    key={item.pathKey}
-                    onClick={() => {
-                      setHighlightedPathKey(
-                        highlightedPathKey === item.pathKey
-                          ? null
-                          : item.pathKey
-                      );
-                    }}
-                    style={{
-                      cursor: "pointer",
-                      padding: "3px 8px",
-                      marginLeft: 8,
-                      borderRadius: 4,
-                      background:
-                        highlightedPathKey === item.pathKey
-                          ? "#2b6cff"
-                          : "transparent",
-                      color:
-                        highlightedPathKey === item.pathKey ? "#fff" : "#222",
-                    }}
-                  >
-                    {item.name}
-                  </div>
+                 <div
+  key={item.pathKey}
+  onClick={() => {
+    setHighlightedPathKey(
+      highlightedPathKey === item.pathKey ? null : item.pathKey
+    );
+  }}
+  className={`${styles.partItem} ${
+    highlightedPathKey === item.pathKey ? styles.partItemSelected : ""
+  }`}
+>
+  {item.name}
+</div>
                 ))}
               </details>
             ))
@@ -621,25 +552,17 @@ export default function FuzzyCADHome() {
         </div>
 
         <button
-          onClick={() => {
-            setDev((value) => !value);
-          }}
-          style={{
-            padding: "6px 10px",
-            border: "1px solid #ccc",
-            borderRadius: 6,
-            background: "#fff",
-            cursor: "pointer",
-            fontSize: 12,
-            color: "#666",
-          }}
-        >
-          {dev ? "隐藏调试面板" : "调试面板"}
-        </button>
+  onClick={() => {
+    setDev((value) => !value);
+  }}
+  className={styles.secondaryButton}
+>
+  {dev ? "Hide Debug Panel" : "Debug Panel"}
+</button>
       </aside>
 
-      <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
-<FuzzyCADGeometryViewer
+<div className={styles.viewerPane}>
+  <FuzzyCADGeometryViewer
   gltfUrl={gltfUrl}
   placements={placements}
   highlightedPathKey={highlightedPathKey}
@@ -652,40 +575,19 @@ export default function FuzzyCADHome() {
       </div>
 
       {dev ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(255,255,255,0.98)",
-            overflow: "auto",
-            padding: 24,
-            zIndex: 10,
-          }}
-        >
-          <button
-            onClick={() => {
-              setDev(false);
-            }}
-            style={{
-              float: "right",
-              padding: "6px 12px",
-              border: "1px solid #999",
-              borderRadius: 6,
-              cursor: "pointer",
-            }}
-          >
-            关闭
-          </button>
+       <div className={styles.devOverlay}>
+<button
+  onClick={() => {
+    setDev(false);
+  }}
+  className={styles.devCloseButton}
+>
+  Close
+</button>
 
           <h2>Actions</h2>
 
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 8,
-            }}
-          >
+         <div className={styles.devActions}>
             <a href={connectHref}>Connect Onshape</a>
 
             <button onClick={loadElements}>Load Elements</button>
@@ -748,68 +650,38 @@ export default function FuzzyCADHome() {
             </p>
           ) : null}
 
-          {(
-            [
-              ["Relationship Graph", relationshipGraphResult],
-              ["Assembly Summary", assemblySummaryResult],
-              ["Raw Assembly", assemblyResult],
-              ["Elements", elementsResult],
-              ["Geometry Load", geometryLoadResult],
-              ["Geometry ZIP", geometryZipManifest],
-            ] as [string, ApiResult | null][]
-          ).map(([title, value]) =>
-            value ? (
-              <details key={title} style={{ marginTop: 12 }}>
-                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                  {title}
-                </summary>
+         {(
+  [
+    ["Relationship Graph", relationshipGraphResult],
+    ["Assembly Summary", assemblySummaryResult],
+    ["Raw Assembly", assemblyResult],
+    ["Elements", elementsResult],
+    ["Geometry Load", geometryLoadResult],
+    ["Geometry ZIP", geometryZipManifest],
+  ] as [string, ApiResult | null][]
+).map(([title, value]) =>
+  value ? (
+    <details key={title} className={styles.debugDetails}>
+      <summary className={styles.debugSummary}>{title}</summary>
 
-                <pre
-                  style={{
-                    padding: 12,
-                    background: "#f5f5f5",
-                    overflow: "auto",
-                    whiteSpace: "pre-wrap",
-                    maxHeight: 360,
-                  }}
-                >
-                  {JSON.stringify(value, null, 2)}
-                </pre>
-              </details>
-            ) : null
-          )}
+      <pre className={styles.debugPre}>
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </details>
+  ) : null
+)}
 
-          <details style={{ marginTop: 12 }}>
-            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-              All URL Parameters
-            </summary>
+         <details className={styles.debugDetails}>
+  <summary className={styles.debugSummary}>
+    All URL Parameters
+  </summary>
 
-            <table
-              style={{
-                borderCollapse: "collapse",
-                width: "100%",
-              }}
-            >
+  <table className={styles.paramsTable}>
               <tbody>
                 {allParams.map(([key, value]) => (
                   <tr key={key}>
-                    <td
-                      style={{
-                        border: "1px solid #ccc",
-                        padding: 8,
-                      }}
-                    >
-                      {key}
-                    </td>
-
-                    <td
-                      style={{
-                        border: "1px solid #ccc",
-                        padding: 8,
-                      }}
-                    >
-                      {value}
-                    </td>
+                  <td className={styles.paramsCell}>{key}</td>
+<td className={styles.paramsCell}>{value}</td>
                   </tr>
                 ))}
               </tbody>
