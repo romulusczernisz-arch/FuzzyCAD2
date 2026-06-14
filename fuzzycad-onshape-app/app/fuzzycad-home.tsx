@@ -8,13 +8,7 @@ import FuzzyCADSidebar from "./components/FuzzyCADSidebar";
 import DevPanel from "./components/DevPanel";
 import { useAssemblyPlacementTree } from "./hooks/useAssemblyPlacementTree";
 import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
-import {
-  buildPartNodeGraph,
-  getLinkedGroup,
-  type LogicalOccurrence,
-  type LogicalMateEdge,
-  type MatchedInstance,
-} from "./lib/partGraph";
+import { usePartGraph } from "./hooks/usePartGraph";
 import {
   fetchFuzzycadAssemblySummary,
   fetchFuzzycadRelationshipGraph,
@@ -76,6 +70,15 @@ export default function FuzzyCADHome() {
   const { placements, partTree, resetPlacementTree } =
   useAssemblyPlacementTree(relationshipGraphResult);
 
+const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
+  relationshipGraphResult,
+  meshGraph,
+  selectedMeshNode,
+});
+
+
+
+
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
 
@@ -103,50 +106,10 @@ export default function FuzzyCADHome() {
     elementId || "",
   )}&server=${encodeURIComponent(server)}`;
 
-  const partGraph = useMemo(() => {
-    const g = relationshipGraphResult?.graph as
-      | {
-          occurrences?: LogicalOccurrence[];
-          pathMatches?: {
-            occurrencePathKey: string;
-            matchedInstance: MatchedInstance;
-          }[];
-          mateEdges?: LogicalMateEdge[];
-        }
-      | undefined;
+  
 
-    if (!g?.occurrences || meshGraph.length === 0) {
-      return null;
-    }
+    
 
-    const pathKeyToInstance = new Map<string, MatchedInstance>(
-      (g.pathMatches ?? []).map((m) => [
-        m.occurrencePathKey,
-        m.matchedInstance,
-      ]),
-    );
-
-    return buildPartNodeGraph(
-      g.occurrences,
-      pathKeyToInstance,
-      g.mateEdges ?? [],
-      meshGraph,
-    );
-  }, [relationshipGraphResult, meshGraph]);
-
-  const linkedGroup = useMemo(() => {
-    if (!partGraph || !selectedMeshNode) {
-      return null;
-    }
-
-    const pathKey = partGraph.byMeshUuid.get(selectedMeshNode.nodeId);
-
-    if (!pathKey) {
-      return null;
-    }
-
-    return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
-  }, [partGraph, selectedMeshNode]);
 
   useEffect(() => {
     if (documentId && workspaceId) {
@@ -300,17 +263,15 @@ export default function FuzzyCADHome() {
     setGeometryZipManifest(null);
   }
 
-  const devGraphStats = partGraph
-    ? {
-        matched: partGraph.residualStats.matched,
-        total: partGraph.residualStats.total,
-        scale: partGraph.scale,
-        clickedPathKey: selectedMeshNode
-          ? (partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—")
-          : null,
-        linkedCount: linkedGroup ? linkedGroup.length : null,
-      }
-    : null;
+const devGraphStats = partGraph
+  ? {
+      matched: partGraph.residualStats.matched,
+      total: partGraph.residualStats.total,
+      scale: partGraph.scale,
+      clickedPathKey: selectedGraphPathKey,
+      linkedCount: linkedGroup ? linkedGroup.length : null,
+    }
+  : null;
 
   const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
