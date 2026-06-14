@@ -17,7 +17,9 @@ import {
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
-  { ssr: false }
+  {
+    ssr: false,
+  }
 );
 
 type OnshapeElement = {
@@ -46,8 +48,16 @@ type ApiResult = {
   message?: string;
 };
 
-type TreeItem = { pathKey: string; name: string };
-type TreeGroup = { key: string; name: string; items: TreeItem[] };
+type TreeItem = {
+  pathKey: string;
+  name: string;
+};
+
+type TreeGroup = {
+  key: string;
+  name: string;
+  items: TreeItem[];
+};
 
 function isElementArray(data: unknown): data is OnshapeElement[] {
   return (
@@ -92,7 +102,7 @@ export default function FuzzyCADHome() {
   );
 
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<boolean>(false);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -102,7 +112,11 @@ export default function FuzzyCADHome() {
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
-    if (!isElementArray(data)) return [];
+
+    if (!isElementArray(data)) {
+      return [];
+    }
+
     return data.filter((element) => element.elementType === "ASSEMBLY");
   }, [elementsResult]);
 
@@ -126,7 +140,9 @@ export default function FuzzyCADHome() {
         }
       | undefined;
 
-    if (!g?.occurrences || meshGraph.length === 0) return null;
+    if (!g?.occurrences || meshGraph.length === 0) {
+      return null;
+    }
 
     const pathKeyToInstance = new Map<string, MatchedInstance>(
       (g.pathMatches ?? []).map((m) => [m.occurrencePathKey, m.matchedInstance])
@@ -141,13 +157,19 @@ export default function FuzzyCADHome() {
   }, [relationshipGraphResult, meshGraph]);
 
   const linkedGroup = useMemo(() => {
-    if (!partGraph || !selectedMeshNode) return null;
+    if (!partGraph || !selectedMeshNode) {
+      return null;
+    }
+
     const pathKey = partGraph.byMeshUuid.get(selectedMeshNode.nodeId);
-    if (!pathKey) return null;
+
+    if (!pathKey) {
+      return null;
+    }
+
     return getLinkedGroup(pathKey, partGraph.byPathKey, 1);
   }, [partGraph, selectedMeshNode]);
 
-  // 装配定义 -> placements + 零件树
   useEffect(() => {
     const asm = (
       relationshipGraphResult?.graph as
@@ -164,7 +186,7 @@ export default function FuzzyCADHome() {
 
     let cancelled = false;
 
-    (async () => {
+    async function loadPlacementsAndTree() {
       if (!asm?.documentId || !asm?.workspaceId || !asm?.assemblyElementId) {
         if (!cancelled) {
           setPlacements([]);
@@ -183,6 +205,7 @@ export default function FuzzyCADHome() {
       try {
         const res = await fetch("/api/onshape/assembly?" + base.toString());
         const json = await res.json();
+
         const def = json?.data ?? json;
         const root = def?.rootAssembly ?? def;
         const occurrences = Array.isArray(root?.occurrences)
@@ -191,43 +214,72 @@ export default function FuzzyCADHome() {
         const subs = Array.isArray(def?.subAssemblies) ? def.subAssemblies : [];
 
         const nameById = new Map<string, string>();
-        const add = (arr: unknown) => {
-          if (!Array.isArray(arr)) return;
+
+        const addInstanceNames = (arr: unknown) => {
+          if (!Array.isArray(arr)) {
+            return;
+          }
+
           for (const inst of arr) {
-            const i = inst as { id?: unknown; name?: unknown };
-            if (typeof i?.id === "string") {
+            const i = inst as {
+              id?: unknown;
+              name?: unknown;
+            };
+
+            if (typeof i.id === "string") {
               nameById.set(i.id, typeof i.name === "string" ? i.name : i.id);
             }
           }
         };
-        add(root?.instances);
-        for (const s of subs) add((s as { instances?: unknown })?.instances);
 
-        const next: PartPlacement[] = [];
+        addInstanceNames(root?.instances);
+
+        for (const sub of subs) {
+          addInstanceNames((sub as { instances?: unknown })?.instances);
+        }
+
+        const nextPlacements: PartPlacement[] = [];
         const groupsMap = new Map<string, TreeGroup>();
 
-        for (const o of occurrences) {
-          const occ = o as { transform?: unknown; path?: unknown };
-          if (!Array.isArray(occ.path) || occ.path.length === 0) continue;
+        for (const rawOccurrence of occurrences) {
+          const occ = rawOccurrence as {
+            transform?: unknown;
+            path?: unknown;
+          };
+
+          if (!Array.isArray(occ.path) || occ.path.length === 0) {
+            continue;
+          }
+
           const path = occ.path as string[];
           const pathKey = path.join("/");
           const leafId = path[path.length - 1];
           const leafName = nameById.get(leafId) ?? leafId;
 
           const nested = path.length > 1;
-          const subKey = nested ? path[0] : "__root__";
-          const subName = nested
+          const groupKey = nested ? path[0] : "__root__";
+          const groupName = nested
             ? nameById.get(path[0]) ?? path[0]
             : "(顶层零件)";
-          let grp = groupsMap.get(subKey);
-          if (!grp) {
-            grp = { key: subKey, name: subName, items: [] };
-            groupsMap.set(subKey, grp);
+
+          let group = groupsMap.get(groupKey);
+
+          if (!group) {
+            group = {
+              key: groupKey,
+              name: groupName,
+              items: [],
+            };
+            groupsMap.set(groupKey, group);
           }
-          grp.items.push({ pathKey, name: leafName });
+
+          group.items.push({
+            pathKey,
+            name: leafName,
+          });
 
           if (Array.isArray(occ.transform) && occ.transform.length === 16) {
-            next.push({
+            nextPlacements.push({
               pathKey,
               partName: nameById.get(leafId) ?? null,
               transform: occ.transform as number[],
@@ -236,7 +288,7 @@ export default function FuzzyCADHome() {
         }
 
         if (!cancelled) {
-          setPlacements(next);
+          setPlacements(nextPlacements);
           setPartTree(Array.from(groupsMap.values()));
         }
       } catch {
@@ -245,16 +297,20 @@ export default function FuzzyCADHome() {
           setPartTree([]);
         }
       }
-    })();
+    }
+
+    void loadPlacementsAndTree();
 
     return () => {
       cancelled = true;
     };
   }, [relationshipGraphResult]);
 
-  // 打开就自动拉 elements（没连接会返回空，下面提示连接）
   useEffect(() => {
-    if (documentId && workspaceId) loadElements();
+    if (documentId && workspaceId) {
+      void loadElements();
+    }
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, workspaceId]);
 
@@ -263,6 +319,7 @@ export default function FuzzyCADHome() {
     setSelectedMeshNode(null);
     setHighlightedPathKey(null);
     setGeometryLoadResult(null);
+
     if (gltfUrl) {
       URL.revokeObjectURL(gltfUrl);
       setGltfUrl(null);
@@ -271,6 +328,7 @@ export default function FuzzyCADHome() {
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
+
     const query = new URLSearchParams({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
@@ -288,6 +346,7 @@ export default function FuzzyCADHome() {
     ) {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
+
       setGltfUrl(url);
       setGeometryLoadResult({
         status: res.status,
@@ -298,10 +357,14 @@ export default function FuzzyCADHome() {
           zipMode: res.headers.get("x-fuzzycad-zip-mode"),
           extractedFile: res.headers.get("x-fuzzycad-extracted-file"),
           gltfCandidates: res.headers.get("x-fuzzycad-gltf-candidates"),
+          selectedNodes: res.headers.get("x-fuzzycad-selected-nodes"),
+          selectedMeshes: res.headers.get("x-fuzzycad-selected-meshes"),
+          selectedScenes: res.headers.get("x-fuzzycad-selected-scenes"),
           translationId: res.headers.get("x-fuzzycad-translation-id"),
           externalDataId: res.headers.get("x-fuzzycad-external-data-id"),
         },
       });
+
       return;
     }
 
@@ -311,6 +374,7 @@ export default function FuzzyCADHome() {
 
   async function inspectAssemblyGeometryZip() {
     setGeometryZipManifest(null);
+
     const query = new URLSearchParams({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
@@ -318,8 +382,10 @@ export default function FuzzyCADHome() {
       server,
       debugZip: "1",
     });
+
     const res = await fetch(`/api/onshape/assembly-gltf?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
+
     setGeometryZipManifest(data);
   }
 
@@ -329,15 +395,20 @@ export default function FuzzyCADHome() {
       workspaceId: workspaceId || "",
       server,
     });
+
     const res = await fetch(`/api/onshape/elements?${query.toString()}`);
     const data = (await res.json()) as ApiResult;
+
     setElementsResult(data);
 
     if (data.ok && isElementArray(data.data)) {
       const firstAssembly = data.data.find(
         (element) => element.elementType === "ASSEMBLY"
       );
-      if (firstAssembly) setSelectedAssemblyId(firstAssembly.id);
+
+      if (firstAssembly) {
+        setSelectedAssemblyId(firstAssembly.id);
+      }
     }
   }
 
@@ -348,8 +419,11 @@ export default function FuzzyCADHome() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
+
     const res = await fetch(`/api/onshape/assembly?${query.toString()}`);
-    setAssemblyResult((await res.json()) as ApiResult);
+    const data = (await res.json()) as ApiResult;
+
+    setAssemblyResult(data);
   }
 
   async function loadAssemblySummary() {
@@ -359,8 +433,13 @@ export default function FuzzyCADHome() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
-    const res = await fetch(`/api/fuzzycad/assembly-summary?${query.toString()}`);
-    setAssemblySummaryResult((await res.json()) as ApiResult);
+
+    const res = await fetch(
+      `/api/fuzzycad/assembly-summary?${query.toString()}`
+    );
+    const data = (await res.json()) as ApiResult;
+
+    setAssemblySummaryResult(data);
   }
 
   async function buildRelationshipGraph() {
@@ -370,25 +449,31 @@ export default function FuzzyCADHome() {
       assemblyElementId: selectedAssemblyId,
       server,
     });
+
     const res = await fetch(
       `/api/fuzzycad/relationship-graph?${query.toString()}`
     );
-    setRelationshipGraphResult((await res.json()) as ApiResult);
+    const data = (await res.json()) as ApiResult;
+
+    setRelationshipGraphResult(data);
   }
 
-  // 主操作：一键 建图 + 加载几何
   async function loadSelectedAssembly() {
-    if (!selectedAssemblyId) return;
+    if (!selectedAssemblyId) {
+      return;
+    }
+
     setBusy(true);
+
     try {
-      await Promise.all([buildRelationshipGraph(), loadAssemblyGeometry()]);
+      await buildRelationshipGraph();
+      await loadAssemblyGeometry();
     } finally {
       setBusy(false);
     }
   }
 
-  const connected =
-    oauthStatus === "connected" || assemblyElements.length > 0;
+  const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
   return (
     <main
@@ -400,7 +485,6 @@ export default function FuzzyCADHome() {
         overflow: "hidden",
       }}
     >
-      {/* 左侧栏 */}
       <aside
         style={{
           width: 280,
@@ -417,8 +501,8 @@ export default function FuzzyCADHome() {
       >
         <div style={{ fontWeight: 700 }}>FuzzyCAD</div>
 
-        {!connected && (
-          
+        {!connected ? (
+          <a
             href={connectHref}
             style={{
               display: "block",
@@ -433,23 +517,27 @@ export default function FuzzyCADHome() {
           >
             连接 Onshape
           </a>
-        )}
+        ) : null}
 
         {assemblyElements.length > 0 ? (
           <>
             <label style={{ fontSize: 12, color: "#666" }}>装配</label>
+
             <select
               value={selectedAssemblyId}
-              onChange={(e) => {
-                setSelectedAssemblyId(e.target.value);
+              onChange={(event) => {
+                setSelectedAssemblyId(event.target.value);
                 resetGeometryState();
                 setGeometryZipManifest(null);
               }}
-              style={{ padding: 6, width: "100%" }}
+              style={{
+                padding: 6,
+                width: "100%",
+              }}
             >
-              {assemblyElements.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
+              {assemblyElements.map((assembly) => (
+                <option key={assembly.id} value={assembly.id}>
+                  {assembly.name}
                 </option>
               ))}
             </select>
@@ -476,7 +564,6 @@ export default function FuzzyCADHome() {
           </p>
         )}
 
-        {/* 零件树 */}
         <div
           style={{
             flex: 1,
@@ -490,34 +577,42 @@ export default function FuzzyCADHome() {
           {partTree.length === 0 ? (
             <p style={{ color: "#aaa", margin: 0 }}>加载后这里显示零件。</p>
           ) : (
-            partTree.map((grp) => (
-              <details key={grp.key} open>
+            partTree.map((group) => (
+              <details key={group.key} open>
                 <summary
-                  style={{ cursor: "pointer", fontWeight: 600, margin: "6px 0" }}
+                  style={{
+                    cursor: "pointer",
+                    fontWeight: 600,
+                    margin: "6px 0",
+                  }}
                 >
-                  {grp.name} ({grp.items.length})
+                  {group.name} ({group.items.length})
                 </summary>
-                {grp.items.map((it) => (
+
+                {group.items.map((item) => (
                   <div
-                    key={it.pathKey}
-                    onClick={() =>
+                    key={item.pathKey}
+                    onClick={() => {
                       setHighlightedPathKey(
-                        highlightedPathKey === it.pathKey ? null : it.pathKey
-                      )
-                    }
+                        highlightedPathKey === item.pathKey
+                          ? null
+                          : item.pathKey
+                      );
+                    }}
                     style={{
                       cursor: "pointer",
                       padding: "3px 8px",
                       marginLeft: 8,
                       borderRadius: 4,
                       background:
-                        highlightedPathKey === it.pathKey
+                        highlightedPathKey === item.pathKey
                           ? "#2b6cff"
                           : "transparent",
-                      color: highlightedPathKey === it.pathKey ? "#fff" : "#222",
+                      color:
+                        highlightedPathKey === item.pathKey ? "#fff" : "#222",
                     }}
                   >
-                    {it.name}
+                    {item.name}
                   </div>
                 ))}
               </details>
@@ -526,7 +621,9 @@ export default function FuzzyCADHome() {
         </div>
 
         <button
-          onClick={() => setDev((v) => !v)}
+          onClick={() => {
+            setDev((value) => !value);
+          }}
           style={{
             padding: "6px 10px",
             border: "1px solid #ccc",
@@ -541,7 +638,6 @@ export default function FuzzyCADHome() {
         </button>
       </aside>
 
-      {/* 右侧 3D 充满 */}
       <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
         <FuzzyCADGeometryViewer
           gltfUrl={gltfUrl}
@@ -552,8 +648,7 @@ export default function FuzzyCADHome() {
         />
       </div>
 
-      {/* 调试覆盖层：原来那一整套都搬这里 */}
-      {dev && (
+      {dev ? (
         <div
           style={{
             position: "absolute",
@@ -565,7 +660,9 @@ export default function FuzzyCADHome() {
           }}
         >
           <button
-            onClick={() => setDev(false)}
+            onClick={() => {
+              setDev(false);
+            }}
             style={{
               float: "right",
               padding: "6px 12px",
@@ -577,101 +674,93 @@ export default function FuzzyCADHome() {
             关闭
           </button>
 
-          <h1>FuzzyCAD Dev</h1>
-
-          <h2>Current Onshape Context</h2>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
-            <tbody>
-              {[
-                ["documentId", documentId],
-                ["workspaceId", workspaceId],
-                ["elementId", elementId],
-                ["server", server],
-              ].map(([k, v]) => (
-                <tr key={k as string}>
-                  <td style={{ border: "1px solid #ccc", padding: 8 }}>{k}</td>
-                  <td style={{ border: "1px solid #ccc", padding: 8 }}>{v}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
           <h2>Actions</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            
-              href={connectHref}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid #999",
-                borderRadius: 4,
-                textDecoration: "none",
-                color: "black",
-                background: "#f5f5f5",
-              }}
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            <a href={connectHref}>Connect Onshape</a>
+
+            <button onClick={loadElements}>Load Elements</button>
+
+            <button
+              onClick={loadAssemblyDefinition}
+              disabled={!selectedAssemblyId}
             >
-              Connect Onshape
-            </a>
-            <button onClick={loadElements}>Load Document Elements</button>
-            <button onClick={loadAssemblyDefinition} disabled={!selectedAssemblyId}>
-              Load Raw Assembly Definition
+              Raw Assembly
             </button>
-            <button onClick={loadAssemblySummary} disabled={!selectedAssemblyId}>
-              Load Assembly Summary
+
+            <button
+              onClick={loadAssemblySummary}
+              disabled={!selectedAssemblyId}
+            >
+              Summary
             </button>
-            <button onClick={buildRelationshipGraph} disabled={!selectedAssemblyId}>
-              Build Relationship Graph
+
+            <button
+              onClick={buildRelationshipGraph}
+              disabled={!selectedAssemblyId}
+            >
+              Build Graph
             </button>
-            <button onClick={loadAssemblyGeometry} disabled={!selectedAssemblyId}>
-              Load Assembly Geometry
+
+            <button
+              onClick={loadAssemblyGeometry}
+              disabled={!selectedAssemblyId}
+            >
+              Load Geometry
             </button>
-            <button onClick={inspectAssemblyGeometryZip} disabled={!selectedAssemblyId}>
-              Inspect Geometry ZIP
+
+            <button
+              onClick={inspectAssemblyGeometryZip}
+              disabled={!selectedAssemblyId}
+            >
+              Inspect ZIP
             </button>
           </div>
 
-          {partGraph && (
+          {partGraph ? (
             <p style={{ marginTop: 16 }}>
-              Matched parts:{" "}
-              <strong>
-                {partGraph.residualStats.matched}/{partGraph.residualStats.total}
-              </strong>{" "}
-              · mean residual:{" "}
-              <strong>{partGraph.residualStats.mean.toFixed(5)}</strong> · scale:{" "}
-              <strong>{partGraph.scale}</strong>
-              {selectedMeshNode && (
+              Matched: {partGraph.residualStats.matched}/
+              {partGraph.residualStats.total} · scale {partGraph.scale}
+              {selectedMeshNode ? (
                 <>
                   {" "}
-                  · clicked:{" "}
-                  <strong>
-                    {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ??
-                      "(no match)"}
-                  </strong>
-                  {linkedGroup ? <> · linked: {linkedGroup.length}</> : null}
+                  · clicked{" "}
+                  {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—"}
+                  {linkedGroup ? <> · linked {linkedGroup.length}</> : null}
                 </>
-              )}
+              ) : null}
             </p>
-          )}
+          ) : null}
 
-          {meshGraph.length > 0 && (
+          {meshGraph.length > 0 ? (
             <p>
-              Total objects: <strong>{meshGraph.length}</strong>; Mesh:{" "}
-              <strong>{meshGraph.filter((n) => n.isMesh).length}</strong>
+              Objects: {meshGraph.length}; Mesh:{" "}
+              {meshGraph.filter((node) => node.isMesh).length}
             </p>
-          )}
+          ) : null}
 
-          {[
-            ["Relationship Graph", relationshipGraphResult],
-            ["Assembly Summary", assemblySummaryResult],
-            ["Raw Assembly", assemblyResult],
-            ["Elements", elementsResult],
-            ["Geometry Load", geometryLoadResult],
-            ["Geometry ZIP", geometryZipManifest],
-          ].map(([title, val]) =>
-            val ? (
-              <details key={title as string} style={{ marginTop: 12 }}>
+          {(
+            [
+              ["Relationship Graph", relationshipGraphResult],
+              ["Assembly Summary", assemblySummaryResult],
+              ["Raw Assembly", assemblyResult],
+              ["Elements", elementsResult],
+              ["Geometry Load", geometryLoadResult],
+              ["Geometry ZIP", geometryZipManifest],
+            ] as [string, ApiResult | null][]
+          ).map(([title, value]) =>
+            value ? (
+              <details key={title} style={{ marginTop: 12 }}>
                 <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                  {title as string}
+                  {title}
                 </summary>
+
                 <pre
                   style={{
                     padding: 12,
@@ -681,7 +770,7 @@ export default function FuzzyCADHome() {
                     maxHeight: 360,
                   }}
                 >
-                  {JSON.stringify(val, null, 2)}
+                  {JSON.stringify(value, null, 2)}
                 </pre>
               </details>
             ) : null
@@ -691,12 +780,31 @@ export default function FuzzyCADHome() {
             <summary style={{ cursor: "pointer", fontWeight: 600 }}>
               All URL Parameters
             </summary>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+
+            <table
+              style={{
+                borderCollapse: "collapse",
+                width: "100%",
+              }}
+            >
               <tbody>
                 {allParams.map(([key, value]) => (
                   <tr key={key}>
-                    <td style={{ border: "1px solid #ccc", padding: 8 }}>{key}</td>
-                    <td style={{ border: "1px solid #ccc", padding: 8 }}>
+                    <td
+                      style={{
+                        border: "1px solid #ccc",
+                        padding: 8,
+                      }}
+                    >
+                      {key}
+                    </td>
+
+                    <td
+                      style={{
+                        border: "1px solid #ccc",
+                        padding: 8,
+                      }}
+                    >
                       {value}
                     </td>
                   </tr>
@@ -705,7 +813,7 @@ export default function FuzzyCADHome() {
             </table>
           </details>
         </div>
-      )}
+      ) : null}
     </main>
   );
 }
