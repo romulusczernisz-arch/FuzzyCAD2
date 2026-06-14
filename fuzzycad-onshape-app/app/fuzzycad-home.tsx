@@ -19,10 +19,10 @@ import {
   type ApiResult,
   type OnshapeElement,
 } from "./lib/onshapeClient";
-import OperationToolbar, {
-  type OperationTool,
-} from "./components/OperationToolbar";
+import type { OperationTool } from "./lib/operations/types";
+import OperationToolbar from "./components/OperationToolbar";
 
+ 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
   {
@@ -62,26 +62,27 @@ export default function FuzzyCADHome() {
   const [geometryZipManifest, setGeometryZipManifest] =
     useState<ApiResult | null>(null);
 
-  const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
-  const [selectedMeshNode, setSelectedMeshNode] =
-    useState<MeshGraphNode | null>(null);
-    const [activeTool, setActiveTool] = useState<OperationTool>("select");
+ const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
+const [selectedMeshNode, setSelectedMeshNode] =
+  useState<MeshGraphNode | null>(null);
 
-  const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
-    null,
-  );
-  const { placements, partTree, resetPlacementTree } = useAssemblyPlacementTree(
-    relationshipGraphResult,
-  );
+const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
+  null,
+);
+const [lassoPathKeys, setLassoPathKeys] = useState<string[]>([]);
 
-  const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
-    relationshipGraphResult,
-    meshGraph,
-    selectedMeshNode,
-  });
+const { placements, partTree, resetPlacementTree } =
+  useAssemblyPlacementTree(relationshipGraphResult);
 
-  const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
-  const [busy, setBusy] = useState<boolean>(false);
+const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
+  relationshipGraphResult,
+  meshGraph,
+  selectedMeshNode,
+});
+
+const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
+const [busy, setBusy] = useState<boolean>(false);
+const [activeTool, setActiveTool] = useState<OperationTool>("select");
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -115,18 +116,19 @@ export default function FuzzyCADHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, workspaceId]);
 
-  function resetGeometryState() {
-    setMeshGraph([]);
-    setSelectedMeshNode(null);
-    setHighlightedPathKey(null);
-    setGeometryLoadResult(null);
-    resetPlacementTree();
+function resetGeometryState() {
+  setMeshGraph([]);
+  setSelectedMeshNode(null);
+  setHighlightedPathKey(null);
+  setLassoPathKeys([]);
+  setGeometryLoadResult(null);
+  resetPlacementTree();
 
-    if (gltfUrl) {
-      URL.revokeObjectURL(gltfUrl);
-      setGltfUrl(null);
-    }
+  if (gltfUrl) {
+    URL.revokeObjectURL(gltfUrl);
+    setGltfUrl(null);
   }
+}
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
@@ -295,15 +297,27 @@ export default function FuzzyCADHome() {
     gltfUrl={gltfUrl}
     placements={placements}
     highlightedPathKey={highlightedPathKey}
+    selectedPathKeys={lassoPathKeys}
+    activeTool={activeTool}
     onMeshGraph={setMeshGraph}
     onSelectedNode={setSelectedMeshNode}
     onSelectedPathKey={setHighlightedPathKey}
+    onObjectLassoSelection={(pathKeys) => {
+      setLassoPathKeys(pathKeys);
+      setHighlightedPathKey(pathKeys[0] ?? null);
+    }}
   />
 
   <OperationToolbar
     activeTool={activeTool}
     disabled={!gltfUrl}
-    onToolChange={setActiveTool}
+    onToolChange={(tool) => {
+      setActiveTool(tool);
+
+      if (tool === "select") {
+        setLassoPathKeys([]);
+      }
+    }}
   />
 </div>
 

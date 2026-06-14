@@ -1,8 +1,8 @@
 "use client";
 
+import type { ReactNode } from "react";
 import styles from "../fuzzycad-home.module.css";
-
-export type OperationTool = "select" | "lasso" | "height" | "extend" | "angle" | "move";
+import type { OperationTool } from "../lib/operations/types";
 
 type OperationToolbarProps = {
   activeTool: OperationTool;
@@ -14,8 +14,16 @@ type ToolItem = {
   id: OperationTool;
   label: string;
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
 };
+
+function SelectIcon() {
+  return (
+    <svg viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M9 6L23 17L17 18L20 26L16 27L13 19L9 24V6Z" />
+    </svg>
+  );
+}
 
 function LassoIcon() {
   return (
@@ -72,14 +80,6 @@ function MoveIcon() {
   );
 }
 
-function SelectIcon() {
-  return (
-    <svg viewBox="0 0 32 32" aria-hidden="true">
-      <path d="M9 6L23 17L17 18L20 26L16 27L13 19L9 24V6Z" />
-    </svg>
-  );
-}
-
 const tools: ToolItem[] = [
   {
     id: "select",
@@ -90,7 +90,7 @@ const tools: ToolItem[] = [
   {
     id: "lasso",
     label: "Lasso",
-    title: "Lasso region",
+    title: "Lasso multiple objects",
     icon: <LassoIcon />,
   },
   {

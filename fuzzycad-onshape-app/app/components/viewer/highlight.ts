@@ -51,18 +51,25 @@ function applyEmissive(
 
 export function applyPathHighlight(
   scene: THREE.Object3D,
-  highlightedPathKey: string | null | undefined
+  highlightedPathKey: string | string[] | null | undefined,
 ) {
   applyEmissive(scene, null, 1);
 
-  if (!highlightedPathKey) {
+  const highlightedPathKeys = Array.isArray(highlightedPathKey)
+    ? highlightedPathKey
+    : highlightedPathKey
+      ? [highlightedPathKey]
+      : [];
+
+  if (highlightedPathKeys.length === 0) {
     return;
   }
 
+  const highlightedSet = new Set(highlightedPathKeys);
   const targets: THREE.Object3D[] = [];
 
   scene.traverse((object) => {
-    if (object.userData?.fuzzyPathKey === highlightedPathKey) {
+    if (highlightedSet.has(object.userData?.fuzzyPathKey)) {
       targets.push(object);
     }
   });
