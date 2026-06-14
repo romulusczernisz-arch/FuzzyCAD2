@@ -6,6 +6,7 @@ import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 
 export type PartPlacement = {
+  pathKey: string;
   partName: string | null;
   transform: number[]; // Onshape 4x4 行主序，绝对（装配空间）
 };
@@ -105,13 +106,14 @@ function applyPlacements(
   report.groupNames = groups.map((g) => g.name);
 
   // 已知零件名（instance 叶子名规范化后）-> 该名下所有 transform
-  const byBase = new Map<string, number[][]>();
+const byBase = new Map<string, { transform: number[]; pathKey: string }[]>();
   for (const p of placements) {
     const k = sanitize(p.partName);
     if (!k) continue;
     if (!byBase.has(k)) byBase.set(k, []);
-    byBase.get(k)!.push(p.transform);
+    byBase.get(k)!.push({ transform: p.transform, pathKey: p.pathKey });
   }
+
   const baseSet = new Set(byBase.keys());
 
   const sceneInv = scene.matrixWorld.clone().invert();
@@ -130,23 +132,29 @@ function applyPlacements(
       unmatched.push(g);
       continue;
     }
-    cursor.set(base, i + 1);
-    placeGroup(g, list[i], sceneInv);
+
+    
+cursor.set(base, i + 1);
+    placeGroup(g, list[i].transform, sceneInv);
+    g.userData.fuzzyPathKey = list[i].pathKey;
     report.placedByName++;
   }
 
   // 兜底：名字没对上的，按顺序配剩下的 transform
-  if (unmatched.length > 0) {
-    const leftovers: number[][] = [];
+if (unmatched.length > 0) {
+    const leftovers: { transform: number[]; pathKey: string }[] = [];
     for (const [b, list] of byBase) {
       const used = cursor.get(b) ?? 0;
       for (let i = used; i < list.length; i++) leftovers.push(list[i]);
     }
     for (let i = 0; i < unmatched.length && i < leftovers.length; i++) {
-      placeGroup(unmatched[i], leftovers[i], sceneInv);
+      placeGroup(unmatched[i], leftovers[i].transform, sceneInv);
+      unmatched[i].userData.fuzzyPathKey = leftovers[i].pathKey;
       report.placedByOrder++;
     }
   }
+
+
   console.log(
     `[FuzzyCAD] placement: 按名字摆了 ${report.placedByName}/${report.groupCount}，按顺序兜底 ${report.placedByOrder}。组名: [${report.groupNames.join(", ")}]`
   );
@@ -184,6 +192,7 @@ export type MeshGraphNode = {
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
   placements?: PartPlacement[];
+  highlightedPathKey?: string | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
 };
@@ -287,11 +296,13 @@ function buildMeshGraph(scene: THREE.Object3D): MeshGraphNode[] {
 function Model({
   url,
   placements,
+  highlightedPathKey,
   onMeshGraph,
   onSelectedNode,
 }: {
   url: string;
   placements?: PartPlacement[];
+  highlightedPathKey?: string | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
 }) {
@@ -326,12 +337,53 @@ function Model({
     return cloned;
   }, [gltf.scene, placements]);
 
-  useEffect(() => {
+useEffect(() => {
     const graph = buildMeshGraph(scene);
     graphRef.current = graph;
     onMeshGraph?.(graph);
     onSelectedNode?.(null);
   }, [scene, onMeshGraph, onSelectedNode]);
+
+  // 点树 -> 高亮对应零件（改 emissive，可逆，不破坏原材质）
+  useEffect(() => {
+    const applyEmissive = (
+      root: THREE.Object3D,
+      hex: number | null,
+      intensity: number
+    ) => {
+      root.traverse((o) => {
+        if (!(o instanceof THREE.Mesh)) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          const mm = m as THREE.MeshStandardMaterial;
+          if (!mm || !mm.emissive) continue;
+          if (mm.userData.fuzzyOrigEmissive === undefined) {
+            mm.userData.fuzzyOrigEmissive = mm.emissive.getHex();
+            mm.userData.fuzzyOrigEmissiveIntensity = mm.emissiveIntensity ?? 1;
+          }
+          if (hex === null) {
+            mm.emissive.setHex(mm.userData.fuzzyOrigEmissive as number);
+            mm.emissiveIntensity = mm.userData
+              .fuzzyOrigEmissiveIntensity as number;
+          } else {
+            mm.emissive.setHex(hex);
+            mm.emissiveIntensity = intensity;
+          }
+        }
+      });
+    };
+
+    applyEmissive(scene, null, 1); // 先全部恢复
+    if (!highlightedPathKey) return;
+
+    const targets: THREE.Object3D[] = [];
+    scene.traverse((o) => {
+      if (o.userData && o.userData.fuzzyPathKey === highlightedPathKey) {
+        targets.push(o);
+      }
+    });
+    for (const t of targets) applyEmissive(t, 0x2b6cff, 0.7);
+  }, [scene, highlightedPathKey]);
 
   function handlePointerDown(event: ThreeEvent<PointerEvent>) {
     event.stopPropagation();
@@ -351,9 +403,12 @@ function Model({
 export default function FuzzyCADGeometryViewer({
   gltfUrl,
   placements,
+  highlightedPathKey,
   onMeshGraph,
   onSelectedNode,
 }: FuzzyCADGeometryViewerProps) {
+
+
   return (
     <div
       style={{
@@ -386,6 +441,7 @@ export default function FuzzyCADGeometryViewer({
 <Model
                   url={gltfUrl}
                   placements={placements}
+                  highlightedPathKey={highlightedPathKey}
                   onMeshGraph={onMeshGraph}
                   onSelectedNode={onSelectedNode}
                 />

@@ -49,6 +49,10 @@ type ApiResult = {
   message?: string;
 };
 
+type TreeItem = { pathKey: string; name: string };
+type TreeGroup = { key: string; name: string; items: TreeItem[] };
+
+
 function isElementArray(data: unknown): data is OnshapeElement[] {
   return (
     Array.isArray(data) &&
@@ -84,6 +88,9 @@ export default function FuzzyCADHome() {
   const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
   const [selectedMeshNode, setSelectedMeshNode] =
     useState<MeshGraphNode | null>(null);
+
+
+    
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -144,8 +151,11 @@ const partGraph = useMemo(() => {
 
 
 const [placements, setPlacements] = useState<PartPlacement[]>([]);
+const [partTree, setPartTree] = useState<TreeGroup[]>([]);
+const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(null);
 
- useEffect(() => {
+ 
+useEffect(() => {
     const asm = (relationshipGraphResult?.graph as {
       assembly?: {
         documentId?: string;
@@ -159,7 +169,10 @@ const [placements, setPlacements] = useState<PartPlacement[]>([]);
 
     (async () => {
       if (!asm?.documentId || !asm?.workspaceId || !asm?.assemblyElementId) {
-        if (!cancelled) setPlacements([]);
+        if (!cancelled) {
+          setPlacements([]);
+          setPartTree([]);
+        }
         return;
       }
 
@@ -192,20 +205,46 @@ const [placements, setPlacements] = useState<PartPlacement[]>([]);
         for (const s of subs) add((s as { instances?: unknown })?.instances);
 
         const next: PartPlacement[] = [];
+        const groupsMap = new Map<string, TreeGroup>();
+
         for (const o of occurrences) {
           const occ = o as { transform?: unknown; path?: unknown };
-          if (!Array.isArray(occ.transform) || occ.transform.length !== 16) continue;
           if (!Array.isArray(occ.path) || occ.path.length === 0) continue;
-          const leafId = occ.path[occ.path.length - 1] as string;
-          next.push({
-            partName: nameById.get(leafId) ?? null,
-            transform: occ.transform as number[],
-          });
+          const path = occ.path as string[];
+          const pathKey = path.join("/");
+          const leafId = path[path.length - 1];
+          const leafName = nameById.get(leafId) ?? leafId;
+
+          // 树：按子装配分组（顶层 instance 名），叶子每条单列
+          const nested = path.length > 1;
+          const subKey = nested ? path[0] : "__root__";
+          const subName = nested ? nameById.get(path[0]) ?? path[0] : "(顶层零件)";
+          let grp = groupsMap.get(subKey);
+          if (!grp) {
+            grp = { key: subKey, name: subName, items: [] };
+            groupsMap.set(subKey, grp);
+          }
+          grp.items.push({ pathKey, name: leafName });
+
+          // 摆放：需要 16 元 transform
+          if (Array.isArray(occ.transform) && occ.transform.length === 16) {
+            next.push({
+              pathKey,
+              partName: nameById.get(leafId) ?? null,
+              transform: occ.transform as number[],
+            });
+          }
         }
 
-        if (!cancelled) setPlacements(next);
+        if (!cancelled) {
+          setPlacements(next);
+          setPartTree(Array.from(groupsMap.values()));
+        }
       } catch {
-        if (!cancelled) setPlacements([]);
+        if (!cancelled) {
+          setPlacements([]);
+          setPartTree([]);
+        }
       }
     })();
 
@@ -214,9 +253,13 @@ const [placements, setPlacements] = useState<PartPlacement[]>([]);
     };
   }, [relationshipGraphResult]);
 
-  function resetGeometryState() {
+
+
+
+function resetGeometryState() {
     setMeshGraph([]);
     setSelectedMeshNode(null);
+    setHighlightedPathKey(null);
     setGeometryLoadResult(null);
 
     if (gltfUrl) {
@@ -606,12 +649,71 @@ const [placements, setPlacements] = useState<PartPlacement[]>([]);
         Inspect Geometry ZIP
       </button>
 
-<FuzzyCADGeometryViewer
-        gltfUrl={gltfUrl}
-        placements={placements}
-        onMeshGraph={setMeshGraph}
-        onSelectedNode={setSelectedMeshNode}
-      />
+<div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+        <aside
+          style={{
+            width: 260,
+            flexShrink: 0,
+            maxHeight: 560,
+            overflow: "auto",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            padding: 10,
+            fontSize: 13,
+            background: "#fafafa",
+          }}
+        >
+          <strong style={{ display: "block", marginBottom: 6 }}>零件</strong>
+          {partTree.length === 0 ? (
+            <p style={{ color: "#888", margin: 0 }}>
+              先 Build Relationship Graph，再 Load Assembly Geometry。
+            </p>
+          ) : (
+            partTree.map((grp) => (
+              <details key={grp.key} open>
+                <summary
+                  style={{ cursor: "pointer", fontWeight: 600, margin: "6px 0" }}
+                >
+                  {grp.name} ({grp.items.length})
+                </summary>
+                {grp.items.map((it) => (
+                  <div
+                    key={it.pathKey}
+                    onClick={() =>
+                      setHighlightedPathKey(
+                        highlightedPathKey === it.pathKey ? null : it.pathKey
+                      )
+                    }
+                    style={{
+                      cursor: "pointer",
+                      padding: "3px 8px",
+                      marginLeft: 8,
+                      borderRadius: 4,
+                      background:
+                        highlightedPathKey === it.pathKey
+                          ? "#2b6cff"
+                          : "transparent",
+                      color: highlightedPathKey === it.pathKey ? "#fff" : "#222",
+                    }}
+                  >
+                    {it.name}
+                  </div>
+                ))}
+              </details>
+            ))
+          )}
+        </aside>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <FuzzyCADGeometryViewer
+            gltfUrl={gltfUrl}
+            placements={placements}
+            highlightedPathKey={highlightedPathKey}
+            onMeshGraph={setMeshGraph}
+            onSelectedNode={setSelectedMeshNode}
+          />
+        </div>
+      </div>
 
       {meshGraph.length > 0 && (
         <>
