@@ -5,6 +5,10 @@ import { Bounds, Center, OrbitControls, useGLTF } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import styles from "./FuzzyCADGeometryViewer.module.css";
+import { buildMeshGraph, type MeshGraphNode } from "./viewer/meshGraph";
+import { findFuzzyPathKey } from "./viewer/selection";
+
+export type { MeshGraphNode } from "./viewer/meshGraph";
 
 export type PartPlacement = {
   pathKey: string;
