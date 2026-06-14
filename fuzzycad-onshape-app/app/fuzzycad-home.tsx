@@ -19,6 +19,9 @@ import {
   type ApiResult,
   type OnshapeElement,
 } from "./lib/onshapeClient";
+import OperationToolbar, {
+  type OperationTool,
+} from "./components/OperationToolbar";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -62,22 +65,20 @@ export default function FuzzyCADHome() {
   const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
   const [selectedMeshNode, setSelectedMeshNode] =
     useState<MeshGraphNode | null>(null);
-
+    const [activeTool, setActiveTool] = useState<OperationTool>("select");
 
   const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
     null,
   );
-  const { placements, partTree, resetPlacementTree } =
-  useAssemblyPlacementTree(relationshipGraphResult);
+  const { placements, partTree, resetPlacementTree } = useAssemblyPlacementTree(
+    relationshipGraphResult,
+  );
 
-const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
-  relationshipGraphResult,
-  meshGraph,
-  selectedMeshNode,
-});
-
-
-
+  const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
+    relationshipGraphResult,
+    meshGraph,
+    selectedMeshNode,
+  });
 
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
@@ -106,11 +107,6 @@ const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
     elementId || "",
   )}&server=${encodeURIComponent(server)}`;
 
-  
-
-    
-
-
   useEffect(() => {
     if (documentId && workspaceId) {
       void loadElements();
@@ -120,17 +116,17 @@ const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
   }, [documentId, workspaceId]);
 
   function resetGeometryState() {
-  setMeshGraph([]);
-  setSelectedMeshNode(null);
-  setHighlightedPathKey(null);
-  setGeometryLoadResult(null);
-  resetPlacementTree();
+    setMeshGraph([]);
+    setSelectedMeshNode(null);
+    setHighlightedPathKey(null);
+    setGeometryLoadResult(null);
+    resetPlacementTree();
 
-  if (gltfUrl) {
-    URL.revokeObjectURL(gltfUrl);
-    setGltfUrl(null);
+    if (gltfUrl) {
+      URL.revokeObjectURL(gltfUrl);
+      setGltfUrl(null);
+    }
   }
-}
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
@@ -263,15 +259,15 @@ const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
     setGeometryZipManifest(null);
   }
 
-const devGraphStats = partGraph
-  ? {
-      matched: partGraph.residualStats.matched,
-      total: partGraph.residualStats.total,
-      scale: partGraph.scale,
-      clickedPathKey: selectedGraphPathKey,
-      linkedCount: linkedGroup ? linkedGroup.length : null,
-    }
-  : null;
+  const devGraphStats = partGraph
+    ? {
+        matched: partGraph.residualStats.matched,
+        total: partGraph.residualStats.total,
+        scale: partGraph.scale,
+        clickedPathKey: selectedGraphPathKey,
+        linkedCount: linkedGroup ? linkedGroup.length : null,
+      }
+    : null;
 
   const connected = oauthStatus === "connected" || assemblyElements.length > 0;
 
@@ -294,16 +290,22 @@ const devGraphStats = partGraph
         }}
       />
 
-      <div className={styles.viewerPane}>
-        <FuzzyCADGeometryViewer
-          gltfUrl={gltfUrl}
-          placements={placements}
-          highlightedPathKey={highlightedPathKey}
-          onMeshGraph={setMeshGraph}
-          onSelectedNode={setSelectedMeshNode}
-          onSelectedPathKey={setHighlightedPathKey}
-        />
-      </div>
+<div className={styles.viewerPane}>
+  <FuzzyCADGeometryViewer
+    gltfUrl={gltfUrl}
+    placements={placements}
+    highlightedPathKey={highlightedPathKey}
+    onMeshGraph={setMeshGraph}
+    onSelectedNode={setSelectedMeshNode}
+    onSelectedPathKey={setHighlightedPathKey}
+  />
+
+  <OperationToolbar
+    activeTool={activeTool}
+    disabled={!gltfUrl}
+    onToolChange={setActiveTool}
+  />
+</div>
 
       {dev ? (
         <DevPanel
