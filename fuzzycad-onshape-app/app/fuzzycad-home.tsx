@@ -15,6 +15,7 @@ import {
   type LogicalMateEdge,
   type MatchedInstance,
 } from "./lib/partGraph";
+import PartTree, { type TreeGroup } from "./components/PartTree";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -49,16 +50,7 @@ type ApiResult = {
   message?: string;
 };
 
-type TreeItem = {
-  pathKey: string;
-  name: string;
-};
 
-type TreeGroup = {
-  key: string;
-  name: string;
-  items: TreeItem[];
-};
 
 function isElementArray(data: unknown): data is OnshapeElement[] {
   return (
@@ -521,35 +513,11 @@ export default function FuzzyCADHome() {
 </p>
         )}
 
-        <div className={styles.partTree}>
-          {partTree.length === 0 ? (
-            <p className={styles.partTreeEmpty}>Loaded parts will appear here.</p>
-          ) : (
-            partTree.map((group) => (
-              <details key={group.key} open>
-<summary className={styles.partGroupSummary}>
-  {group.name} ({group.items.length})
-</summary>
-
-                {group.items.map((item) => (
-                 <div
-  key={item.pathKey}
-  onClick={() => {
-    setHighlightedPathKey(
-      highlightedPathKey === item.pathKey ? null : item.pathKey
-    );
-  }}
-  className={`${styles.partItem} ${
-    highlightedPathKey === item.pathKey ? styles.partItemSelected : ""
-  }`}
->
-  {item.name}
-</div>
-                ))}
-              </details>
-            ))
-          )}
-        </div>
+<PartTree
+  groups={partTree}
+  selectedPathKey={highlightedPathKey}
+  onSelectPathKey={setHighlightedPathKey}
+/>
 
         <button
   onClick={() => {
@@ -628,20 +596,20 @@ export default function FuzzyCADHome() {
             </button>
           </div>
 
-          {partGraph ? (
-            <p style={{ marginTop: 16 }}>
-              Matched: {partGraph.residualStats.matched}/
-              {partGraph.residualStats.total} · scale {partGraph.scale}
-              {selectedMeshNode ? (
-                <>
-                  {" "}
-                  · clicked{" "}
-                  {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—"}
-                  {linkedGroup ? <> · linked {linkedGroup.length}</> : null}
-                </>
-              ) : null}
-            </p>
-          ) : null}
+{partGraph ? (
+  <p className={styles.devStats}>
+    Matched: {partGraph.residualStats.matched}/
+    {partGraph.residualStats.total} · scale {partGraph.scale}
+    {selectedMeshNode ? (
+      <>
+        {" "}
+        · clicked{" "}
+        {partGraph.byMeshUuid.get(selectedMeshNode.nodeId) ?? "—"}
+        {linkedGroup ? <> · linked {linkedGroup.length}</> : null}
+      </>
+    ) : null}
+  </p>
+) : null}   
 
           {meshGraph.length > 0 ? (
             <p>

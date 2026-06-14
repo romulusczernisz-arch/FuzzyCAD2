@@ -137,6 +137,10 @@
   gap: 8px;
 }
 
+.devStats {
+  margin-top: 16px;
+}
+
 .debugDetails {
   margin-top: 12px;
 }
