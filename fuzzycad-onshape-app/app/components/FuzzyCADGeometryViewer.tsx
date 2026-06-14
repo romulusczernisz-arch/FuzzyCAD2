@@ -59,21 +59,33 @@ function collectPartGroups(scene: THREE.Object3D): THREE.Object3D[] {
     if (hasMesh) groups.push(o);
   });
   return groups.filter(
-    (g) => !groups.some((other) => other !== g && isAncestor(other, g))
+    (g) => !groups.some((other) => other !== g && isAncestor(other, g)),
   );
 }
 
 function placeGroup(
   g: THREE.Object3D,
   transform: number[],
-  sceneInv: THREE.Matrix4
+  sceneInv: THREE.Matrix4,
 ) {
   const occ = new THREE.Matrix4();
   occ.set(
-    transform[0], transform[1], transform[2], transform[3],
-    transform[4], transform[5], transform[6], transform[7],
-    transform[8], transform[9], transform[10], transform[11],
-    transform[12], transform[13], transform[14], transform[15]
+    transform[0],
+    transform[1],
+    transform[2],
+    transform[3],
+    transform[4],
+    transform[5],
+    transform[6],
+    transform[7],
+    transform[8],
+    transform[9],
+    transform[10],
+    transform[11],
+    transform[12],
+    transform[13],
+    transform[14],
+    transform[15],
   );
   const parent = g.parent ?? g;
   const parentRel = sceneInv.clone().multiply(parent.matrixWorld);
@@ -93,7 +105,7 @@ export type PlacementReport = {
 
 function applyPlacements(
   scene: THREE.Object3D,
-  placements: PartPlacement[]
+  placements: PartPlacement[],
 ): PlacementReport {
   const report: PlacementReport = {
     groupCount: 0,
@@ -111,7 +123,7 @@ function applyPlacements(
   report.groupNames = groups.map((g) => g.name);
 
   // 已知零件名（instance 叶子名规范化后）-> 该名下所有 transform
-const byBase = new Map<string, { transform: number[]; pathKey: string }[]>();
+  const byBase = new Map<string, { transform: number[]; pathKey: string }[]>();
   for (const p of placements) {
     const k = sanitize(p.partName);
     if (!k) continue;
@@ -138,15 +150,14 @@ const byBase = new Map<string, { transform: number[]; pathKey: string }[]>();
       continue;
     }
 
-    
-cursor.set(base, i + 1);
+    cursor.set(base, i + 1);
     placeGroup(g, list[i].transform, sceneInv);
     g.userData.fuzzyPathKey = list[i].pathKey;
     report.placedByName++;
   }
 
   // 兜底：名字没对上的，按顺序配剩下的 transform
-if (unmatched.length > 0) {
+  if (unmatched.length > 0) {
     const leftovers: { transform: number[]; pathKey: string }[] = [];
     for (const [b, list] of byBase) {
       const used = cursor.get(b) ?? 0;
@@ -159,40 +170,11 @@ if (unmatched.length > 0) {
     }
   }
 
-
   console.log(
-    `[FuzzyCAD] placement: 按名字摆了 ${report.placedByName}/${report.groupCount}，按顺序兜底 ${report.placedByOrder}。组名: [${report.groupNames.join(", ")}]`
+    `[FuzzyCAD] placement: 按名字摆了 ${report.placedByName}/${report.groupCount}，按顺序兜底 ${report.placedByOrder}。组名: [${report.groupNames.join(", ")}]`,
   );
   return report;
 }
-
-export type MeshGraphNode = {
-  nodeId: string;
-  name: string;
-  type: string;
-  parentId: string | null;
-  parentName: string | null;
-  childCount: number;
-  children: string[];
-  path: string;
-  visible: boolean;
-
-  isMesh: boolean;
-  geometryName: string | null;
-  materialName: string | null;
-  vertexCount: number | null;
-  triangleCount: number | null;
-
-  localMatrix: number[];
-  worldMatrix: number[];
-  worldPosition: {
-    x: number;
-    y: number;
-    z: number;
-  };
-  modelMatrix: number[];
-  modelPosition: { x: number; y: number; z: number };
-};
 
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
@@ -202,118 +184,6 @@ type FuzzyCADGeometryViewerProps = {
   onSelectedNode?: (node: MeshGraphNode | null) => void;
   onSelectedPathKey?: (pathKey: string | null) => void;
 };
-
-function findFuzzyPathKey(object: THREE.Object3D): string | null {
-  let current: THREE.Object3D | null = object;
-
-  while (current) {
-    const pathKey = current.userData?.fuzzyPathKey;
-
-    if (typeof pathKey === "string" && pathKey.length > 0) {
-      return pathKey;
-    }
-
-    current = current.parent;
-  }
-
-  return null;
-}
-
-function getObjectPath(object: THREE.Object3D): string {
-  const names: string[] = [];
-  let current: THREE.Object3D | null = object;
-
-  while (current) {
-    const label = current.name || current.type || "Unnamed";
-    names.unshift(label);
-    current = current.parent;
-  }
-
-  return names.join(" / ");
-}
-
-function getMaterialName(material: THREE.Material | THREE.Material[] | null) {
-  if (!material) return null;
-
-  if (Array.isArray(material)) {
-    return material.map((item) => item.name || item.type).join(", ");
-  }
-
-  return material.name || material.type;
-}
-
-function buildMeshGraph(scene: THREE.Object3D): MeshGraphNode[] {
-  scene.updateMatrixWorld(true);
-  const sceneInverse = new THREE.Matrix4().copy(scene.matrixWorld).invert();
-
-  const nodes: MeshGraphNode[] = [];
-
-  scene.traverse((object) => {
-    const isMesh = object instanceof THREE.Mesh;
-
-    let geometryName: string | null = null;
-    let materialName: string | null = null;
-    let vertexCount: number | null = null;
-    let triangleCount: number | null = null;
-
-    if (isMesh) {
-      geometryName = object.geometry.name || null;
-      materialName = getMaterialName(object.material);
-
-      const position = object.geometry.attributes.position;
-      vertexCount = position ? position.count : null;
-
-      if (object.geometry.index) {
-        triangleCount = object.geometry.index.count / 3;
-      } else if (position) {
-        triangleCount = position.count / 3;
-      }
-    }
-
-    const worldPosition = new THREE.Vector3();
-    worldPosition.setFromMatrixPosition(object.matrixWorld);
-
-    const modelMatrix = new THREE.Matrix4().multiplyMatrices(
-      sceneInverse,
-      object.matrixWorld
-    );
-    const modelPosition = new THREE.Vector3().setFromMatrixPosition(modelMatrix);
-
-    nodes.push({
-      nodeId: object.uuid,
-      name: object.name || "",
-      type: object.type,
-      parentId: object.parent?.uuid ?? null,
-      parentName: object.parent?.name || object.parent?.type || null,
-      childCount: object.children.length,
-      children: object.children.map((child) => child.uuid),
-      path: getObjectPath(object),
-      visible: object.visible,
-
-      isMesh,
-      geometryName,
-      materialName,
-      vertexCount,
-      triangleCount,
-
-      localMatrix: object.matrix.toArray(),
-      worldMatrix: object.matrixWorld.toArray(),
-    worldPosition: {
-        x: worldPosition.x,
-        y: worldPosition.y,
-        z: worldPosition.z,
-      },
-      modelMatrix: modelMatrix.toArray(),
-      modelPosition: {
-        x: modelPosition.x,
-        y: modelPosition.y,
-        z: modelPosition.z,
-      },
-    });
-  });
-
-  return nodes;
-}
 
 function Model({
   url,
@@ -361,7 +231,7 @@ function Model({
     return cloned;
   }, [gltf.scene, placements]);
 
-useEffect(() => {
+  useEffect(() => {
     const graph = buildMeshGraph(scene);
     graphRef.current = graph;
     onMeshGraph?.(graph);
@@ -373,7 +243,7 @@ useEffect(() => {
     const applyEmissive = (
       root: THREE.Object3D,
       hex: number | null,
-      intensity: number
+      intensity: number,
     ) => {
       root.traverse((o) => {
         if (!(o instanceof THREE.Mesh)) return;
@@ -409,20 +279,20 @@ useEffect(() => {
     for (const t of targets) applyEmissive(t, 0x2b6cff, 0.7);
   }, [scene, highlightedPathKey]);
 
-function handlePointerDown(event: ThreeEvent<PointerEvent>) {
-  event.stopPropagation();
+  function handlePointerDown(event: ThreeEvent<PointerEvent>) {
+    event.stopPropagation();
 
-  const selectedObject = event.object;
-  const graph = graphRef.current;
+    const selectedObject = event.object;
+    const graph = graphRef.current;
 
-  const selectedNode =
-    graph.find((node) => node.nodeId === selectedObject.uuid) ?? null;
+    const selectedNode =
+      graph.find((node) => node.nodeId === selectedObject.uuid) ?? null;
 
-  const selectedPathKey = findFuzzyPathKey(selectedObject);
+    const selectedPathKey = findFuzzyPathKey(selectedObject);
 
-  onSelectedNode?.(selectedNode);
-  onSelectedPathKey?.(selectedPathKey);
-}
+    onSelectedNode?.(selectedNode);
+    onSelectedPathKey?.(selectedPathKey);
+  }
 
   return <primitive object={scene} onPointerDown={handlePointerDown} />;
 }
@@ -435,14 +305,12 @@ export default function FuzzyCADGeometryViewer({
   onSelectedNode,
   onSelectedPathKey,
 }: FuzzyCADGeometryViewerProps) {
-
-
- return (
-  <div className={styles.root}>
+  return (
+    <div className={styles.root}>
       {!gltfUrl ? (
-       <div className={styles.emptyState}>
-  No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
-</div>
+        <div className={styles.emptyState}>
+          No geometry loaded yet. Click <strong>Load Assembly Geometry</strong>.
+        </div>
       ) : (
         <Canvas
           camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
@@ -457,14 +325,14 @@ export default function FuzzyCADGeometryViewer({
           <Suspense fallback={null}>
             <Bounds fit clip observe margin={1.2}>
               <Center>
-<Model
-  url={gltfUrl}
-  placements={placements}
-  highlightedPathKey={highlightedPathKey}
-  onMeshGraph={onMeshGraph}
-  onSelectedNode={onSelectedNode}
-  onSelectedPathKey={onSelectedPathKey}
-/>
+                <Model
+                  url={gltfUrl}
+                  placements={placements}
+                  highlightedPathKey={highlightedPathKey}
+                  onMeshGraph={onMeshGraph}
+                  onSelectedNode={onSelectedNode}
+                  onSelectedPathKey={onSelectedPathKey}
+                />
               </Center>
             </Bounds>
           </Suspense>
