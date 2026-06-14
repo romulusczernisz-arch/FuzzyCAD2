@@ -3,7 +3,6 @@
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
 import { Bounds, Center, OrbitControls, useGLTF } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import * as THREE from "three";
 import styles from "./FuzzyCADGeometryViewer.module.css";
 import { buildMeshGraph, type MeshGraphNode } from "./viewer/meshGraph";
 import { findFuzzyPathKey } from "./viewer/selection";
@@ -166,7 +165,7 @@ export default function FuzzyCADGeometryViewer({
         </Bounds>
       </Suspense>
 
-      <OrbitControls makeDefault />
+<OrbitControls makeDefault enabled={activeTool !== "lasso"} />
     </Canvas>
 
     {activeTool === "lasso" ? (
