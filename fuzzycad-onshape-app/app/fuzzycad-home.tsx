@@ -25,6 +25,7 @@ import {
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
 import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
+import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -82,18 +83,22 @@ export default function FuzzyCADHome() {
   );
 
   const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
-    relationshipGraphResult,
-    meshGraph,
-    selectedMeshNode,
-  });
+  relationshipGraphResult,
+  meshGraph,
+  selectedMeshNode,
+});
 
-  const compactAxialStretchContext = useMemo(
+const compactAxialStretchContext = useMemo(
   () => buildCompactAxialStretchContext(objectSummaries, lassoPathKeys),
   [objectSummaries, lassoPathKeys],
 );
 
-  const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
-  const [busy, setBusy] = useState<boolean>(false);
+const draftAxialStretchPlan = useMemo(
+  () => inferCompactAxialStretchPlan(compactAxialStretchContext),
+  [compactAxialStretchContext],
+);
+
+const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");  const [busy, setBusy] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<OperationTool>("select");
 
   const documentId = params.get("documentId");
@@ -341,7 +346,7 @@ export default function FuzzyCADHome() {
           selectedAssemblyId={selectedAssemblyId}
           graphStats={devGraphStats}
           meshGraph={meshGraph}
-debugResults={[
+        debugResults={[
   { title: "Relationship Graph", value: relationshipGraphResult },
   { title: "Assembly Summary", value: assemblySummaryResult },
   { title: "Raw Assembly", value: assemblyResult },
@@ -359,6 +364,10 @@ debugResults={[
   {
     title: "Compact AI Context",
     value: compactAxialStretchContext.aiPayload,
+  },
+  {
+    title: "Draft Axial Stretch Plan",
+    value: draftAxialStretchPlan,
   },
   {
     title: "Compact Alias Map",
