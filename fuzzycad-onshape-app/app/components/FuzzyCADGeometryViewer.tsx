@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import { Bounds, Center, OrbitControls, useGLTF } from "@react-three/drei";
+import { Bounds, OrbitControls, useGLTF } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import styles from "./FuzzyCADGeometryViewer.module.css";
@@ -98,7 +98,7 @@ function Model({
 }) {
   const gltf = useGLTF(url);
   const graphRef = useRef<MeshGraphNode[]>([]);
-  const { camera, gl } = useThree();
+  const { camera, gl, invalidate } = useThree();
 
   const scene = useMemo(() => {
     const cloned = gltf.scene.clone(true);
@@ -278,6 +278,7 @@ function Model({
     }
 
     appliedValueRef.current = targetValue;
+    invalidate();
   }, [manipulationValue, handleConfig]);
 
   function handleDragStateChange(dragging: boolean) {
@@ -374,25 +375,23 @@ export default function FuzzyCADGeometryViewer({
 
             <Suspense fallback={null}>
               <Bounds fit clip observe margin={1.2}>
-                <Center>
-                  <Model
-                    url={gltfUrl}
-                    placements={placements}
-                    highlightedPathKey={highlightedPathKey}
-                    selectedPathKeys={selectedPathKeys}
-                    activeTool={activeTool}
-                    activePathKeys={activePathKeys}
-                    manipulationValue={manipulationValue}
-                    lassoPolygon={lassoPolygon}
-                    onMeshGraph={onMeshGraph}
-                    onObjectSummaries={onObjectSummaries}
-                    onSelectedNode={onSelectedNode}
-                    onSelectedPathKey={onSelectedPathKey}
-                    onObjectLassoSelection={onObjectLassoSelection}
-                    onManipulationChange={onManipulationChange}
-                    onManipulationDragStateChange={setManipulationDragging}
-                  />
-                </Center>
+                <Model
+                  url={gltfUrl}
+                  placements={placements}
+                  highlightedPathKey={highlightedPathKey}
+                  selectedPathKeys={selectedPathKeys}
+                  activeTool={activeTool}
+                  activePathKeys={activePathKeys}
+                  manipulationValue={manipulationValue}
+                  lassoPolygon={lassoPolygon}
+                  onMeshGraph={onMeshGraph}
+                  onObjectSummaries={onObjectSummaries}
+                  onSelectedNode={onSelectedNode}
+                  onSelectedPathKey={onSelectedPathKey}
+                  onObjectLassoSelection={onObjectLassoSelection}
+                  onManipulationChange={onManipulationChange}
+                  onManipulationDragStateChange={setManipulationDragging}
+                />
               </Bounds>
             </Suspense>
 
