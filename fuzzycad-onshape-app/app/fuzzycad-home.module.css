@@ -181,6 +181,54 @@
   pointer-events: none;
 }
 
+.manipulationReadout {
+  position: absolute;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid rgba(104, 165, 255, 0.58);
+  border-radius: 14px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.86),
+      rgba(236, 246, 255, 0.76)
+    );
+  box-shadow:
+    0 12px 32px rgba(43, 108, 255, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.55) inset;
+  backdrop-filter: blur(18px);
+  font-family: monospace;
+  font-size: 13px;
+  color: #1c3d8f;
+}
+
+.manipulationValue {
+  font-weight: 700;
+  min-width: 70px;
+  text-align: right;
+}
+
+.manipulationResetButton {
+  border: 1px solid rgba(43, 108, 255, 0.42);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #2b6cff;
+  font-size: 12px;
+  font-family: Arial, sans-serif;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.manipulationResetButton:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .operationToolbar {
   display: flex;
   align-items: center;

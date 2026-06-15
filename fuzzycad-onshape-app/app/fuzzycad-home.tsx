@@ -78,6 +78,10 @@ export default function FuzzyCADHome() {
   );
   const [lassoPathKeys, setLassoPathKeys] = useState<string[]>([]);
 
+  // Current value of the active sizing/angle handle: world units (meters)
+  // for height/extend, degrees for angle.
+  const [manipulationValue, setManipulationValue] = useState<number>(0);
+
   const { placements, partTree, resetPlacementTree } = useAssemblyPlacementTree(
     relationshipGraphResult,
   );
@@ -100,6 +104,31 @@ const draftAxialStretchPlan = useMemo(
 
 const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");  const [busy, setBusy] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<OperationTool>("select");
+
+  // Path keys the active sizing/angle handle should act on: the lasso
+  // selection if there is one, otherwise the single highlighted part.
+  const activePathKeys = useMemo(() => {
+    if (lassoPathKeys.length > 0) {
+      return lassoPathKeys;
+    }
+
+    return highlightedPathKey ? [highlightedPathKey] : [];
+  }, [lassoPathKeys, highlightedPathKey]);
+
+  // Reset the live manipulation value whenever the tool or the active
+  // selection changes, so each new drag starts from zero.
+  useEffect(() => {
+    setManipulationValue(0);
+  }, [activeTool, activePathKeys]);
+
+  const manipulationUnitLabel = activeTool === "angle" ? "°" : "mm";
+  const manipulationDisplayValue =
+    activeTool === "angle" ? manipulationValue : manipulationValue * 1000;
+  const showManipulationReadout =
+    (activeTool === "height" ||
+      activeTool === "extend" ||
+      activeTool === "angle") &&
+    activePathKeys.length > 0;
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -317,6 +346,8 @@ const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");  const
           highlightedPathKey={highlightedPathKey}
           selectedPathKeys={lassoPathKeys}
           activeTool={activeTool}
+          activePathKeys={activePathKeys}
+          manipulationValue={manipulationValue}
           onMeshGraph={setMeshGraph}
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
@@ -325,7 +356,32 @@ const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");  const
             setLassoPathKeys(pathKeys);
             setHighlightedPathKey(pathKeys[0] ?? null);
           }}
+          onManipulationChange={setManipulationValue}
         />
+
+        {showManipulationReadout ? (
+          <div className={styles.manipulationReadout}>
+            <span>
+              {activeTool === "height"
+                ? "Height"
+                : activeTool === "extend"
+                  ? "Extend"
+                  : "Angle"}
+            </span>
+            <span className={styles.manipulationValue}>
+              {manipulationDisplayValue >= 0 ? "+" : ""}
+              {manipulationDisplayValue.toFixed(1)} {manipulationUnitLabel}
+            </span>
+            <button
+              type="button"
+              className={styles.manipulationResetButton}
+              onClick={() => setManipulationValue(0)}
+              disabled={manipulationValue === 0}
+            >
+              Reset
+            </button>
+          </div>
+        ) : null}
 
         <OperationToolbar
           activeTool={activeTool}
