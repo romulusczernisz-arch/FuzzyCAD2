@@ -24,8 +24,8 @@ import {
 } from "./lib/onshapeClient";
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
+import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
 
- 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
   {
@@ -65,30 +65,36 @@ export default function FuzzyCADHome() {
   const [geometryZipManifest, setGeometryZipManifest] =
     useState<ApiResult | null>(null);
 
- const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
- const [objectSummaries, setObjectSummaries] = useState<
-  AxialStretchObjectSummary[]
->([]);
-const [selectedMeshNode, setSelectedMeshNode] =
-  useState<MeshGraphNode | null>(null);
+  const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
+  const [objectSummaries, setObjectSummaries] = useState<
+    AxialStretchObjectSummary[]
+  >([]);
+  const [selectedMeshNode, setSelectedMeshNode] =
+    useState<MeshGraphNode | null>(null);
 
-const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
-  null,
+  const [highlightedPathKey, setHighlightedPathKey] = useState<string | null>(
+    null,
+  );
+  const [lassoPathKeys, setLassoPathKeys] = useState<string[]>([]);
+
+  const { placements, partTree, resetPlacementTree } = useAssemblyPlacementTree(
+    relationshipGraphResult,
+  );
+
+  const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
+    relationshipGraphResult,
+    meshGraph,
+    selectedMeshNode,
+  });
+
+  const compactAxialStretchContext = useMemo(
+  () => buildCompactAxialStretchContext(objectSummaries, lassoPathKeys),
+  [objectSummaries, lassoPathKeys],
 );
-const [lassoPathKeys, setLassoPathKeys] = useState<string[]>([]);
 
-const { placements, partTree, resetPlacementTree } =
-  useAssemblyPlacementTree(relationshipGraphResult);
-
-const { partGraph, linkedGroup, selectedGraphPathKey } = usePartGraph({
-  relationshipGraphResult,
-  meshGraph,
-  selectedMeshNode,
-});
-
-const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
-const [busy, setBusy] = useState<boolean>(false);
-const [activeTool, setActiveTool] = useState<OperationTool>("select");
+  const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
+  const [busy, setBusy] = useState<boolean>(false);
+  const [activeTool, setActiveTool] = useState<OperationTool>("select");
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -122,20 +128,20 @@ const [activeTool, setActiveTool] = useState<OperationTool>("select");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, workspaceId]);
 
-function resetGeometryState() {
-  setMeshGraph([]);
-  setObjectSummaries([]);
-  setSelectedMeshNode(null);
-  setHighlightedPathKey(null);
-  setLassoPathKeys([]);
-  setGeometryLoadResult(null);
-  resetPlacementTree();
+  function resetGeometryState() {
+    setMeshGraph([]);
+    setObjectSummaries([]);
+    setSelectedMeshNode(null);
+    setHighlightedPathKey(null);
+    setLassoPathKeys([]);
+    setGeometryLoadResult(null);
+    resetPlacementTree();
 
-  if (gltfUrl) {
-    URL.revokeObjectURL(gltfUrl);
-    setGltfUrl(null);
+    if (gltfUrl) {
+      URL.revokeObjectURL(gltfUrl);
+      setGltfUrl(null);
+    }
   }
-}
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
@@ -299,35 +305,35 @@ function resetGeometryState() {
         }}
       />
 
-<div className={styles.viewerPane}>
-<FuzzyCADGeometryViewer
-  gltfUrl={gltfUrl}
-  placements={placements}
-  highlightedPathKey={highlightedPathKey}
-  selectedPathKeys={lassoPathKeys}
-  activeTool={activeTool}
-  onMeshGraph={setMeshGraph}
-  onObjectSummaries={setObjectSummaries}
-  onSelectedNode={setSelectedMeshNode}
-  onSelectedPathKey={setHighlightedPathKey}
-  onObjectLassoSelection={(pathKeys) => {
-    setLassoPathKeys(pathKeys);
-    setHighlightedPathKey(pathKeys[0] ?? null);
-  }}
-/>
+      <div className={styles.viewerPane}>
+        <FuzzyCADGeometryViewer
+          gltfUrl={gltfUrl}
+          placements={placements}
+          highlightedPathKey={highlightedPathKey}
+          selectedPathKeys={lassoPathKeys}
+          activeTool={activeTool}
+          onMeshGraph={setMeshGraph}
+          onObjectSummaries={setObjectSummaries}
+          onSelectedNode={setSelectedMeshNode}
+          onSelectedPathKey={setHighlightedPathKey}
+          onObjectLassoSelection={(pathKeys) => {
+            setLassoPathKeys(pathKeys);
+            setHighlightedPathKey(pathKeys[0] ?? null);
+          }}
+        />
 
-  <OperationToolbar
-    activeTool={activeTool}
-    disabled={!gltfUrl}
-    onToolChange={(tool) => {
-      setActiveTool(tool);
+        <OperationToolbar
+          activeTool={activeTool}
+          disabled={!gltfUrl}
+          onToolChange={(tool) => {
+            setActiveTool(tool);
 
-      if (tool === "select") {
-        setLassoPathKeys([]);
-      }
-    }}
-  />
-</div>
+            if (tool === "select") {
+              setLassoPathKeys([]);
+            }
+          }}
+        />
+      </div>
 
       {dev ? (
         <DevPanel
@@ -342,7 +348,22 @@ debugResults={[
   { title: "Elements", value: elementsResult },
   { title: "Geometry Load", value: geometryLoadResult },
   { title: "Geometry ZIP", value: geometryZipManifest },
-  { title: "Object Summaries", value: objectSummaries },
+  {
+    title: "Object Summary Stats",
+    value: {
+      totalObjectSummaries: objectSummaries.length,
+      selectedByLasso: objectSummaries.filter((item) => item.selectedByLasso)
+        .length,
+    },
+  },
+  {
+    title: "Compact AI Context",
+    value: compactAxialStretchContext.aiPayload,
+  },
+  {
+    title: "Compact Alias Map",
+    value: compactAxialStretchContext.aliasMap,
+  },
 ]}
           allParams={allParams}
           onClose={() => {
