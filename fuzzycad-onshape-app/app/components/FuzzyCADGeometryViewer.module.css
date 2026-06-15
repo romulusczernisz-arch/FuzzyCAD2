@@ -51,33 +51,47 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  cursor: grab;
+  gap: 6px;
+  cursor: ew-resize;
   touch-action: none;
   user-select: none;
   pointer-events: auto;
 }
 
-.sizingHandle:active,
 .sizingHandleActive {
-  cursor: grabbing;
+  cursor: ew-resize;
+}
+
+.sizingHandleTrack {
+  position: relative;
+  width: 220px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(43, 108, 255, 0.18);
+  border: 1px solid rgba(43, 108, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.55) inset;
 }
 
 .sizingHandleKnob {
-  width: 16px;
-  height: 16px;
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #2b6cff;
   border: 2px solid #ffffff;
   box-shadow:
     0 0 0 1px rgba(43, 108, 255, 0.55),
     0 4px 10px rgba(43, 108, 255, 0.35);
-  transition: transform 120ms ease;
+  transform: translate(-50%, -50%);
+  transition: box-shadow 120ms ease;
+  pointer-events: none;
 }
 
-.sizingHandleActive .sizingHandleKnob,
-.sizingHandle:active .sizingHandleKnob {
-  transform: scale(1.2);
+.sizingHandleActive .sizingHandleKnob {
+  box-shadow:
+    0 0 0 3px rgba(43, 108, 255, 0.3),
+    0 4px 14px rgba(43, 108, 255, 0.5);
 }
 
 .sizingHandleLabel {
