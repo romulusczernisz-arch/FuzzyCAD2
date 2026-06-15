@@ -30,10 +30,6 @@ function groupCenterY(group: CompactAxialStretchGroup) {
   return (group.yRange[0] + group.yRange[1]) / 2;
 }
 
-function groupHeight(group: CompactAxialStretchGroup) {
-  return Math.max(group.yRange[1] - group.yRange[0], 1e-6);
-}
-
 function isRepeated(group: CompactAxialStretchGroup) {
   return group.count >= 2 || group.selectedCount >= 2;
 }
@@ -47,7 +43,6 @@ function isCompact(group: CompactAxialStretchGroup) {
 }
 
 function verticalAxisComponent(group: CompactAxialStretchGroup) {
-  // heightDirection is [0, 1, 0], so this is |axis.y|.
   return Math.abs(group.avgAxis[1]);
 }
 
@@ -60,25 +55,32 @@ function selectPrimaryStretchGroups(groups: CompactAxialStretchGroup[]) {
     return [];
   }
 
+  const centerYs = selectedElongatedGroups.map(groupCenterY);
+  const centerYMin = Math.min(...centerYs);
+  const centerYMax = Math.max(...centerYs);
+  const centerYSpan = Math.max(centerYMax - centerYMin, 1e-6);
+
   const scored = selectedElongatedGroups.map((group) => {
     let score = 0;
 
-    // Strong geometric signal: long/thin objects are better stretch candidates.
+    // Long/thin geometry is the strongest stretch signal.
     score += Math.min(group.avgElongation / 8, 4);
 
-    // Repeated members are more likely to be structural supports.
+    // Repeated selected members are more likely to be structural supports.
     if (isRepeated(group)) {
       score += 2;
+    } else {
+      score -= 1;
     }
 
-    // Height operation prefers objects whose axes contribute to height.
+    // Height operation prefers members whose own axis contributes to height.
     score += verticalAxisComponent(group) * 2;
 
-    // For height editing, lower elongated selected groups are usually
-    // better candidates than upper structural members.
-    score += -groupCenterY(group) * 2;
+    // For height editing, prefer the lower selected elongated band.
+    // This avoids stretching both upper and lower structural segments.
+    score += -groupCenterY(group) * 3;
 
-    // Very short elongated objects may be small rods/details, not main supports.
+    // Very short elongated parts are often small rods/details.
     if (group.avgLength < 0.15) {
       score -= 3;
     }
@@ -94,10 +96,22 @@ function selectPrimaryStretchGroups(groups: CompactAxialStretchGroup[]) {
     return [];
   }
 
-  // Keep only groups very close to the best score.
-  // This avoids selecting all elongated members.
+  const bestCenterY = groupCenterY(best.group);
+
+  // Keep only groups in the same lower vertical band as the best group.
+  // This still allows multiple repeated lower groups, but prevents selecting
+  // upper elongated members at the same time.
+  const sameBandTolerance = Math.max(0.04, centerYSpan * 0.18);
+
   return scored
-    .filter((item) => item.score >= best.score - 0.75)
+    .filter((item) => {
+      const centerY = groupCenterY(item.group);
+
+      return (
+        item.score >= best.score - 0.5 &&
+        centerY <= bestCenterY + sameBandTolerance
+      );
+    })
     .map((item) => item.group);
 }
 
@@ -182,7 +196,7 @@ export function inferCompactAxialStretchPlan(
           targetType: "group",
           role: "stretchTarget",
           reason: shortReason(
-            "Selected repeated elongated group with strong height-axis contribution; use object-axis stretch.",
+            "Selected repeated elongated group in the primary lower height-changing band; use object-axis stretch.",
           ),
         };
       }
@@ -201,7 +215,7 @@ export function inferCompactAxialStretchPlan(
           targetType: "group",
           role: "excluded",
           reason: shortReason(
-            "Selected elongated group, but not the primary height-changing segment under the current selection.",
+            "Selected elongated group, but outside the primary height-changing band for this operation.",
           ),
         };
       }
@@ -221,7 +235,7 @@ export function inferCompactAxialStretchPlan(
     roles,
     notes: [
       "This is a geometry-based local draft, not an AI result.",
-      "Names are only labels in the compact context; this planner uses shape, repetition, axis direction, selection, and vertical position.",
+      "Names are only display labels. The planner uses shape, repetition, axis direction, selection, and vertical position.",
     ],
   };
 }
