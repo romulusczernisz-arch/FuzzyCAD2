@@ -15,9 +15,12 @@ import {
   selectPathKeysByLasso,
   type ScreenPoint,
 } from "./viewer/lassoObjectSelection";
+import { buildObjectSummaries } from "./viewer/objectSummary";
+import type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
 
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
+export type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
 
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
@@ -26,6 +29,7 @@ type FuzzyCADGeometryViewerProps = {
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
+  onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
   onSelectedPathKey?: (pathKey: string | null) => void;
   onObjectLassoSelection?: (pathKeys: string[]) => void;
@@ -38,6 +42,7 @@ function Model({
   selectedPathKeys,
   lassoPolygon,
   onMeshGraph,
+  onObjectSummaries,
   onSelectedNode,
   onSelectedPathKey,
   onObjectLassoSelection,
@@ -47,8 +52,9 @@ function Model({
   highlightedPathKey?: string | null;
   selectedPathKeys?: string[];
   lassoPolygon?: ScreenPoint[] | null;
-  onMeshGraph?: (nodes: MeshGraphNode[]) => void;
-  onSelectedNode?: (node: MeshGraphNode | null) => void;
+onMeshGraph?: (nodes: MeshGraphNode[]) => void;
+onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
+onSelectedNode?: (node: MeshGraphNode | null) => void;
   onSelectedPathKey?: (pathKey: string | null) => void;
   onObjectLassoSelection?: (pathKeys: string[]) => void;
 }) {
@@ -72,6 +78,11 @@ function Model({
     onMeshGraph?.(graph);
     onSelectedNode?.(null);
   }, [scene, onMeshGraph, onSelectedNode]);
+
+  useEffect(() => {
+  const summaries = buildObjectSummaries(scene, selectedPathKeys ?? []);
+  onObjectSummaries?.(summaries);
+}, [scene, selectedPathKeys, onObjectSummaries]);
 
   useEffect(() => {
     if (!lassoPolygon || lassoPolygon.length < 3) {
@@ -122,6 +133,7 @@ export default function FuzzyCADGeometryViewer({
   selectedPathKeys,
   activeTool = "select",
   onMeshGraph,
+  onObjectSummaries,
   onSelectedNode,
   onSelectedPathKey,
   onObjectLassoSelection,
@@ -148,17 +160,18 @@ export default function FuzzyCADGeometryViewer({
             <Suspense fallback={null}>
               <Bounds fit clip observe margin={1.2}>
                 <Center>
-                  <Model
-                    url={gltfUrl}
-                    placements={placements}
-                    highlightedPathKey={highlightedPathKey}
-                    selectedPathKeys={selectedPathKeys}
-                    lassoPolygon={lassoPolygon}
-                    onMeshGraph={onMeshGraph}
-                    onSelectedNode={onSelectedNode}
-                    onSelectedPathKey={onSelectedPathKey}
-                    onObjectLassoSelection={onObjectLassoSelection}
-                  />
+<Model
+  url={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  selectedPathKeys={selectedPathKeys}
+  lassoPolygon={lassoPolygon}
+  onMeshGraph={onMeshGraph}
+  onObjectSummaries={onObjectSummaries}
+  onSelectedNode={onSelectedNode}
+  onSelectedPathKey={onSelectedPathKey}
+  onObjectLassoSelection={onObjectLassoSelection}
+/>
                 </Center>
               </Bounds>
             </Suspense>

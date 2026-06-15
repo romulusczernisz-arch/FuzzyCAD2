@@ -7,7 +7,10 @@ import styles from "./fuzzycad-home.module.css";
 import FuzzyCADSidebar from "./components/FuzzyCADSidebar";
 import DevPanel from "./components/DevPanel";
 import { useAssemblyPlacementTree } from "./hooks/useAssemblyPlacementTree";
-import type { MeshGraphNode } from "./components/FuzzyCADGeometryViewer";
+import type {
+  AxialStretchObjectSummary,
+  MeshGraphNode,
+} from "./components/FuzzyCADGeometryViewer";
 import { usePartGraph } from "./hooks/usePartGraph";
 import {
   fetchFuzzycadAssemblySummary,
@@ -63,6 +66,9 @@ export default function FuzzyCADHome() {
     useState<ApiResult | null>(null);
 
  const [meshGraph, setMeshGraph] = useState<MeshGraphNode[]>([]);
+ const [objectSummaries, setObjectSummaries] = useState<
+  AxialStretchObjectSummary[]
+>([]);
 const [selectedMeshNode, setSelectedMeshNode] =
   useState<MeshGraphNode | null>(null);
 
@@ -118,6 +124,7 @@ const [activeTool, setActiveTool] = useState<OperationTool>("select");
 
 function resetGeometryState() {
   setMeshGraph([]);
+  setObjectSummaries([]);
   setSelectedMeshNode(null);
   setHighlightedPathKey(null);
   setLassoPathKeys([]);
@@ -293,20 +300,21 @@ function resetGeometryState() {
       />
 
 <div className={styles.viewerPane}>
-  <FuzzyCADGeometryViewer
-    gltfUrl={gltfUrl}
-    placements={placements}
-    highlightedPathKey={highlightedPathKey}
-    selectedPathKeys={lassoPathKeys}
-    activeTool={activeTool}
-    onMeshGraph={setMeshGraph}
-    onSelectedNode={setSelectedMeshNode}
-    onSelectedPathKey={setHighlightedPathKey}
-    onObjectLassoSelection={(pathKeys) => {
-      setLassoPathKeys(pathKeys);
-      setHighlightedPathKey(pathKeys[0] ?? null);
-    }}
-  />
+<FuzzyCADGeometryViewer
+  gltfUrl={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  selectedPathKeys={lassoPathKeys}
+  activeTool={activeTool}
+  onMeshGraph={setMeshGraph}
+  onObjectSummaries={setObjectSummaries}
+  onSelectedNode={setSelectedMeshNode}
+  onSelectedPathKey={setHighlightedPathKey}
+  onObjectLassoSelection={(pathKeys) => {
+    setLassoPathKeys(pathKeys);
+    setHighlightedPathKey(pathKeys[0] ?? null);
+  }}
+/>
 
   <OperationToolbar
     activeTool={activeTool}
@@ -327,14 +335,15 @@ function resetGeometryState() {
           selectedAssemblyId={selectedAssemblyId}
           graphStats={devGraphStats}
           meshGraph={meshGraph}
-          debugResults={[
-            { title: "Relationship Graph", value: relationshipGraphResult },
-            { title: "Assembly Summary", value: assemblySummaryResult },
-            { title: "Raw Assembly", value: assemblyResult },
-            { title: "Elements", value: elementsResult },
-            { title: "Geometry Load", value: geometryLoadResult },
-            { title: "Geometry ZIP", value: geometryZipManifest },
-          ]}
+debugResults={[
+  { title: "Relationship Graph", value: relationshipGraphResult },
+  { title: "Assembly Summary", value: assemblySummaryResult },
+  { title: "Raw Assembly", value: assemblyResult },
+  { title: "Elements", value: elementsResult },
+  { title: "Geometry Load", value: geometryLoadResult },
+  { title: "Geometry ZIP", value: geometryZipManifest },
+  { title: "Object Summaries", value: objectSummaries },
+]}
           allParams={allParams}
           onClose={() => {
             setDev(false);
