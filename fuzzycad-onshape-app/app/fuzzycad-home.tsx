@@ -132,12 +132,11 @@ export default function FuzzyCADHome() {
     useState<RolePreviewPlan | null>(null);
 
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
-const [pendingHeightAxis, setPendingHeightAxis] =
-  useState<OperationAxis>("y");
+  const [pendingHeightAxis, setPendingHeightAxis] =
+    useState<OperationAxis>("y");
 
-const [pendingHeightDirection, setPendingHeightDirection] =
-  useState<OperationDirection>("positive");
-
+  const [pendingHeightDirection, setPendingHeightDirection] =
+    useState<OperationDirection>("positive");
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -311,13 +310,13 @@ const [pendingHeightDirection, setPendingHeightDirection] =
     }
   }
 
-function startHeightPreview() {
-  setActiveTool("height");
+  function startHeightPreview() {
+    setActiveTool("height");
 
-  console.log("Height preview input", {
-    selectedPathKeysForPlanning,
-    resolvedAxialStretchPlan,
-  });
+    console.log("Height preview input", {
+      selectedPathKeysForPlanning,
+      resolvedAxialStretchPlan,
+    });
 
     if (
       selectedPathKeysForPlanning.length === 0 ||
@@ -412,32 +411,33 @@ function startHeightPreview() {
             }
           }}
         />
-{heightPreviewOpen && pendingHeightRolePreview ? (
-  <OperationPreviewPanel
-    operation="height"
-    title="Height operation preview"
-    description="Review the inferred stretch targets, followers, and fixed anchors before applying the height operation."
-    showAxisControls
-    axis={pendingHeightAxis}
-    direction={pendingHeightDirection}
-    onAxisChange={setPendingHeightAxis}
-    onDirectionChange={setPendingHeightDirection}
-    roleCounts={{
-      stretchTarget: pendingHeightRolePreview.stretchTargetPathKeys.length,
-      moveWithEnd: pendingHeightRolePreview.moveWithEndPathKeys.length,
-      fixedAnchor: pendingHeightRolePreview.fixedAnchorPathKeys.length,
-      excluded: pendingHeightRolePreview.excludedPathKeys.length,
-    }}
-    onConfirm={() => {
-      setHeightPreviewOpen(false);
-    }}
-    onCancel={() => {
-      setPendingHeightRolePreview(null);
-      setHeightPreviewOpen(false);
-      setActiveTool("select");
-    }}
-  />
-) : null}
+        {heightPreviewOpen && pendingHeightRolePreview ? (
+          <OperationPreviewPanel
+            operation="height"
+            title="Height operation preview"
+            description="Review the inferred stretch targets, followers, and fixed anchors before applying the height operation."
+            showAxisControls
+            axis={pendingHeightAxis}
+            direction={pendingHeightDirection}
+            onAxisChange={setPendingHeightAxis}
+            onDirectionChange={setPendingHeightDirection}
+            roleCounts={{
+              stretchTarget:
+                pendingHeightRolePreview.stretchTargetPathKeys.length,
+              moveWithEnd: pendingHeightRolePreview.moveWithEndPathKeys.length,
+              fixedAnchor: pendingHeightRolePreview.fixedAnchorPathKeys.length,
+              excluded: pendingHeightRolePreview.excludedPathKeys.length,
+            }}
+            onConfirm={() => {
+              setHeightPreviewOpen(false);
+            }}
+            onCancel={() => {
+              setPendingHeightRolePreview(null);
+              setHeightPreviewOpen(false);
+              setActiveTool("select");
+            }}
+          />
+        ) : null}
       </div>
 
       {dev ? (
