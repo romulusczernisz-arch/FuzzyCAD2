@@ -105,7 +105,7 @@ function createInvisiblePreviewMaterial(color: number) {
   return new THREE.MeshBasicMaterial({
     color,
     transparent: true,
-    opacity: 0.02,
+    opacity: 0.005,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
@@ -123,15 +123,15 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   material.dispose();
 }
 
+function isPreviewLine(object: THREE.Object3D) {
+  return object instanceof LineSegments2 || object.userData?.fuzzycadPreviewLine === true;
+}
+
 function collectMeshes(root: THREE.Object3D) {
   const meshes: THREE.Mesh[] = [];
 
   root.traverse((object) => {
-    if (object instanceof LineSegments2) {
-      return;
-    }
-
-    if (object.userData?.fuzzycadPreviewLine) {
+    if (isPreviewLine(object)) {
       return;
     }
 
@@ -151,8 +151,8 @@ function cloneObjectForPreview(
   scene.updateMatrixWorld(true);
   original.updateMatrixWorld(true);
 
-const clone = original.clone(true);
-clone.name = `${original.name || original.type} ${role} Preview`;
+  const clone = original.clone(true);
+  clone.name = `${original.name || original.type} ${role} Preview`;
 
   const sceneInverse = scene.matrixWorld.clone().invert();
   const localMatrix = sceneInverse.multiply(original.matrixWorld);
@@ -170,6 +170,10 @@ clone.name = `${original.name || original.type} ${role} Preview`;
     // Prevent preview clones from being selected/highlighted as real objects.
     delete object.userData.fuzzyPathKey;
 
+    if (isPreviewLine(object)) {
+      return;
+    }
+
     if (!(object instanceof THREE.Mesh)) {
       return;
     }
@@ -178,9 +182,14 @@ clone.name = `${original.name || original.type} ${role} Preview`;
     object.material = createInvisiblePreviewMaterial(previewColor);
     object.castShadow = false;
     object.receiveShadow = false;
-
-    addWideDashedOverlay(object);
   });
+
+  // Important: do NOT add dashed overlays inside clone.traverse().
+  // Add them after traversal, otherwise the newly added LineSegments2 children
+  // can be traversed again and create an infinite recursion.
+  for (const mesh of collectMeshes(clone)) {
+    addWideDashedOverlay(mesh);
+  }
 
   clone.matrixWorldNeedsUpdate = true;
 
@@ -570,6 +579,9 @@ export function disposeAxialStretchPreviewSession(
     }
   }
 });
+
+
+
 }
 
 export function getAxialStretchPreviewHandle(
