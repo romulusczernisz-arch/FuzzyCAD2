@@ -166,16 +166,16 @@ function Model({
   // --- Sizing / angle handle setup -------------------------------------
 
   const handleConfig = useMemo<HandleConfig>(() => {
-if (
-  !enableManipulationHandles ||
-  !activePathKeys ||
-  activePathKeys.length === 0 ||
-  (activeTool !== "height" &&
-    activeTool !== "extend" &&
-    activeTool !== "angle")
-) {
-  return null;
-}
+    if (
+      !enableManipulationHandles ||
+      !activePathKeys ||
+      activePathKeys.length === 0 ||
+      (activeTool !== "height" &&
+        activeTool !== "extend" &&
+        activeTool !== "angle")
+    ) {
+      return null;
+    }
     const activeSummaries = objectSummaries.filter((summary) =>
       activePathKeys.includes(summary.pathKey),
     );
@@ -250,56 +250,61 @@ if (
       pivotWorld: new THREE.Vector3(...primary.negativeEndWorld),
       objects,
     };
-  }, [activePathKeys, activeTool, enableManipulationHandles, objectSummaries, scene]);
-
+  }, [
+    activePathKeys,
+    activeTool,
+    enableManipulationHandles,
+    objectSummaries,
+    scene,
+  ]);
 
   const roleBadges = useMemo(() => {
-  if (!rolePreviewPlan) {
-    return [];
-  }
+    if (!rolePreviewPlan) {
+      return [];
+    }
 
-  const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
-  const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
-  const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
+    const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
+    const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
+    const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
 
-  return objectSummaries
-    .map((summary) => {
-      let role: RoleBadgeRole | null = null;
+    return objectSummaries
+      .map((summary) => {
+        let role: RoleBadgeRole | null = null;
 
-      if (stretchSet.has(summary.pathKey)) {
-        role = "stretchTarget";
-      } else if (moveSet.has(summary.pathKey)) {
-        role = "moveWithEnd";
-      } else if (fixedSet.has(summary.pathKey)) {
-        role = "fixedAnchor";
-      }
+        if (stretchSet.has(summary.pathKey)) {
+          role = "stretchTarget";
+        } else if (moveSet.has(summary.pathKey)) {
+          role = "moveWithEnd";
+        } else if (fixedSet.has(summary.pathKey)) {
+          role = "fixedAnchor";
+        }
 
-      if (!role) {
-        return null;
-      }
+        if (!role) {
+          return null;
+        }
 
-      const [x, y, z] = summary.aabbCenterWorld;
+        const [x, y, z] = summary.aabbCenterWorld;
 
-      return {
-        pathKey: summary.pathKey,
-        role,
-        position: [
-          x,
-          y + Math.max(summary.crossSectionSize * 2, 0.02),
-          z,
-        ] as [number, number, number],
-      };
-    })
-    .filter(
-      (
-        item,
-      ): item is {
-        pathKey: string;
-        role: RoleBadgeRole;
-        position: [number, number, number];
-      } => item !== null,
-    );
-}, [objectSummaries, rolePreviewPlan]);
+        return {
+          pathKey: summary.pathKey,
+          role,
+          position: [
+            x,
+            y + Math.max(summary.crossSectionSize * 2, 0.02),
+            z,
+          ] as [number, number, number],
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          pathKey: string;
+          role: RoleBadgeRole;
+          position: [number, number, number];
+        } => item !== null,
+      );
+  }, [objectSummaries, rolePreviewPlan]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -368,19 +373,19 @@ if (
 
   const manipulationValueOrZero = manipulationValue ?? 0;
 
- return (
-  <>
-    <primitive object={scene} onPointerDown={handlePointerDown} />
+  return (
+    <>
+      <primitive object={scene} onPointerDown={handlePointerDown} />
 
-    {roleBadges.map((badge) => (
-      <RoleBadge
-        key={`${badge.role}:${badge.pathKey}`}
-        position={badge.position}
-        role={badge.role}
-      />
-    ))}
+      {roleBadges.map((badge) => (
+        <RoleBadge
+          key={`${badge.role}:${badge.pathKey}`}
+          position={badge.position}
+          role={badge.role}
+        />
+      ))}
 
-    {handleConfig?.kind === "axial" ? (
+      {handleConfig?.kind === "axial" ? (
         <SizingHandle
           baseWorld={handleConfig.baseWorld}
           axisWorld={handleConfig.axisWorld}
@@ -416,7 +421,7 @@ export default function FuzzyCADGeometryViewer({
   activeTool = "select",
   activePathKeys,
   manipulationValue,
-    rolePreviewPlan,
+  rolePreviewPlan,
   enableManipulationHandles = true,
   onMeshGraph,
   onObjectSummaries,
@@ -444,7 +449,7 @@ export default function FuzzyCADGeometryViewer({
         <>
           <Canvas
             camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
-            shadows
+            
             gl={{ antialias: true }}
             onPointerMissed={(event) => {
               if (activeTool !== "select") {
@@ -459,7 +464,7 @@ export default function FuzzyCADGeometryViewer({
             }}
           >
             <ambientLight intensity={0.8} />
-            <directionalLight position={[5, 6, 5]} intensity={1.2} castShadow />
+            <directionalLight position={[5, 6, 5]} intensity={1.2}  />
             <gridHelper args={[2, 20]} />
             <axesHelper args={[0.25]} />
 
@@ -474,7 +479,7 @@ export default function FuzzyCADGeometryViewer({
                   activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
                   rolePreviewPlan={rolePreviewPlan}
-enableManipulationHandles={enableManipulationHandles}
+                  enableManipulationHandles={enableManipulationHandles}
                   lassoPolygon={lassoPolygon}
                   onMeshGraph={onMeshGraph}
                   onObjectSummaries={onObjectSummaries}
