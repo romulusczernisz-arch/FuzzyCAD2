@@ -27,13 +27,13 @@ import {
 import SizingHandle from "./viewer/SizingHandle";
 import AngleHandle from "./viewer/AngleHandle";
 import {
-  createAxialStretchSession,
-  getAxialStretchSessionHandle,
-  restoreAxialStretchSession,
-  updateAxialStretchSession,
+  createAxialStretchPreviewSession,
+  disposeAxialStretchPreviewSession,
+  getAxialStretchPreviewHandle,
+  updateAxialStretchPreviewSession,
+  type AxialStretchPreviewSession,
   type AxialStretchRolePlan,
-  type AxialStretchSession,
-} from "./viewer/axialStretchExecutor";
+} from "./viewer/axialStretchPreview";
 
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
@@ -79,7 +79,7 @@ type HandleConfig =
       baseWorld: THREE.Vector3;
       axisWorld: THREE.Vector3;
       length: number;
-      session: AxialStretchSession;
+      session: AxialStretchPreviewSession;
     }
   | {
       kind: "angle";
@@ -88,13 +88,12 @@ type HandleConfig =
     }
   | null;
 
-
 function midpoint(a: [number, number, number], b: [number, number, number]) {
-  return [
-    (a[0] + b[0]) / 2,
-    (a[1] + b[1]) / 2,
-    (a[2] + b[2]) / 2,
-  ] as [number, number, number];
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] as [
+    number,
+    number,
+    number,
+  ];
 }
 
 function getLowerEnd(summary: AxialStretchObjectSummary) {
@@ -160,13 +159,8 @@ function getBadgePosition(
     ];
   }
 
-  return [
-    anchor[0] + side * baseOffset,
-    anchor[1] + verticalOffset,
-    anchor[2],
-  ];
+  return [anchor[0] + side * baseOffset, anchor[1] + verticalOffset, anchor[2]];
 }
-
 
 function Model({
   url,
@@ -226,26 +220,31 @@ function Model({
     [scene, selectedPathKeys],
   );
 
-const heightStretchSession = useMemo(() => {
-  if (!confirmedHeightPlan) {
-    return null;
-  }
-
-  return createAxialStretchSession(
-    scene,
-    objectSummaries,
-    confirmedHeightPlan,
-  );
-}, [scene, objectSummaries, confirmedHeightPlan]);
-
-useEffect(() => {
-  return () => {
-    if (heightStretchSession) {
-      restoreAxialStretchSession(heightStretchSession);
+  const heightPreviewSession = useMemo(() => {
+    if (!confirmedHeightPlan) {
+      return null;
     }
-  };
-}, [heightStretchSession]);
 
+    return createAxialStretchPreviewSession(
+      scene,
+      objectSummaries,
+      confirmedHeightPlan,
+    );
+  }, [scene, objectSummaries, confirmedHeightPlan]);
+
+  useEffect(() => {
+    if (!heightPreviewSession) {
+      return;
+    }
+
+    scene.add(heightPreviewSession.group);
+    invalidate();
+
+    return () => {
+      disposeAxialStretchPreviewSession(heightPreviewSession);
+      invalidate();
+    };
+  }, [scene, heightPreviewSession, invalidate]);
 
   useEffect(() => {
     const graph = buildMeshGraph(scene);
@@ -284,36 +283,36 @@ useEffect(() => {
 
   // --- Sizing / angle handle setup -------------------------------------
 
-const handleConfig = useMemo<HandleConfig>(() => {
-  if (!enableManipulationHandles) {
-    return null;
-  }
+  const handleConfig = useMemo<HandleConfig>(() => {
+    if (!enableManipulationHandles) {
+      return null;
+    }
 
-  if (
-    activeTool === "height" &&
-    confirmedHeightPlan &&
-    heightStretchSession
-  ) {
-    const handle = getAxialStretchSessionHandle(heightStretchSession);
+    if (
+      activeTool === "height" &&
+      confirmedHeightPlan &&
+      heightPreviewSession
+    ) {
+      const handle = getAxialStretchPreviewHandle(heightPreviewSession);
 
-    return {
-      kind: "heightStretch",
-      baseWorld: handle.baseWorld,
-      axisWorld: handle.axisWorld,
-      length: handle.length,
-      session: heightStretchSession,
-    };
-  }
+      return {
+        kind: "heightStretch",
+        baseWorld: handle.baseWorld,
+        axisWorld: handle.axisWorld,
+        length: handle.length,
+        session: heightPreviewSession,
+      };
+    }
 
-  if (
-    !activePathKeys ||
-    activePathKeys.length === 0 ||
-    (activeTool !== "height" &&
-      activeTool !== "extend" &&
-      activeTool !== "angle")
-  ) {
-    return null;
-  }
+    if (
+      !activePathKeys ||
+      activePathKeys.length === 0 ||
+      (activeTool !== "height" &&
+        activeTool !== "extend" &&
+        activeTool !== "angle")
+    ) {
+      return null;
+    }
     const activeSummaries = objectSummaries.filter((summary) =>
       activePathKeys.includes(summary.pathKey),
     );
@@ -388,64 +387,62 @@ const handleConfig = useMemo<HandleConfig>(() => {
       pivotWorld: new THREE.Vector3(...primary.negativeEndWorld),
       objects,
     };
-}, [
-  activePathKeys,
-  activeTool,
-  confirmedHeightPlan,
-  enableManipulationHandles,
-  heightStretchSession,
-  objectSummaries,
-  scene,
-]);
+  }, [
+    activePathKeys,
+    activeTool,
+    confirmedHeightPlan,
+    enableManipulationHandles,
+    heightPreviewSession,
+    objectSummaries,
+    scene,
+  ]);
 
+  const roleBadges = useMemo(() => {
+    if (!rolePreviewPlan) {
+      return [];
+    }
 
+    const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
+    const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
+    const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
 
-const roleBadges = useMemo(() => {
-  if (!rolePreviewPlan) {
-    return [];
-  }
+    return objectSummaries
+      .map((summary) => {
+        let role: RoleBadgeRole | null = null;
 
-  const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
-  const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
-  const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
+        if (stretchSet.has(summary.pathKey)) {
+          role = "stretchTarget";
+        } else if (moveSet.has(summary.pathKey)) {
+          role = "moveWithEnd";
+        } else if (fixedSet.has(summary.pathKey)) {
+          role = "fixedAnchor";
+        }
 
-  return objectSummaries
-    .map((summary) => {
-      let role: RoleBadgeRole | null = null;
+        if (!role) {
+          return null;
+        }
 
-      if (stretchSet.has(summary.pathKey)) {
-        role = "stretchTarget";
-      } else if (moveSet.has(summary.pathKey)) {
-        role = "moveWithEnd";
-      } else if (fixedSet.has(summary.pathKey)) {
-        role = "fixedAnchor";
-      }
+        const anchorPosition = getRoleAnchor(summary, role);
+        const position = getBadgePosition(anchorPosition, summary, role);
 
-      if (!role) {
-        return null;
-      }
-
-      const anchorPosition = getRoleAnchor(summary, role);
-      const position = getBadgePosition(anchorPosition, summary, role);
-
-      return {
-        pathKey: summary.pathKey,
-        role,
-        anchorPosition,
-        position,
-      };
-    })
-    .filter(
-      (
-        item,
-      ): item is {
-        pathKey: string;
-        role: RoleBadgeRole;
-        anchorPosition: [number, number, number];
-        position: [number, number, number];
-      } => item !== null,
-    );
-}, [objectSummaries, rolePreviewPlan]);
+        return {
+          pathKey: summary.pathKey,
+          role,
+          anchorPosition,
+          position,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          pathKey: string;
+          role: RoleBadgeRole;
+          anchorPosition: [number, number, number];
+          position: [number, number, number];
+        } => item !== null,
+      );
+  }, [objectSummaries, rolePreviewPlan]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -471,30 +468,30 @@ const roleBadges = useMemo(() => {
       return;
     }
 
-  if (handleConfig.kind === "heightStretch") {
-  updateAxialStretchSession(handleConfig.session, targetValue);
-  appliedValueRef.current = targetValue;
-  invalidate();
-  return;
-}
+    if (handleConfig.kind === "heightStretch") {
+      updateAxialStretchPreviewSession(handleConfig.session, targetValue);
+      appliedValueRef.current = targetValue;
+      invalidate();
+      return;
+    }
 
-if (handleConfig.kind === "axial") {
-  translateObjectsWorld(
-    handleConfig.objects,
-    handleConfig.axisWorld.clone().multiplyScalar(diff),
-  );
-} else {
-  rotateObjectsAroundWorldAxis(
-    handleConfig.objects,
-    handleConfig.pivotWorld,
-    angleAxisRef.current,
-    THREE.MathUtils.degToRad(diff),
-  );
-}
+    if (handleConfig.kind === "axial") {
+      translateObjectsWorld(
+        handleConfig.objects,
+        handleConfig.axisWorld.clone().multiplyScalar(diff),
+      );
+    } else {
+      rotateObjectsAroundWorldAxis(
+        handleConfig.objects,
+        handleConfig.pivotWorld,
+        angleAxisRef.current,
+        THREE.MathUtils.degToRad(diff),
+      );
+    }
 
-appliedValueRef.current = targetValue;
- invalidate();
-}, [manipulationValue, handleConfig, invalidate]);
+    appliedValueRef.current = targetValue;
+    invalidate();
+  }, [manipulationValue, handleConfig, invalidate]);
 
   function handleDragStateChange(dragging: boolean) {
     if (dragging && handleConfig?.kind === "angle") {
@@ -525,16 +522,17 @@ appliedValueRef.current = targetValue;
     <>
       <primitive object={scene} onPointerDown={handlePointerDown} />
 
-     {roleBadges.map((badge) => (
-  <RoleBadge
-    key={`${badge.role}:${badge.pathKey}`}
-    anchorPosition={badge.anchorPosition}
-    position={badge.position}
-    role={badge.role}
-  />
-))}
+      {roleBadges.map((badge) => (
+        <RoleBadge
+          key={`${badge.role}:${badge.pathKey}`}
+          anchorPosition={badge.anchorPosition}
+          position={badge.position}
+          role={badge.role}
+        />
+      ))}
 
-      {handleConfig?.kind === "axial" || handleConfig?.kind === "heightStretch" ? (
+      {handleConfig?.kind === "axial" ||
+      handleConfig?.kind === "heightStretch" ? (
         <SizingHandle
           baseWorld={handleConfig.baseWorld}
           axisWorld={handleConfig.axisWorld}
@@ -599,7 +597,6 @@ export default function FuzzyCADGeometryViewer({
         <>
           <Canvas
             camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
-            
             gl={{ antialias: true }}
             onPointerMissed={(event) => {
               if (activeTool !== "select") {
@@ -614,7 +611,7 @@ export default function FuzzyCADGeometryViewer({
             }}
           >
             <ambientLight intensity={0.8} />
-            <directionalLight position={[5, 6, 5]} intensity={1.2}  />
+            <directionalLight position={[5, 6, 5]} intensity={1.2} />
             <gridHelper args={[2, 20]} />
             <axesHelper args={[0.25]} />
 
