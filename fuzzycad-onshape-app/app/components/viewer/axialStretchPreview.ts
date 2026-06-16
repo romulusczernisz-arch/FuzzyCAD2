@@ -1,9 +1,6 @@
 import * as THREE from "three";
 import type { AxialStretchObjectSummary } from "../../lib/operations/axialStretchTypes";
-import {
-  findObjectsByPathKeys,
-  translateObjectsWorld,
-} from "./manipulation";
+import { findObjectsByPathKeys, translateObjectsWorld } from "./manipulation";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
@@ -49,9 +46,6 @@ export type AxialStretchPreviewSession = {
 };
 
 type PreviewRole = "stretch" | "follow";
-
-const STRETCH_PREVIEW_COLOR = 0x0284c7;
-const FOLLOW_PREVIEW_COLOR = 0xea580c;
 
 function toVector(tuple: [number, number, number]) {
   return new THREE.Vector3(tuple[0], tuple[1], tuple[2]);
@@ -117,8 +111,6 @@ function createInvisiblePreviewMaterial(color: number) {
   });
 }
 
-
-
 function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   if (Array.isArray(material)) {
     for (const item of material) {
@@ -135,6 +127,14 @@ function collectMeshes(root: THREE.Object3D) {
   const meshes: THREE.Mesh[] = [];
 
   root.traverse((object) => {
+    if (object instanceof LineSegments2) {
+      return;
+    }
+
+    if (object.userData?.fuzzycadPreviewLine) {
+      return;
+    }
+
     if (object instanceof THREE.Mesh) {
       meshes.push(object);
     }
@@ -142,10 +142,6 @@ function collectMeshes(root: THREE.Object3D) {
 
   return meshes;
 }
-
-
-
-
 
 function cloneObjectForPreview(
   scene: THREE.Object3D,
@@ -155,15 +151,15 @@ function cloneObjectForPreview(
   scene.updateMatrixWorld(true);
   original.updateMatrixWorld(true);
 
-  const clone = original.clone(true);
-  clone.name = `${original.name || original.type} Preview`;
+const clone = original.clone(true);
+clone.name = `${original.name || original.type} ${role} Preview`;
 
   const sceneInverse = scene.matrixWorld.clone().invert();
   const localMatrix = sceneInverse.multiply(original.matrixWorld);
 
   localMatrix.decompose(clone.position, clone.quaternion, clone.scale);
 
-const previewColor = PREVIEW_LINE_COLOR;
+  const previewColor = PREVIEW_LINE_COLOR;
 
   clone.traverse((object) => {
     object.userData = {
@@ -179,11 +175,11 @@ const previewColor = PREVIEW_LINE_COLOR;
     }
 
     object.geometry = object.geometry.clone();
-object.material = createInvisiblePreviewMaterial(previewColor);
-object.castShadow = false;
-object.receiveShadow = false;
+    object.material = createInvisiblePreviewMaterial(previewColor);
+    object.castShadow = false;
+    object.receiveShadow = false;
 
-addWideDashedOverlay(object);
+    addWideDashedOverlay(object);
   });
 
   clone.matrixWorldNeedsUpdate = true;
@@ -287,9 +283,7 @@ function createMeshPreviewSnapshots(
     snapshots.push({
       cloneMesh,
       geometry: cloneMesh.geometry,
-      originalPositions: Float32Array.from(
-        position.array as ArrayLike<number>,
-      ),
+      originalPositions: Float32Array.from(position.array as ArrayLike<number>),
       originalMatrixWorld: originalMesh.matrixWorld.clone(),
       originalInverseMatrixWorld: originalMesh.matrixWorld.clone().invert(),
     });
@@ -407,24 +401,27 @@ function createFollowPreviews(
   const originals = findObjectsByPathKeys(scene, plan.moveWithEndPathKeys);
 
   return originals.map((original) => {
-  const originalPathKey = getPathKey(original);
-  const originalSummary = findSummary(objectSummaries, originalPathKey);
-  const targetIndex = findNearestStretchTargetIndex(original, stretchPreviews);
-  const target = stretchPreviews[targetIndex];
-  const clone = cloneObjectForPreview(scene, original, "follow");
+    const originalPathKey = getPathKey(original);
+    const originalSummary = findSummary(objectSummaries, originalPathKey);
+    const targetIndex = findNearestStretchTargetIndex(
+      original,
+      stretchPreviews,
+    );
+    const target = stretchPreviews[targetIndex];
+    const clone = cloneObjectForPreview(scene, original, "follow");
 
-  group.add(clone);
+    group.add(clone);
 
-  return {
-    originalPathKey,
-    clone,
-    originalLocalPosition: clone.position.clone(),
-    originalAnchorWorld:
-      getFollowAnchorWorld(originalSummary, target.lowerEndWorld) ??
-      getObjectCenterWorld(original),
-    targetIndex,
-  };
-});
+    return {
+      originalPathKey,
+      clone,
+      originalLocalPosition: clone.position.clone(),
+      originalAnchorWorld:
+        getFollowAnchorWorld(originalSummary, target.lowerEndWorld) ??
+        getObjectCenterWorld(original),
+      targetIndex,
+    };
+  });
 }
 
 export function createAxialStretchPreviewSession(
@@ -461,10 +458,7 @@ export function createAxialStretchPreviewSession(
   };
 }
 
-function updateStretchPreview(
-  preview: StretchPreview,
-  verticalDelta: number,
-) {
+function updateStretchPreview(preview: StretchPreview, verticalDelta: number) {
   const movingDelta = getMovingDeltaForTarget(preview, verticalDelta);
   const localPoint = new THREE.Vector3();
   const worldPoint = new THREE.Vector3();
@@ -485,22 +479,21 @@ function updateStretchPreview(
 
       localPoint.set(original[base], original[base + 1], original[base + 2]);
 
-      worldPoint.copy(localPoint).applyMatrix4(
-        meshSnapshot.originalMatrixWorld,
-      );
+      worldPoint
+        .copy(localPoint)
+        .applyMatrix4(meshSnapshot.originalMatrixWorld);
 
       offsetFromUpper.copy(worldPoint).sub(preview.upperEndWorld);
 
       const t = clamp01(
-        offsetFromUpper.dot(preview.axisFromFixedToMoving) /
-          preview.axisLength,
+        offsetFromUpper.dot(preview.axisFromFixedToMoving) / preview.axisLength,
       );
 
       worldPoint.addScaledVector(movingDelta, t);
 
-      localPoint.copy(worldPoint).applyMatrix4(
-        meshSnapshot.originalInverseMatrixWorld,
-      );
+      localPoint
+        .copy(worldPoint)
+        .applyMatrix4(meshSnapshot.originalInverseMatrixWorld);
 
       array[base] = localPoint.x;
       array[base + 1] = localPoint.y;
@@ -558,25 +551,25 @@ export function disposeAxialStretchPreviewSession(
     session.group.parent.remove(session.group);
   }
 
-  session.group.traverse((object) => {
-  if (object instanceof LineSegments2) {
-  object.geometry.dispose();
+ session.group.traverse((object) => {
+  if (object instanceof LineSegments2 || object instanceof THREE.LineSegments) {
+    object.geometry.dispose();
 
-  if (object.material) {
-    disposeMaterial(object.material);
+    if (object.material) {
+      disposeMaterial(object.material);
+    }
+
+    return;
   }
 
-  return;
-}
+  if (object instanceof THREE.Mesh) {
+    object.geometry.dispose();
 
-    if (object instanceof THREE.Mesh) {
-      object.geometry.dispose();
-
-      if (object.material) {
-        disposeMaterial(object.material);
-      }
+    if (object.material) {
+      disposeMaterial(object.material);
     }
-  });
+  }
+});
 }
 
 export function getAxialStretchPreviewHandle(
