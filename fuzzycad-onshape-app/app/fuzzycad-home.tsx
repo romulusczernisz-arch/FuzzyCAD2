@@ -25,6 +25,10 @@ import {
 } from "./lib/onshapeClient";
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
+import OperationPreviewPanel, {
+  type OperationAxis,
+  type OperationDirection,
+} from "./components/OperationPreviewPanel";
 import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
 import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
@@ -128,6 +132,12 @@ export default function FuzzyCADHome() {
     useState<RolePreviewPlan | null>(null);
 
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
+const [pendingHeightAxis, setPendingHeightAxis] =
+  useState<OperationAxis>("y");
+
+const [pendingHeightDirection, setPendingHeightDirection] =
+  useState<OperationDirection>("positive");
+
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -402,63 +412,32 @@ function startHeightPreview() {
             }
           }}
         />
-        {heightPreviewOpen && pendingHeightRolePreview ? (
-          <div
-            style={{
-              position: "absolute",
-              top: 80,
-              left: "50%",
-              transform: "translateX(-50%)",
-              background: "white",
-              border: "1px solid rgba(0,0,0,0.18)",
-              borderRadius: 8,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-              padding: 12,
-              zIndex: 20,
-              width: 280,
-              fontSize: 12,
-            }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>
-              Height Operation Preview
-            </div>
-
-            <div>
-              Stretch: {pendingHeightRolePreview.stretchTargetPathKeys.length}
-            </div>
-            <div>
-              Follow: {pendingHeightRolePreview.moveWithEndPathKeys.length}
-            </div>
-            <div>
-              Fixed: {pendingHeightRolePreview.fixedAnchorPathKeys.length}
-            </div>
-            <div>
-              Excluded: {pendingHeightRolePreview.excludedPathKeys.length}
-            </div>
-
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setHeightPreviewOpen(false);
-                }}
-              >
-                Confirm
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingHeightRolePreview(null);
-                  setHeightPreviewOpen(false);
-                  setActiveTool("select");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : null}
+{heightPreviewOpen && pendingHeightRolePreview ? (
+  <OperationPreviewPanel
+    operation="height"
+    title="Height operation preview"
+    description="Review the inferred stretch targets, followers, and fixed anchors before applying the height operation."
+    showAxisControls
+    axis={pendingHeightAxis}
+    direction={pendingHeightDirection}
+    onAxisChange={setPendingHeightAxis}
+    onDirectionChange={setPendingHeightDirection}
+    roleCounts={{
+      stretchTarget: pendingHeightRolePreview.stretchTargetPathKeys.length,
+      moveWithEnd: pendingHeightRolePreview.moveWithEndPathKeys.length,
+      fixedAnchor: pendingHeightRolePreview.fixedAnchorPathKeys.length,
+      excluded: pendingHeightRolePreview.excludedPathKeys.length,
+    }}
+    onConfirm={() => {
+      setHeightPreviewOpen(false);
+    }}
+    onCancel={() => {
+      setPendingHeightRolePreview(null);
+      setHeightPreviewOpen(false);
+      setActiveTool("select");
+    }}
+  />
+) : null}
       </div>
 
       {dev ? (

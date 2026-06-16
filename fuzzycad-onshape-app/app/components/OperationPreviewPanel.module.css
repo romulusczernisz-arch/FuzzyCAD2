@@ -1,0 +1,187 @@
+.panel {
+  position: absolute;
+  top: 72px;
+  left: 50%;
+  z-index: 12;
+  width: 320px;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid rgba(104, 165, 255, 0.42);
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.94),
+      rgba(241, 247, 255, 0.9)
+    );
+  box-shadow:
+    0 18px 44px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+  backdrop-filter: blur(18px);
+  color: #172033;
+  font-family: Arial, sans-serif;
+  pointer-events: auto;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eyebrow {
+  margin-bottom: 3px;
+  color: #2b6cff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.description {
+  margin: 8px 0 12px;
+  color: #5b6475;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.configBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.configRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.configLabel {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(226, 232, 240, 0.75);
+}
+
+.segmentButton {
+  min-width: 34px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.segmentButtonActive {
+  background: white;
+  color: #2b6cff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
+.roleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.roleItem {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+}
+
+.roleLabel {
+  color: #475569;
+  font-weight: 700;
+}
+
+.roleIconStretch,
+.roleIconFollow,
+.roleIconFixed,
+.roleIconExcluded {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.roleIconStretch {
+  color: #0369a1;
+  background: rgba(3, 105, 161, 0.1);
+}
+
+.roleIconFollow {
+  color: #c2410c;
+  background: rgba(194, 65, 12, 0.1);
+}
+
+.roleIconFixed {
+  color: #4c1d95;
+  background: rgba(76, 29, 149, 0.1);
+}
+
+.roleIconExcluded {
+  color: #64748b;
+  background: rgba(100, 116, 139, 0.1);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.primaryButton,
+.secondaryButton {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.primaryButton {
+  border: 1px solid #2b6cff;
+  background: #2b6cff;
+  color: white;
+}
+
+.secondaryButton {
+  border: 1px solid rgba(148, 163, 184, 0.65);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+}
