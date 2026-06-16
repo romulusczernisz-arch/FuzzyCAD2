@@ -1,26 +1,38 @@
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 7px;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(25, 31, 45, 0.18);
-  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.2);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(25, 31, 45, 0.16);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   color: #111827;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
   user-select: none;
 }
 
-.icon {
-  font-size: 12px;
-  line-height: 1;
+.badge svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.label {
-  font-size: 10px;
-  line-height: 1;
+.stretchTarget {
+  color: #0369a1;
+  border-color: rgba(3, 105, 161, 0.35);
+}
+
+.moveWithEnd {
+  color: #c2410c;
+  border-color: rgba(194, 65, 12, 0.35);
+}
+
+.fixedAnchor {
+  color: #4c1d95;
+  border-color: rgba(76, 29, 149, 0.35);
 }
