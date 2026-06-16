@@ -10,6 +10,7 @@ import { useAssemblyPlacementTree } from "./hooks/useAssemblyPlacementTree";
 import type {
   AxialStretchObjectSummary,
   MeshGraphNode,
+  RolePreviewPlan,
 } from "./components/FuzzyCADGeometryViewer";
 import { usePartGraph } from "./hooks/usePartGraph";
 import {
@@ -89,9 +90,21 @@ export default function FuzzyCADHome() {
     selectedMeshNode,
   });
 
+  const selectedPathKeysForPlanning = useMemo(() => {
+    if (lassoPathKeys.length > 0) {
+      return lassoPathKeys;
+    }
+
+    return highlightedPathKey ? [highlightedPathKey] : [];
+  }, [lassoPathKeys, highlightedPathKey]);
+
   const compactAxialStretchContext = useMemo(
-    () => buildCompactAxialStretchContext(objectSummaries, lassoPathKeys),
-    [objectSummaries, lassoPathKeys],
+    () =>
+      buildCompactAxialStretchContext(
+        objectSummaries,
+        selectedPathKeysForPlanning,
+      ),
+    [objectSummaries, selectedPathKeysForPlanning],
   );
 
   const draftAxialStretchPlan = useMemo(
@@ -111,6 +124,10 @@ export default function FuzzyCADHome() {
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<OperationTool>("select");
+  const [pendingHeightRolePreview, setPendingHeightRolePreview] =
+    useState<RolePreviewPlan | null>(null);
+
+  const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -284,6 +301,33 @@ export default function FuzzyCADHome() {
     }
   }
 
+function startHeightPreview() {
+  setActiveTool("height");
+
+  console.log("Height preview input", {
+    selectedPathKeysForPlanning,
+    resolvedAxialStretchPlan,
+  });
+
+    if (
+      selectedPathKeysForPlanning.length === 0 ||
+      resolvedAxialStretchPlan.stretchTargetPathKeys.length === 0
+    ) {
+      setPendingHeightRolePreview(null);
+      setHeightPreviewOpen(false);
+      return;
+    }
+
+    setPendingHeightRolePreview({
+      stretchTargetPathKeys: resolvedAxialStretchPlan.stretchTargetPathKeys,
+      moveWithEndPathKeys: resolvedAxialStretchPlan.moveWithEndPathKeys,
+      fixedAnchorPathKeys: resolvedAxialStretchPlan.fixedAnchorPathKeys,
+      excludedPathKeys: resolvedAxialStretchPlan.excludedPathKeys,
+    });
+
+    setHeightPreviewOpen(true);
+  }
+
   function handleAssemblyChange(assemblyId: string) {
     setSelectedAssemblyId(assemblyId);
     resetGeometryState();
@@ -328,6 +372,8 @@ export default function FuzzyCADHome() {
           highlightedPathKey={highlightedPathKey}
           selectedPathKeys={lassoPathKeys}
           activeTool={activeTool}
+          rolePreviewPlan={pendingHeightRolePreview}
+          enableManipulationHandles={!heightPreviewOpen}
           onMeshGraph={setMeshGraph}
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
@@ -342,13 +388,77 @@ export default function FuzzyCADHome() {
           activeTool={activeTool}
           disabled={!gltfUrl}
           onToolChange={(tool) => {
+            if (tool === "height") {
+              startHeightPreview();
+              return;
+            }
+
             setActiveTool(tool);
+            setPendingHeightRolePreview(null);
+            setHeightPreviewOpen(false);
 
             if (tool === "select") {
               setLassoPathKeys([]);
             }
           }}
         />
+        {heightPreviewOpen && pendingHeightRolePreview ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 80,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: "white",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+              padding: 12,
+              zIndex: 20,
+              width: 280,
+              fontSize: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>
+              Height Operation Preview
+            </div>
+
+            <div>
+              Stretch: {pendingHeightRolePreview.stretchTargetPathKeys.length}
+            </div>
+            <div>
+              Follow: {pendingHeightRolePreview.moveWithEndPathKeys.length}
+            </div>
+            <div>
+              Fixed: {pendingHeightRolePreview.fixedAnchorPathKeys.length}
+            </div>
+            <div>
+              Excluded: {pendingHeightRolePreview.excludedPathKeys.length}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setHeightPreviewOpen(false);
+                }}
+              >
+                Confirm
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingHeightRolePreview(null);
+                  setHeightPreviewOpen(false);
+                  setActiveTool("select");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {dev ? (
