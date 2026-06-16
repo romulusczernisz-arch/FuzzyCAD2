@@ -4,6 +4,9 @@ import {
   findObjectsByPathKeys,
   translateObjectsWorld,
 } from "./manipulation";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 export type AxialStretchRolePlan = {
   stretchTargetPathKeys: string[];
@@ -87,13 +90,21 @@ function getUpperLowerEnds(summary: AxialStretchObjectSummary) {
   };
 }
 
-function getFollowAnchorWorld(summary: AxialStretchObjectSummary | null) {
+function getFollowAnchorWorld(
+  summary: AxialStretchObjectSummary | null,
+  targetLowerEndWorld: THREE.Vector3,
+) {
   if (!summary) {
     return null;
   }
 
-  const { upperEndWorld } = getUpperLowerEnds(summary);
-  return upperEndWorld;
+  const negativeEnd = toVector(summary.negativeEndWorld);
+  const positiveEnd = toVector(summary.positiveEndWorld);
+
+  return negativeEnd.distanceToSquared(targetLowerEndWorld) <=
+    positiveEnd.distanceToSquared(targetLowerEndWorld)
+    ? negativeEnd
+    : positiveEnd;
 }
 
 function createInvisiblePreviewMaterial(color: number) {
@@ -106,16 +117,7 @@ function createInvisiblePreviewMaterial(color: number) {
   });
 }
 
-function createDashedMaterial(color: number) {
-  return new THREE.LineDashedMaterial({
-    color,
-    dashSize: 0.018,
-    gapSize: 0.012,
-    transparent: true,
-    opacity: 0.95,
-    depthWrite: false,
-  });
-}
+
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   if (Array.isArray(material)) {
@@ -141,37 +143,9 @@ function collectMeshes(root: THREE.Object3D) {
   return meshes;
 }
 
-function addDashedOverlay(mesh: THREE.Mesh, color: number) {
-  const edges = new THREE.EdgesGeometry(mesh.geometry);
-  const material = createDashedMaterial(color);
-  const line = new THREE.LineSegments(edges, material);
 
-  line.name = "FuzzyCAD Dashed Preview Edges";
-  line.userData.fuzzycadPreviewLine = true;
-  line.computeLineDistances();
-  line.renderOrder = 10;
 
-  // Important: line is child of mesh, so keep local transform identity.
-  mesh.add(line);
 
-  return line;
-}
-
-function refreshDashedOverlay(mesh: THREE.Mesh) {
-  for (const child of mesh.children) {
-    if (!(child instanceof THREE.LineSegments)) {
-      continue;
-    }
-
-    if (!child.userData.fuzzycadPreviewLine) {
-      continue;
-    }
-
-    child.geometry.dispose();
-    child.geometry = new THREE.EdgesGeometry(mesh.geometry);
-    child.computeLineDistances();
-  }
-}
 
 function cloneObjectForPreview(
   scene: THREE.Object3D,
@@ -189,8 +163,7 @@ function cloneObjectForPreview(
 
   localMatrix.decompose(clone.position, clone.quaternion, clone.scale);
 
-  const previewColor =
-    role === "stretch" ? STRETCH_PREVIEW_COLOR : FOLLOW_PREVIEW_COLOR;
+const previewColor = PREVIEW_LINE_COLOR;
 
   clone.traverse((object) => {
     object.userData = {
@@ -206,16 +179,88 @@ function cloneObjectForPreview(
     }
 
     object.geometry = object.geometry.clone();
-    object.material = createInvisiblePreviewMaterial(previewColor);
-    object.castShadow = false;
-    object.receiveShadow = false;
+object.material = createInvisiblePreviewMaterial(previewColor);
+object.castShadow = false;
+object.receiveShadow = false;
 
-    addDashedOverlay(object, previewColor);
+addWideDashedOverlay(object);
   });
 
   clone.matrixWorldNeedsUpdate = true;
 
   return clone;
+}
+
+const PREVIEW_LINE_COLOR = 0x111111;
+
+function createWideDashedMaterial() {
+  return new LineMaterial({
+    color: PREVIEW_LINE_COLOR,
+    linewidth: 3.5,
+    dashed: true,
+    dashSize: 8,
+    gapSize: 5,
+    dashScale: 1,
+    worldUnits: false,
+    transparent: true,
+    opacity: 0.98,
+    depthTest: false,
+    depthWrite: false,
+    alphaToCoverage: true,
+  });
+}
+
+function createWideDashedGeometry(mesh: THREE.Mesh) {
+  const edges = new THREE.EdgesGeometry(mesh.geometry, 20);
+  const edgePositions = edges.getAttribute("position");
+  const positions: number[] = [];
+
+  for (let index = 0; index < edgePositions.count; index += 1) {
+    positions.push(
+      edgePositions.getX(index),
+      edgePositions.getY(index),
+      edgePositions.getZ(index),
+    );
+  }
+
+  edges.dispose();
+
+  const geometry = new LineSegmentsGeometry();
+  geometry.setPositions(positions);
+
+  return geometry;
+}
+
+function addWideDashedOverlay(mesh: THREE.Mesh) {
+  const geometry = createWideDashedGeometry(mesh);
+  const material = createWideDashedMaterial();
+  const line = new LineSegments2(geometry, material);
+
+  line.name = "FuzzyCAD Wide Dashed Preview Edges";
+  line.userData.fuzzycadPreviewLine = true;
+  line.computeLineDistances();
+  line.renderOrder = 999;
+
+  // Important: line is child of mesh, so it uses the mesh's local coordinate system.
+  mesh.add(line);
+
+  return line;
+}
+
+function refreshWideDashedOverlay(mesh: THREE.Mesh) {
+  for (const child of mesh.children) {
+    if (!(child instanceof LineSegments2)) {
+      continue;
+    }
+
+    if (!child.userData.fuzzycadPreviewLine) {
+      continue;
+    }
+
+    child.geometry.dispose();
+    child.geometry = createWideDashedGeometry(mesh);
+    child.computeLineDistances();
+  }
 }
 
 function createMeshPreviewSnapshots(
@@ -362,21 +407,24 @@ function createFollowPreviews(
   const originals = findObjectsByPathKeys(scene, plan.moveWithEndPathKeys);
 
   return originals.map((original) => {
-    const originalPathKey = getPathKey(original);
-    const originalSummary = findSummary(objectSummaries, originalPathKey);
-    const clone = cloneObjectForPreview(scene, original, "follow");
+  const originalPathKey = getPathKey(original);
+  const originalSummary = findSummary(objectSummaries, originalPathKey);
+  const targetIndex = findNearestStretchTargetIndex(original, stretchPreviews);
+  const target = stretchPreviews[targetIndex];
+  const clone = cloneObjectForPreview(scene, original, "follow");
 
-    group.add(clone);
+  group.add(clone);
 
-    return {
-      originalPathKey,
-      clone,
-      originalLocalPosition: clone.position.clone(),
-      originalAnchorWorld:
-        getFollowAnchorWorld(originalSummary) ?? getObjectCenterWorld(original),
-      targetIndex: findNearestStretchTargetIndex(original, stretchPreviews),
-    };
-  });
+  return {
+    originalPathKey,
+    clone,
+    originalLocalPosition: clone.position.clone(),
+    originalAnchorWorld:
+      getFollowAnchorWorld(originalSummary, target.lowerEndWorld) ??
+      getObjectCenterWorld(original),
+    targetIndex,
+  };
+});
 }
 
 export function createAxialStretchPreviewSession(
@@ -463,7 +511,7 @@ function updateStretchPreview(
     meshSnapshot.geometry.computeBoundingBox();
     meshSnapshot.geometry.computeBoundingSphere();
 
-    refreshDashedOverlay(meshSnapshot.cloneMesh);
+    refreshWideDashedOverlay(meshSnapshot.cloneMesh);
   }
 }
 
@@ -511,15 +559,15 @@ export function disposeAxialStretchPreviewSession(
   }
 
   session.group.traverse((object) => {
-    if (object instanceof THREE.LineSegments) {
-      object.geometry.dispose();
+  if (object instanceof LineSegments2) {
+  object.geometry.dispose();
 
-      if (object.material) {
-        disposeMaterial(object.material);
-      }
+  if (object.material) {
+    disposeMaterial(object.material);
+  }
 
-      return;
-    }
+  return;
+}
 
     if (object instanceof THREE.Mesh) {
       object.geometry.dispose();
