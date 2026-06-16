@@ -354,6 +354,12 @@ export default function FuzzyCADGeometryViewer({
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
   const [manipulationDragging, setManipulationDragging] = useState(false);
+  function clearSelection() {
+    onSelectedNode?.(null);
+    onSelectedPathKey?.(null);
+    onObjectLassoSelection?.([]);
+    setLassoPolygon(null);
+  }
 
   return (
     <div className={styles.root}>
@@ -367,6 +373,17 @@ export default function FuzzyCADGeometryViewer({
             camera={{ position: [2.5, 2.5, 2.5], fov: 45 }}
             shadows
             gl={{ antialias: true }}
+            onPointerMissed={(event) => {
+              if (activeTool !== "select") {
+                return;
+              }
+
+              if (event.button !== 0) {
+                return;
+              }
+
+              clearSelection();
+            }}
           >
             <ambientLight intensity={0.8} />
             <directionalLight position={[5, 6, 5]} intensity={1.2} castShadow />
