@@ -374,7 +374,7 @@ export default function FuzzyCADGeometryViewer({
             <axesHelper args={[0.25]} />
 
             <Suspense fallback={null}>
-              <Bounds fit clip observe margin={1.2}>
+              <Bounds fit clip margin={1.2}>
                 <Model
                   url={gltfUrl}
                   placements={placements}
