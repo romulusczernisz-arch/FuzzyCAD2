@@ -35,6 +35,7 @@ type FollowPreview = {
   originalPathKey: string;
   clone: THREE.Object3D;
   originalLocalPosition: THREE.Vector3;
+  originalAnchorWorld: THREE.Vector3;
   targetIndex: number;
 };
 
@@ -86,14 +87,33 @@ function getUpperLowerEnds(summary: AxialStretchObjectSummary) {
   };
 }
 
-function createPreviewMaterial(role: PreviewRole) {
+function getFollowAnchorWorld(summary: AxialStretchObjectSummary | null) {
+  if (!summary) {
+    return null;
+  }
+
+  const { upperEndWorld } = getUpperLowerEnds(summary);
+  return upperEndWorld;
+}
+
+function createInvisiblePreviewMaterial(color: number) {
   return new THREE.MeshBasicMaterial({
-    color: role === "stretch" ? STRETCH_PREVIEW_COLOR : FOLLOW_PREVIEW_COLOR,
+    color,
     transparent: true,
-    opacity: role === "stretch" ? 0.42 : 0.34,
-    wireframe: true,
+    opacity: 0.02,
     depthWrite: false,
     side: THREE.DoubleSide,
+  });
+}
+
+function createDashedMaterial(color: number) {
+  return new THREE.LineDashedMaterial({
+    color,
+    dashSize: 0.018,
+    gapSize: 0.012,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
   });
 }
 
@@ -102,6 +122,7 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]) {
     for (const item of material) {
       item.dispose();
     }
+
     return;
   }
 
@@ -120,6 +141,38 @@ function collectMeshes(root: THREE.Object3D) {
   return meshes;
 }
 
+function addDashedOverlay(mesh: THREE.Mesh, color: number) {
+  const edges = new THREE.EdgesGeometry(mesh.geometry);
+  const material = createDashedMaterial(color);
+  const line = new THREE.LineSegments(edges, material);
+
+  line.name = "FuzzyCAD Dashed Preview Edges";
+  line.userData.fuzzycadPreviewLine = true;
+  line.computeLineDistances();
+  line.renderOrder = 10;
+
+  // Important: line is child of mesh, so keep local transform identity.
+  mesh.add(line);
+
+  return line;
+}
+
+function refreshDashedOverlay(mesh: THREE.Mesh) {
+  for (const child of mesh.children) {
+    if (!(child instanceof THREE.LineSegments)) {
+      continue;
+    }
+
+    if (!child.userData.fuzzycadPreviewLine) {
+      continue;
+    }
+
+    child.geometry.dispose();
+    child.geometry = new THREE.EdgesGeometry(mesh.geometry);
+    child.computeLineDistances();
+  }
+}
+
 function cloneObjectForPreview(
   scene: THREE.Object3D,
   original: THREE.Object3D,
@@ -136,12 +189,16 @@ function cloneObjectForPreview(
 
   localMatrix.decompose(clone.position, clone.quaternion, clone.scale);
 
+  const previewColor =
+    role === "stretch" ? STRETCH_PREVIEW_COLOR : FOLLOW_PREVIEW_COLOR;
+
   clone.traverse((object) => {
     object.userData = {
       ...object.userData,
       fuzzycadPreview: true,
     };
 
+    // Prevent preview clones from being selected/highlighted as real objects.
     delete object.userData.fuzzyPathKey;
 
     if (!(object instanceof THREE.Mesh)) {
@@ -149,9 +206,11 @@ function cloneObjectForPreview(
     }
 
     object.geometry = object.geometry.clone();
-    object.material = createPreviewMaterial(role);
+    object.material = createInvisiblePreviewMaterial(previewColor);
     object.castShadow = false;
     object.receiveShadow = false;
+
+    addDashedOverlay(object, previewColor);
   });
 
   clone.matrixWorldNeedsUpdate = true;
@@ -244,7 +303,7 @@ function getMovingDeltaForTarget(
   verticalDelta: number,
 ) {
   // Y-case only.
-  // Positive height delta means the preview extends downward from the fixed upper side.
+  // Positive value = extend downward from fixed upper side.
   const yContribution = Math.max(
     Math.abs(target.axisFromFixedToMoving.y),
     0.08,
@@ -292,6 +351,7 @@ function findNearestStretchTargetIndex(
 function createFollowPreviews(
   scene: THREE.Object3D,
   group: THREE.Group,
+  objectSummaries: AxialStretchObjectSummary[],
   plan: AxialStretchRolePlan,
   stretchPreviews: StretchPreview[],
 ): FollowPreview[] {
@@ -302,14 +362,18 @@ function createFollowPreviews(
   const originals = findObjectsByPathKeys(scene, plan.moveWithEndPathKeys);
 
   return originals.map((original) => {
+    const originalPathKey = getPathKey(original);
+    const originalSummary = findSummary(objectSummaries, originalPathKey);
     const clone = cloneObjectForPreview(scene, original, "follow");
 
     group.add(clone);
 
     return {
-      originalPathKey: getPathKey(original),
+      originalPathKey,
       clone,
       originalLocalPosition: clone.position.clone(),
+      originalAnchorWorld:
+        getFollowAnchorWorld(originalSummary) ?? getObjectCenterWorld(original),
       targetIndex: findNearestStretchTargetIndex(original, stretchPreviews),
     };
   });
@@ -337,6 +401,7 @@ export function createAxialStretchPreviewSession(
   const followPreviews = createFollowPreviews(
     scene,
     group,
+    objectSummaries,
     plan,
     stretchPreviews,
   );
@@ -397,6 +462,8 @@ function updateStretchPreview(
     position.needsUpdate = true;
     meshSnapshot.geometry.computeBoundingBox();
     meshSnapshot.geometry.computeBoundingSphere();
+
+    refreshDashedOverlay(meshSnapshot.cloneMesh);
   }
 }
 
@@ -411,13 +478,17 @@ function updateFollowPreviews(
       continue;
     }
 
+    const movingDelta = getMovingDeltaForTarget(target, verticalDelta);
+
+    // Align follower's original attachment anchor to the stretched leg's
+    // new moving end. This avoids double-moving or drifting away.
+    const desiredAnchorWorld = target.lowerEndWorld.clone().add(movingDelta);
+    const anchorDelta = desiredAnchorWorld.sub(follower.originalAnchorWorld);
+
     follower.clone.position.copy(follower.originalLocalPosition);
     follower.clone.matrixWorldNeedsUpdate = true;
 
-    translateObjectsWorld(
-      [follower.clone],
-      getMovingDeltaForTarget(target, verticalDelta),
-    );
+    translateObjectsWorld([follower.clone], anchorDelta);
   }
 }
 
@@ -440,14 +511,22 @@ export function disposeAxialStretchPreviewSession(
   }
 
   session.group.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) {
+    if (object instanceof THREE.LineSegments) {
+      object.geometry.dispose();
+
+      if (object.material) {
+        disposeMaterial(object.material);
+      }
+
       return;
     }
 
-    object.geometry.dispose();
+    if (object instanceof THREE.Mesh) {
+      object.geometry.dispose();
 
-    if (object.material) {
-      disposeMaterial(object.material);
+      if (object.material) {
+        disposeMaterial(object.material);
+      }
     }
   });
 }
@@ -466,8 +545,9 @@ export function getAxialStretchPreviewHandle(
   upper.multiplyScalar(1 / session.stretchPreviews.length);
   lower.multiplyScalar(1 / session.stretchPreviews.length);
 
-  // Put the handle slightly to the side of the target area.
-  const sideOffset = new THREE.Vector3(0.12, 0, 0);
+  // For now: keep using the existing SizingHandle API.
+  // Next step: replace this with a fixed centered slider.
+  const sideOffset = new THREE.Vector3(0.14, 0, 0);
 
   return {
     baseWorld: upper.clone().add(sideOffset),
