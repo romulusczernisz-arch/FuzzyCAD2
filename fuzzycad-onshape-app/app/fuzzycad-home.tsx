@@ -131,6 +131,11 @@ export default function FuzzyCADHome() {
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
 
+   const [confirmedHeightPlan, setConfirmedHeightPlan] =
+  useState<RolePreviewPlan | null>(null);
+
+const [manipulationValue, setManipulationValue] = useState(0); 
+
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
   const [pendingHeightAxis, setPendingHeightAxis] =
     useState<OperationAxis>("y");
@@ -176,6 +181,11 @@ export default function FuzzyCADHome() {
     setSelectedMeshNode(null);
     setHighlightedPathKey(null);
     setLassoPathKeys([]);
+    setPendingHeightRolePreview(null);
+setConfirmedHeightPlan(null);
+setHeightPreviewOpen(false);
+setManipulationValue(0);
+setActiveTool("select");
     setGeometryLoadResult(null);
     resetPlacementTree();
 
@@ -310,8 +320,10 @@ export default function FuzzyCADHome() {
     }
   }
 
-  function startHeightPreview() {
-    setActiveTool("height");
+function startHeightPreview() {
+  setActiveTool("height");
+  setConfirmedHeightPlan(null);
+  setManipulationValue(0);
 
     console.log("Height preview input", {
       selectedPathKeysForPlanning,
@@ -375,14 +387,17 @@ export default function FuzzyCADHome() {
       />
 
       <div className={styles.viewerPane}>
-        <FuzzyCADGeometryViewer
-          gltfUrl={gltfUrl}
-          placements={placements}
-          highlightedPathKey={highlightedPathKey}
-          selectedPathKeys={lassoPathKeys}
-          activeTool={activeTool}
-          rolePreviewPlan={pendingHeightRolePreview}
-          enableManipulationHandles={!heightPreviewOpen}
+<FuzzyCADGeometryViewer
+  gltfUrl={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  selectedPathKeys={lassoPathKeys}
+  activeTool={activeTool}
+  rolePreviewPlan={pendingHeightRolePreview}
+  confirmedHeightPlan={confirmedHeightPlan}
+  enableManipulationHandles={!heightPreviewOpen && Boolean(confirmedHeightPlan)}
+  manipulationValue={manipulationValue}
+  onManipulationChange={setManipulationValue}
           onMeshGraph={setMeshGraph}
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
@@ -402,9 +417,11 @@ export default function FuzzyCADHome() {
               return;
             }
 
-            setActiveTool(tool);
-            setPendingHeightRolePreview(null);
-            setHeightPreviewOpen(false);
+setActiveTool(tool);
+setPendingHeightRolePreview(null);
+setConfirmedHeightPlan(null);
+setManipulationValue(0);
+setHeightPreviewOpen(false);
 
             if (tool === "select") {
               setLassoPathKeys([]);
@@ -428,14 +445,19 @@ export default function FuzzyCADHome() {
               fixedAnchor: pendingHeightRolePreview.fixedAnchorPathKeys.length,
               excluded: pendingHeightRolePreview.excludedPathKeys.length,
             }}
-            onConfirm={() => {
-              setHeightPreviewOpen(false);
-            }}
-            onCancel={() => {
-              setPendingHeightRolePreview(null);
-              setHeightPreviewOpen(false);
-              setActiveTool("select");
-            }}
+onConfirm={() => {
+  setConfirmedHeightPlan(pendingHeightRolePreview);
+  setManipulationValue(0);
+  setHeightPreviewOpen(false);
+  setActiveTool("height");
+}}
+           onCancel={() => {
+  setPendingHeightRolePreview(null);
+  setConfirmedHeightPlan(null);
+  setManipulationValue(0);
+  setHeightPreviewOpen(false);
+  setActiveTool("select");
+}}
           />
         ) : null}
       </div>

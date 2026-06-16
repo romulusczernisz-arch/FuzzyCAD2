@@ -26,6 +26,14 @@ import {
 } from "./viewer/manipulation";
 import SizingHandle from "./viewer/SizingHandle";
 import AngleHandle from "./viewer/AngleHandle";
+import {
+  createAxialStretchSession,
+  getAxialStretchSessionHandle,
+  restoreAxialStretchSession,
+  updateAxialStretchSession,
+  type AxialStretchRolePlan,
+  type AxialStretchSession,
+} from "./viewer/axialStretchExecutor";
 
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
@@ -49,6 +57,7 @@ type FuzzyCADGeometryViewerProps = {
   manipulationValue?: number;
   rolePreviewPlan?: RolePreviewPlan | null;
   enableManipulationHandles?: boolean;
+  confirmedHeightPlan?: AxialStretchRolePlan | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
@@ -66,197 +75,19 @@ type HandleConfig =
       objects: THREE.Object3D[];
     }
   | {
+      kind: "heightStretch";
+      baseWorld: THREE.Vector3;
+      axisWorld: THREE.Vector3;
+      length: number;
+      session: AxialStretchSession;
+    }
+  | {
       kind: "angle";
       pivotWorld: THREE.Vector3;
       objects: THREE.Object3D[];
     }
   | null;
 
-function Model({
-  url,
-  placements,
-  highlightedPathKey,
-  selectedPathKeys,
-  activeTool,
-  activePathKeys,
-  manipulationValue,
-  rolePreviewPlan,
-  enableManipulationHandles = true,
-  lassoPolygon,
-  onMeshGraph,
-  onObjectSummaries,
-  onSelectedNode,
-  onSelectedPathKey,
-  onObjectLassoSelection,
-  onManipulationChange,
-  onManipulationDragStateChange,
-}: {
-  url: string;
-  placements?: PartPlacement[];
-  highlightedPathKey?: string | null;
-  selectedPathKeys?: string[];
-  activeTool?: OperationTool;
-  activePathKeys?: string[];
-  manipulationValue?: number;
-  rolePreviewPlan?: RolePreviewPlan | null;
-  enableManipulationHandles?: boolean;
-  lassoPolygon?: ScreenPoint[] | null;
-  onMeshGraph?: (nodes: MeshGraphNode[]) => void;
-  onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
-  onSelectedNode?: (node: MeshGraphNode | null) => void;
-  onSelectedPathKey?: (pathKey: string | null) => void;
-  onObjectLassoSelection?: (pathKeys: string[]) => void;
-  onManipulationChange?: (value: number) => void;
-  onManipulationDragStateChange?: (dragging: boolean) => void;
-}) {
-  const gltf = useGLTF(url);
-  const graphRef = useRef<MeshGraphNode[]>([]);
-  const { camera, gl, invalidate } = useThree();
-
-  const scene = useMemo(() => {
-    const cloned = gltf.scene.clone(true);
-
-    prepareRenderableMeshes(cloned);
-    applyPlacements(cloned, placements ?? []);
-    cloned.rotation.x = -Math.PI / 2;
-
-    return cloned;
-  }, [gltf.scene, placements]);
-
-  const objectSummaries = useMemo(
-    () => buildObjectSummaries(scene, selectedPathKeys ?? []),
-    [scene, selectedPathKeys],
-  );
-
-  useEffect(() => {
-    const graph = buildMeshGraph(scene);
-    graphRef.current = graph;
-    onMeshGraph?.(graph);
-    onSelectedNode?.(null);
-  }, [scene, onMeshGraph, onSelectedNode]);
-
-  useEffect(() => {
-    onObjectSummaries?.(objectSummaries);
-  }, [objectSummaries, onObjectSummaries]);
-
-  useEffect(() => {
-    if (!lassoPolygon || lassoPolygon.length < 3) {
-      return;
-    }
-
-    const pathKeys = selectPathKeysByLasso(
-      scene,
-      camera,
-      gl.domElement,
-      lassoPolygon,
-    );
-
-    onObjectLassoSelection?.(pathKeys);
-  }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
-
-  useEffect(() => {
-    const activeHighlights =
-      selectedPathKeys && selectedPathKeys.length > 0
-        ? selectedPathKeys
-        : highlightedPathKey;
-
-    applyPathHighlight(scene, activeHighlights);
-  }, [scene, highlightedPathKey, selectedPathKeys]);
-
-  // --- Sizing / angle handle setup -------------------------------------
-
-  const handleConfig = useMemo<HandleConfig>(() => {
-    if (
-      !enableManipulationHandles ||
-      !activePathKeys ||
-      activePathKeys.length === 0 ||
-      (activeTool !== "height" &&
-        activeTool !== "extend" &&
-        activeTool !== "angle")
-    ) {
-      return null;
-    }
-    const activeSummaries = objectSummaries.filter((summary) =>
-      activePathKeys.includes(summary.pathKey),
-    );
-
-    if (activeSummaries.length === 0) {
-      return null;
-    }
-
-    const objects = findObjectsByPathKeys(scene, activePathKeys);
-
-    if (objects.length === 0) {
-      return null;
-    }
-
-    if (activeTool === "height") {
-      // World-up axis. Anchor the bar at the highest point of the
-      // selection, base at the lowest, so dragging up/down raises or
-      // lowers the selection along the assembly's height direction.
-      let baseY = Infinity;
-      let tipY = -Infinity;
-      let anchorX = 0;
-      let anchorZ = 0;
-
-      for (const summary of activeSummaries) {
-        const a = summary.negativeEndWorld;
-        const b = summary.positiveEndWorld;
-
-        baseY = Math.min(baseY, a[1], b[1]);
-        tipY = Math.max(tipY, a[1], b[1]);
-        anchorX += (a[0] + b[0]) / 2;
-        anchorZ += (a[2] + b[2]) / 2;
-      }
-
-      anchorX /= activeSummaries.length;
-      anchorZ /= activeSummaries.length;
-
-      return {
-        kind: "axial",
-        baseWorld: new THREE.Vector3(anchorX, baseY, anchorZ),
-        axisWorld: new THREE.Vector3(0, 1, 0),
-        length: Math.max(tipY - baseY, 0),
-        objects,
-      };
-    }
-
-    if (activeTool === "extend") {
-      // Extend along the selected object's own principal axis, from its
-      // negative end toward its positive end.
-      const primary = activeSummaries[0];
-      const axis = new THREE.Vector3(...primary.principalAxisWorld);
-
-      if (axis.lengthSq() < 1e-12) {
-        axis.set(0, 1, 0);
-      } else {
-        axis.normalize();
-      }
-
-      return {
-        kind: "axial",
-        baseWorld: new THREE.Vector3(...primary.negativeEndWorld),
-        axisWorld: axis,
-        length: primary.axisLength,
-        objects,
-      };
-    }
-
-    // activeTool === "angle"
-    const primary = activeSummaries[0];
-
-    return {
-      kind: "angle",
-      pivotWorld: new THREE.Vector3(...primary.negativeEndWorld),
-      objects,
-    };
-  }, [
-    activePathKeys,
-    activeTool,
-    enableManipulationHandles,
-    objectSummaries,
-    scene,
-  ]);
 
 function midpoint(a: [number, number, number], b: [number, number, number]) {
   return [
@@ -336,6 +167,239 @@ function getBadgePosition(
   ];
 }
 
+
+function Model({
+  url,
+  placements,
+  highlightedPathKey,
+  selectedPathKeys,
+  activeTool,
+  activePathKeys,
+  manipulationValue,
+  rolePreviewPlan,
+  confirmedHeightPlan,
+  enableManipulationHandles = true,
+  lassoPolygon,
+  onMeshGraph,
+  onObjectSummaries,
+  onSelectedNode,
+  onSelectedPathKey,
+  onObjectLassoSelection,
+  onManipulationChange,
+  onManipulationDragStateChange,
+}: {
+  url: string;
+  placements?: PartPlacement[];
+  highlightedPathKey?: string | null;
+  selectedPathKeys?: string[];
+  activeTool?: OperationTool;
+  activePathKeys?: string[];
+  manipulationValue?: number;
+  rolePreviewPlan?: RolePreviewPlan | null;
+  confirmedHeightPlan?: AxialStretchRolePlan | null;
+  enableManipulationHandles?: boolean;
+  lassoPolygon?: ScreenPoint[] | null;
+  onMeshGraph?: (nodes: MeshGraphNode[]) => void;
+  onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
+  onSelectedNode?: (node: MeshGraphNode | null) => void;
+  onSelectedPathKey?: (pathKey: string | null) => void;
+  onObjectLassoSelection?: (pathKeys: string[]) => void;
+  onManipulationChange?: (value: number) => void;
+  onManipulationDragStateChange?: (dragging: boolean) => void;
+}) {
+  const gltf = useGLTF(url);
+  const graphRef = useRef<MeshGraphNode[]>([]);
+  const { camera, gl, invalidate } = useThree();
+
+  const scene = useMemo(() => {
+    const cloned = gltf.scene.clone(true);
+
+    prepareRenderableMeshes(cloned);
+    applyPlacements(cloned, placements ?? []);
+    cloned.rotation.x = -Math.PI / 2;
+
+    return cloned;
+  }, [gltf.scene, placements]);
+
+  const objectSummaries = useMemo(
+    () => buildObjectSummaries(scene, selectedPathKeys ?? []),
+    [scene, selectedPathKeys],
+  );
+
+const heightStretchSession = useMemo(() => {
+  if (!confirmedHeightPlan) {
+    return null;
+  }
+
+  return createAxialStretchSession(
+    scene,
+    objectSummaries,
+    confirmedHeightPlan,
+  );
+}, [scene, objectSummaries, confirmedHeightPlan]);
+
+useEffect(() => {
+  return () => {
+    if (heightStretchSession) {
+      restoreAxialStretchSession(heightStretchSession);
+    }
+  };
+}, [heightStretchSession]);
+
+
+  useEffect(() => {
+    const graph = buildMeshGraph(scene);
+    graphRef.current = graph;
+    onMeshGraph?.(graph);
+    onSelectedNode?.(null);
+  }, [scene, onMeshGraph, onSelectedNode]);
+
+  useEffect(() => {
+    onObjectSummaries?.(objectSummaries);
+  }, [objectSummaries, onObjectSummaries]);
+
+  useEffect(() => {
+    if (!lassoPolygon || lassoPolygon.length < 3) {
+      return;
+    }
+
+    const pathKeys = selectPathKeysByLasso(
+      scene,
+      camera,
+      gl.domElement,
+      lassoPolygon,
+    );
+
+    onObjectLassoSelection?.(pathKeys);
+  }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
+
+  useEffect(() => {
+    const activeHighlights =
+      selectedPathKeys && selectedPathKeys.length > 0
+        ? selectedPathKeys
+        : highlightedPathKey;
+
+    applyPathHighlight(scene, activeHighlights);
+  }, [scene, highlightedPathKey, selectedPathKeys]);
+
+  // --- Sizing / angle handle setup -------------------------------------
+
+const handleConfig = useMemo<HandleConfig>(() => {
+  if (!enableManipulationHandles) {
+    return null;
+  }
+
+  if (
+    activeTool === "height" &&
+    confirmedHeightPlan &&
+    heightStretchSession
+  ) {
+    const handle = getAxialStretchSessionHandle(heightStretchSession);
+
+    return {
+      kind: "heightStretch",
+      baseWorld: handle.baseWorld,
+      axisWorld: handle.axisWorld,
+      length: handle.length,
+      session: heightStretchSession,
+    };
+  }
+
+  if (
+    !activePathKeys ||
+    activePathKeys.length === 0 ||
+    (activeTool !== "height" &&
+      activeTool !== "extend" &&
+      activeTool !== "angle")
+  ) {
+    return null;
+  }
+    const activeSummaries = objectSummaries.filter((summary) =>
+      activePathKeys.includes(summary.pathKey),
+    );
+
+    if (activeSummaries.length === 0) {
+      return null;
+    }
+
+    const objects = findObjectsByPathKeys(scene, activePathKeys);
+
+    if (objects.length === 0) {
+      return null;
+    }
+
+    if (activeTool === "height") {
+      // World-up axis. Anchor the bar at the highest point of the
+      // selection, base at the lowest, so dragging up/down raises or
+      // lowers the selection along the assembly's height direction.
+      let baseY = Infinity;
+      let tipY = -Infinity;
+      let anchorX = 0;
+      let anchorZ = 0;
+
+      for (const summary of activeSummaries) {
+        const a = summary.negativeEndWorld;
+        const b = summary.positiveEndWorld;
+
+        baseY = Math.min(baseY, a[1], b[1]);
+        tipY = Math.max(tipY, a[1], b[1]);
+        anchorX += (a[0] + b[0]) / 2;
+        anchorZ += (a[2] + b[2]) / 2;
+      }
+
+      anchorX /= activeSummaries.length;
+      anchorZ /= activeSummaries.length;
+
+      return {
+        kind: "axial",
+        baseWorld: new THREE.Vector3(anchorX, baseY, anchorZ),
+        axisWorld: new THREE.Vector3(0, 1, 0),
+        length: Math.max(tipY - baseY, 0),
+        objects,
+      };
+    }
+
+    if (activeTool === "extend") {
+      // Extend along the selected object's own principal axis, from its
+      // negative end toward its positive end.
+      const primary = activeSummaries[0];
+      const axis = new THREE.Vector3(...primary.principalAxisWorld);
+
+      if (axis.lengthSq() < 1e-12) {
+        axis.set(0, 1, 0);
+      } else {
+        axis.normalize();
+      }
+
+      return {
+        kind: "axial",
+        baseWorld: new THREE.Vector3(...primary.negativeEndWorld),
+        axisWorld: axis,
+        length: primary.axisLength,
+        objects,
+      };
+    }
+
+    // activeTool === "angle"
+    const primary = activeSummaries[0];
+
+    return {
+      kind: "angle",
+      pivotWorld: new THREE.Vector3(...primary.negativeEndWorld),
+      objects,
+    };
+}, [
+  activePathKeys,
+  activeTool,
+  confirmedHeightPlan,
+  enableManipulationHandles,
+  heightStretchSession,
+  objectSummaries,
+  scene,
+]);
+
+
+
 const roleBadges = useMemo(() => {
   if (!rolePreviewPlan) {
     return [];
@@ -407,23 +471,30 @@ const roleBadges = useMemo(() => {
       return;
     }
 
-    if (handleConfig.kind === "axial") {
-      translateObjectsWorld(
-        handleConfig.objects,
-        handleConfig.axisWorld.clone().multiplyScalar(diff),
-      );
-    } else {
-      rotateObjectsAroundWorldAxis(
-        handleConfig.objects,
-        handleConfig.pivotWorld,
-        angleAxisRef.current,
-        THREE.MathUtils.degToRad(diff),
-      );
-    }
+  if (handleConfig.kind === "heightStretch") {
+  updateAxialStretchSession(handleConfig.session, targetValue);
+  appliedValueRef.current = targetValue;
+  invalidate();
+  return;
+}
 
-    appliedValueRef.current = targetValue;
-    invalidate();
-  }, [manipulationValue, handleConfig]);
+if (handleConfig.kind === "axial") {
+  translateObjectsWorld(
+    handleConfig.objects,
+    handleConfig.axisWorld.clone().multiplyScalar(diff),
+  );
+} else {
+  rotateObjectsAroundWorldAxis(
+    handleConfig.objects,
+    handleConfig.pivotWorld,
+    angleAxisRef.current,
+    THREE.MathUtils.degToRad(diff),
+  );
+}
+
+appliedValueRef.current = targetValue;
+ invalidate();
+}, [manipulationValue, handleConfig, invalidate]);
 
   function handleDragStateChange(dragging: boolean) {
     if (dragging && handleConfig?.kind === "angle") {
@@ -463,7 +534,7 @@ const roleBadges = useMemo(() => {
   />
 ))}
 
-      {handleConfig?.kind === "axial" ? (
+      {handleConfig?.kind === "axial" || handleConfig?.kind === "heightStretch" ? (
         <SizingHandle
           baseWorld={handleConfig.baseWorld}
           axisWorld={handleConfig.axisWorld}
@@ -500,6 +571,7 @@ export default function FuzzyCADGeometryViewer({
   activePathKeys,
   manipulationValue,
   rolePreviewPlan,
+  confirmedHeightPlan,
   enableManipulationHandles = true,
   onMeshGraph,
   onObjectSummaries,
@@ -557,6 +629,7 @@ export default function FuzzyCADGeometryViewer({
                   activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
                   rolePreviewPlan={rolePreviewPlan}
+                  confirmedHeightPlan={confirmedHeightPlan}
                   enableManipulationHandles={enableManipulationHandles}
                   lassoPolygon={lassoPolygon}
                   onMeshGraph={onMeshGraph}
