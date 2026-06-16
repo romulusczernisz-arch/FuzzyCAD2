@@ -2,6 +2,7 @@
 
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
 import { Bounds, OrbitControls, useGLTF } from "@react-three/drei";
+import RoleBadge, { type RoleBadgeRole } from "./viewer/RoleBadge";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import styles from "./FuzzyCADGeometryViewer.module.css";
@@ -29,6 +30,12 @@ import AngleHandle from "./viewer/AngleHandle";
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
 export type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
+export type RolePreviewPlan = {
+  stretchTargetPathKeys: string[];
+  moveWithEndPathKeys: string[];
+  fixedAnchorPathKeys: string[];
+  excludedPathKeys: string[];
+};
 
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
@@ -40,6 +47,8 @@ type FuzzyCADGeometryViewerProps = {
   activePathKeys?: string[];
   /** Current value of the active manipulation (world units for height/extend, degrees for angle). */
   manipulationValue?: number;
+  rolePreviewPlan?: RolePreviewPlan | null;
+  enableManipulationHandles?: boolean;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
   onSelectedNode?: (node: MeshGraphNode | null) => void;
@@ -71,6 +80,8 @@ function Model({
   activeTool,
   activePathKeys,
   manipulationValue,
+  rolePreviewPlan,
+  enableManipulationHandles = true,
   lassoPolygon,
   onMeshGraph,
   onObjectSummaries,
@@ -87,6 +98,8 @@ function Model({
   activeTool?: OperationTool;
   activePathKeys?: string[];
   manipulationValue?: number;
+  rolePreviewPlan?: RolePreviewPlan | null;
+  enableManipulationHandles?: boolean;
   lassoPolygon?: ScreenPoint[] | null;
   onMeshGraph?: (nodes: MeshGraphNode[]) => void;
   onObjectSummaries?: (summaries: AxialStretchObjectSummary[]) => void;
@@ -153,16 +166,16 @@ function Model({
   // --- Sizing / angle handle setup -------------------------------------
 
   const handleConfig = useMemo<HandleConfig>(() => {
-    if (
-      !activePathKeys ||
-      activePathKeys.length === 0 ||
-      (activeTool !== "height" &&
-        activeTool !== "extend" &&
-        activeTool !== "angle")
-    ) {
-      return null;
-    }
-
+if (
+  !enableManipulationHandles ||
+  !activePathKeys ||
+  activePathKeys.length === 0 ||
+  (activeTool !== "height" &&
+    activeTool !== "extend" &&
+    activeTool !== "angle")
+) {
+  return null;
+}
     const activeSummaries = objectSummaries.filter((summary) =>
       activePathKeys.includes(summary.pathKey),
     );
@@ -237,7 +250,56 @@ function Model({
       pivotWorld: new THREE.Vector3(...primary.negativeEndWorld),
       objects,
     };
-  }, [activePathKeys, activeTool, objectSummaries, scene]);
+  }, [activePathKeys, activeTool, enableManipulationHandles, objectSummaries, scene]);
+
+
+  const roleBadges = useMemo(() => {
+  if (!rolePreviewPlan) {
+    return [];
+  }
+
+  const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
+  const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
+  const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
+
+  return objectSummaries
+    .map((summary) => {
+      let role: RoleBadgeRole | null = null;
+
+      if (stretchSet.has(summary.pathKey)) {
+        role = "stretchTarget";
+      } else if (moveSet.has(summary.pathKey)) {
+        role = "moveWithEnd";
+      } else if (fixedSet.has(summary.pathKey)) {
+        role = "fixedAnchor";
+      }
+
+      if (!role) {
+        return null;
+      }
+
+      const [x, y, z] = summary.aabbCenterWorld;
+
+      return {
+        pathKey: summary.pathKey,
+        role,
+        position: [
+          x,
+          y + Math.max(summary.crossSectionSize * 2, 0.02),
+          z,
+        ] as [number, number, number],
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        pathKey: string;
+        role: RoleBadgeRole;
+        position: [number, number, number];
+      } => item !== null,
+    );
+}, [objectSummaries, rolePreviewPlan]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -306,10 +368,19 @@ function Model({
 
   const manipulationValueOrZero = manipulationValue ?? 0;
 
-  return (
-    <>
-      <primitive object={scene} onPointerDown={handlePointerDown} />
-      {handleConfig?.kind === "axial" ? (
+ return (
+  <>
+    <primitive object={scene} onPointerDown={handlePointerDown} />
+
+    {roleBadges.map((badge) => (
+      <RoleBadge
+        key={`${badge.role}:${badge.pathKey}`}
+        position={badge.position}
+        role={badge.role}
+      />
+    ))}
+
+    {handleConfig?.kind === "axial" ? (
         <SizingHandle
           baseWorld={handleConfig.baseWorld}
           axisWorld={handleConfig.axisWorld}
@@ -345,6 +416,8 @@ export default function FuzzyCADGeometryViewer({
   activeTool = "select",
   activePathKeys,
   manipulationValue,
+    rolePreviewPlan,
+  enableManipulationHandles = true,
   onMeshGraph,
   onObjectSummaries,
   onSelectedNode,
@@ -400,6 +473,8 @@ export default function FuzzyCADGeometryViewer({
                   activeTool={activeTool}
                   activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
+                  rolePreviewPlan={rolePreviewPlan}
+enableManipulationHandles={enableManipulationHandles}
                   lassoPolygon={lassoPolygon}
                   onMeshGraph={onMeshGraph}
                   onObjectSummaries={onObjectSummaries}
