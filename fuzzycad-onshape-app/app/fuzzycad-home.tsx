@@ -28,7 +28,6 @@ import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialSt
 import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
 
-
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
   {
@@ -101,13 +100,13 @@ export default function FuzzyCADHome() {
   );
 
   const resolvedAxialStretchPlan = useMemo(
-  () =>
-    resolveCompactAxialStretchPlan(
-      draftAxialStretchPlan,
-      compactAxialStretchContext,
-    ),
-  [draftAxialStretchPlan, compactAxialStretchContext],
-);
+    () =>
+      resolveCompactAxialStretchPlan(
+        draftAxialStretchPlan,
+        compactAxialStretchContext,
+      ),
+    [draftAxialStretchPlan, compactAxialStretchContext],
+  );
 
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
@@ -383,9 +382,9 @@ export default function FuzzyCADHome() {
               value: draftAxialStretchPlan,
             },
             {
-  title: "Resolved Axial Stretch Plan",
-  value: resolvedAxialStretchPlan,
-},
+              title: "Resolved Axial Stretch Plan",
+              value: resolvedAxialStretchPlan,
+            },
             {
               title: "Compact Alias Map",
               value: compactAxialStretchContext.aliasMap,
