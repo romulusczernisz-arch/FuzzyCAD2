@@ -1,10 +1,13 @@
-import { Html } from "@react-three/drei";
+import { Html, Line } from "@react-three/drei";
 import styles from "./RoleBadge.module.css";
 
 export type RoleBadgeRole = "stretchTarget" | "moveWithEnd" | "fixedAnchor";
 
+type Vec3Tuple = [number, number, number];
+
 type RoleBadgeProps = {
-  position: [number, number, number];
+  anchorPosition: Vec3Tuple;
+  position: Vec3Tuple;
   role: RoleBadgeRole;
 };
 
@@ -42,22 +45,45 @@ function RoleIcon({ role }: { role: RoleBadgeRole }) {
   );
 }
 
-export default function RoleBadge({ position, role }: RoleBadgeProps) {
+const ROLE_LINE_COLOR: Record<RoleBadgeRole, string> = {
+  stretchTarget: "#0284c7",
+  moveWithEnd: "#ea580c",
+  fixedAnchor: "#7c3aed",
+};
+
+export default function RoleBadge({
+  anchorPosition,
+  position,
+  role,
+}: RoleBadgeProps) {
   return (
-    <Html
-      position={position}
-      center
-      distanceFactor={7}
-      zIndexRange={[30, 0]}
-      style={{ pointerEvents: "none" }}
-    >
-      <div
-        className={`${styles.badge} ${styles[role]}`}
-        title={ROLE_LABEL[role]}
-        aria-label={ROLE_LABEL[role]}
+    <>
+      <Line
+        points={[anchorPosition, position]}
+        color={ROLE_LINE_COLOR[role]}
+        lineWidth={1}
+        dashed
+        dashSize={0.025}
+        gapSize={0.018}
+        transparent
+        opacity={0.7}
+      />
+
+      <Html
+        position={position}
+        center
+        distanceFactor={7}
+        zIndexRange={[30, 0]}
+        style={{ pointerEvents: "none" }}
       >
-        <RoleIcon role={role} />
-      </div>
-    </Html>
+        <div
+          className={`${styles.badge} ${styles[role]}`}
+          title={ROLE_LABEL[role]}
+          aria-label={ROLE_LABEL[role]}
+        >
+          <RoleIcon role={role} />
+        </div>
+      </Html>
+    </>
   );
 }

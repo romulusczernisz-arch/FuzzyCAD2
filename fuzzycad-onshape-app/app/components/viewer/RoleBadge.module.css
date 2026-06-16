@@ -2,21 +2,21 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(25, 31, 45, 0.16);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.16);
   color: #111827;
   user-select: none;
 }
 
 .badge svg {
-  width: 13px;
-  height: 13px;
+  width: 11px;
+  height: 11px;
   stroke: currentColor;
-  stroke-width: 2.2;
+  stroke-width: 2.3;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;

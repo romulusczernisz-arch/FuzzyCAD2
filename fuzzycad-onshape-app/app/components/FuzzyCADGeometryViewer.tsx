@@ -258,53 +258,130 @@ function Model({
     scene,
   ]);
 
-  const roleBadges = useMemo(() => {
-    if (!rolePreviewPlan) {
-      return [];
-    }
+function midpoint(a: [number, number, number], b: [number, number, number]) {
+  return [
+    (a[0] + b[0]) / 2,
+    (a[1] + b[1]) / 2,
+    (a[2] + b[2]) / 2,
+  ] as [number, number, number];
+}
 
-    const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
-    const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
-    const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
+function getLowerEnd(summary: AxialStretchObjectSummary) {
+  return summary.negativeEndWorld[1] <= summary.positiveEndWorld[1]
+    ? summary.negativeEndWorld
+    : summary.positiveEndWorld;
+}
 
-    return objectSummaries
-      .map((summary) => {
-        let role: RoleBadgeRole | null = null;
+function getUpperEnd(summary: AxialStretchObjectSummary) {
+  return summary.negativeEndWorld[1] >= summary.positiveEndWorld[1]
+    ? summary.negativeEndWorld
+    : summary.positiveEndWorld;
+}
 
-        if (stretchSet.has(summary.pathKey)) {
-          role = "stretchTarget";
-        } else if (moveSet.has(summary.pathKey)) {
-          role = "moveWithEnd";
-        } else if (fixedSet.has(summary.pathKey)) {
-          role = "fixedAnchor";
-        }
+function pathKeyOffsetSign(pathKey: string) {
+  let hash = 0;
 
-        if (!role) {
-          return null;
-        }
+  for (let index = 0; index < pathKey.length; index += 1) {
+    hash = (hash * 31 + pathKey.charCodeAt(index)) | 0;
+  }
 
-        const [x, y, z] = summary.aabbCenterWorld;
+  return hash % 2 === 0 ? 1 : -1;
+}
 
-        return {
-          pathKey: summary.pathKey,
-          role,
-          position: [
-            x,
-            y + Math.max(summary.crossSectionSize * 2, 0.02),
-            z,
-          ] as [number, number, number],
-        };
-      })
-      .filter(
-        (
-          item,
-        ): item is {
-          pathKey: string;
-          role: RoleBadgeRole;
-          position: [number, number, number];
-        } => item !== null,
-      );
-  }, [objectSummaries, rolePreviewPlan]);
+function getRoleAnchor(
+  summary: AxialStretchObjectSummary,
+  role: RoleBadgeRole,
+) {
+  if (role === "stretchTarget") {
+    return midpoint(summary.negativeEndWorld, summary.positiveEndWorld);
+  }
+
+  if (role === "moveWithEnd") {
+    return getLowerEnd(summary);
+  }
+
+  return getUpperEnd(summary);
+}
+
+function getBadgePosition(
+  anchor: [number, number, number],
+  summary: AxialStretchObjectSummary,
+  role: RoleBadgeRole,
+): [number, number, number] {
+  const side = pathKeyOffsetSign(summary.pathKey);
+
+  const baseOffset = Math.max(summary.crossSectionSize * 4, 0.045);
+  const verticalOffset = Math.max(summary.crossSectionSize * 2.5, 0.035);
+
+  if (role === "stretchTarget") {
+    return [
+      anchor[0] + side * baseOffset,
+      anchor[1] + verticalOffset,
+      anchor[2],
+    ];
+  }
+
+  if (role === "moveWithEnd") {
+    return [
+      anchor[0] + side * baseOffset,
+      anchor[1] + verticalOffset * 0.6,
+      anchor[2],
+    ];
+  }
+
+  return [
+    anchor[0] + side * baseOffset,
+    anchor[1] + verticalOffset,
+    anchor[2],
+  ];
+}
+
+const roleBadges = useMemo(() => {
+  if (!rolePreviewPlan) {
+    return [];
+  }
+
+  const stretchSet = new Set(rolePreviewPlan.stretchTargetPathKeys);
+  const moveSet = new Set(rolePreviewPlan.moveWithEndPathKeys);
+  const fixedSet = new Set(rolePreviewPlan.fixedAnchorPathKeys);
+
+  return objectSummaries
+    .map((summary) => {
+      let role: RoleBadgeRole | null = null;
+
+      if (stretchSet.has(summary.pathKey)) {
+        role = "stretchTarget";
+      } else if (moveSet.has(summary.pathKey)) {
+        role = "moveWithEnd";
+      } else if (fixedSet.has(summary.pathKey)) {
+        role = "fixedAnchor";
+      }
+
+      if (!role) {
+        return null;
+      }
+
+      const anchorPosition = getRoleAnchor(summary, role);
+      const position = getBadgePosition(anchorPosition, summary, role);
+
+      return {
+        pathKey: summary.pathKey,
+        role,
+        anchorPosition,
+        position,
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        pathKey: string;
+        role: RoleBadgeRole;
+        anchorPosition: [number, number, number];
+        position: [number, number, number];
+      } => item !== null,
+    );
+}, [objectSummaries, rolePreviewPlan]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -377,13 +454,14 @@ function Model({
     <>
       <primitive object={scene} onPointerDown={handlePointerDown} />
 
-      {roleBadges.map((badge) => (
-        <RoleBadge
-          key={`${badge.role}:${badge.pathKey}`}
-          position={badge.position}
-          role={badge.role}
-        />
-      ))}
+     {roleBadges.map((badge) => (
+  <RoleBadge
+    key={`${badge.role}:${badge.pathKey}`}
+    anchorPosition={badge.anchorPosition}
+    position={badge.position}
+    role={badge.role}
+  />
+))}
 
       {handleConfig?.kind === "axial" ? (
         <SizingHandle
