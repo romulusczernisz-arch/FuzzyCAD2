@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import { Bounds, OrbitControls, useGLTF } from "@react-three/drei";
+import { Bounds, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import RoleBadge, { type RoleBadgeRole } from "./viewer/RoleBadge";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -12,6 +12,11 @@ import { applyPlacements, type PartPlacement } from "./viewer/placement";
 import { applyPathHighlight } from "./viewer/highlight";
 import { prepareRenderableMeshes } from "./viewer/materials";
 import type { OperationTool } from "../lib/operations/types";
+import type {
+  AxisConfidenceMap,
+  ConfidenceAxis,
+  ConfidenceLevel,
+} from "../lib/uncertainty/types";
 import {
   applyFuzzyConfidence,
   type FuzzyConfidenceAnnotation,
@@ -50,6 +55,17 @@ export type RolePreviewPlan = {
   excludedPathKeys: string[];
 };
 
+export type FuzzyConfidenceEditor = {
+  pathKey: string;
+  confidence: AxisConfidenceMap;
+  onConfidenceChange: (
+    axis: ConfidenceAxis,
+    confidence: ConfidenceLevel,
+  ) => void;
+  onApply: () => void;
+  onCancel: () => void;
+};
+
 type FuzzyCADGeometryViewerProps = {
   gltfUrl: string | null;
   placements?: PartPlacement[];
@@ -57,6 +73,7 @@ type FuzzyCADGeometryViewerProps = {
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
   confidenceAnnotations?: FuzzyConfidenceAnnotation[];
+    confidenceEditor?: FuzzyConfidenceEditor | null;
   /** Path keys the active sizing/angle handle should act on. */
   activePathKeys?: string[];
   /** Current value of the active manipulation (world units for height/extend, degrees for angle). */
@@ -168,6 +185,153 @@ function getBadgePosition(
   return [anchor[0] + side * baseOffset, anchor[1] + verticalOffset, anchor[2]];
 }
 
+const CONFIDENCE_ORDER: ConfidenceLevel[] = ["high", "medium", "low"];
+
+function getNextConfidenceLevel(level: ConfidenceLevel) {
+  const index = CONFIDENCE_ORDER.indexOf(level);
+
+  return CONFIDENCE_ORDER[(index + 1) % CONFIDENCE_ORDER.length];
+}
+
+function getConfidencePosition(
+  summary: AxialStretchObjectSummary,
+): [number, number, number] {
+  const center = summary.aabbCenterWorld;
+  const offset = Math.max(summary.crossSectionSize * 5, 0.08);
+
+  return [center[0] + offset, center[1] + offset * 0.35, center[2]];
+}
+
+function ConfidenceEditorWidget({
+  summary,
+  editor,
+}: {
+  summary: AxialStretchObjectSummary;
+  editor: FuzzyConfidenceEditor;
+}) {
+  const position = getConfidencePosition(summary);
+  const axes: ConfidenceAxis[] = ["x", "y", "z"];
+
+  return (
+    <Html position={position} center distanceFactor={0.8} occlude={false}>
+      <div
+        onPointerDown={(event) => {
+          event.stopPropagation();
+        }}
+        style={{
+          minWidth: 156,
+          padding: "10px 10px 9px",
+          borderRadius: 14,
+          border: "1px solid rgba(43, 108, 255, 0.45)",
+          background: "rgba(255, 255, 255, 0.88)",
+          boxShadow: "0 12px 34px rgba(15, 23, 42, 0.22)",
+          backdropFilter: "blur(14px)",
+          fontFamily: "Arial, sans-serif",
+          color: "#172033",
+          pointerEvents: "auto",
+          userSelect: "none",
+        }}
+      >
+        <div
+          style={{
+            marginBottom: 7,
+            fontSize: 11,
+            fontWeight: 800,
+            color: "#2b6cff",
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+          }}
+        >
+          Dimension confidence
+        </div>
+
+        {axes.map((axis) => {
+          const level = editor.confidence[axis];
+
+          return (
+            <button
+              key={axis}
+              type="button"
+              onClick={() => {
+                editor.onConfidenceChange(axis, getNextConfidenceLevel(level));
+              }}
+              style={{
+                width: "100%",
+                height: 28,
+                marginBottom: 5,
+                display: "grid",
+                gridTemplateColumns: "24px 1fr",
+                alignItems: "center",
+                gap: 8,
+                border: "1px solid rgba(148, 163, 184, 0.42)",
+                borderRadius: 9,
+                background:
+                  level === "low"
+                    ? "rgba(43, 108, 255, 0.16)"
+                    : level === "medium"
+                      ? "rgba(43, 108, 255, 0.08)"
+                      : "rgba(255, 255, 255, 0.72)",
+                color: "#334155",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <span>{axis.toUpperCase()}</span>
+              <span style={{ textAlign: "left" }}>{level}</span>
+            </button>
+          );
+        })}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 6,
+            marginTop: 7,
+          }}
+        >
+          <button
+            type="button"
+            onClick={editor.onCancel}
+            style={{
+              height: 26,
+              padding: "0 9px",
+              borderRadius: 8,
+              border: "1px solid rgba(148, 163, 184, 0.6)",
+              background: "rgba(255,255,255,0.7)",
+              color: "#475569",
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            Cancel
+          </button>
+
+          <button
+            type="button"
+            onClick={editor.onApply}
+            style={{
+              height: 26,
+              padding: "0 9px",
+              borderRadius: 8,
+              border: "1px solid #2b6cff",
+              background: "#2b6cff",
+              color: "white",
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </Html>
+  );
+}
+
 function Model({
   url,
   placements,
@@ -175,13 +339,14 @@ function Model({
   selectedPathKeys,
   activeTool,
   confidenceAnnotations,
+  confidenceEditor,
   activePathKeys,
   manipulationValue,
   rolePreviewPlan,
   confirmedHeightPlan,
   enableManipulationHandles = true,
   lassoPolygon,
-  
+
   onMeshGraph,
   onObjectSummaries,
   onSelectedNode,
@@ -189,7 +354,6 @@ function Model({
   onObjectLassoSelection,
   onManipulationChange,
   onManipulationDragStateChange,
-  
 }: {
   url: string;
   placements?: PartPlacement[];
@@ -197,6 +361,7 @@ function Model({
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
   confidenceAnnotations?: FuzzyConfidenceAnnotation[];
+  confidenceEditor?: FuzzyConfidenceEditor | null;
   activePathKeys?: string[];
   manipulationValue?: number;
   rolePreviewPlan?: RolePreviewPlan | null;
@@ -291,7 +456,7 @@ function Model({
     applyPathHighlight(scene, activeHighlights);
   }, [scene, highlightedPathKey, selectedPathKeys]);
 
-    useEffect(() => {
+  useEffect(() => {
     applyFuzzyConfidence(scene, confidenceAnnotations ?? []);
     invalidate();
 
@@ -464,6 +629,18 @@ function Model({
       );
   }, [objectSummaries, rolePreviewPlan]);
 
+    const confidenceEditorSummary = useMemo(() => {
+    if (!confidenceEditor) {
+      return null;
+    }
+
+    return (
+      objectSummaries.find(
+        (summary) => summary.pathKey === confidenceEditor.pathKey,
+      ) ?? null
+    );
+  }, [confidenceEditor, objectSummaries]);
+
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
@@ -551,6 +728,13 @@ function Model({
         />
       ))}
 
+            {confidenceEditor && confidenceEditorSummary ? (
+        <ConfidenceEditorWidget
+          summary={confidenceEditorSummary}
+          editor={confidenceEditor}
+        />
+      ) : null}
+
       {handleConfig?.kind === "axial" ||
       handleConfig?.kind === "heightStretch" ? (
         <SizingHandle
@@ -587,6 +771,7 @@ export default function FuzzyCADGeometryViewer({
   selectedPathKeys,
   activeTool = "select",
   confidenceAnnotations,
+  confidenceEditor,
   activePathKeys,
   manipulationValue,
   rolePreviewPlan,
@@ -638,14 +823,15 @@ export default function FuzzyCADGeometryViewer({
 
             <Suspense fallback={null}>
               <Bounds fit clip margin={1.2}>
-<Model
-  url={gltfUrl}
-  placements={placements}
-  highlightedPathKey={highlightedPathKey}
-  selectedPathKeys={selectedPathKeys}
-  activeTool={activeTool}
-  confidenceAnnotations={confidenceAnnotations}
-  activePathKeys={activePathKeys}
+                <Model
+                  url={gltfUrl}
+                  placements={placements}
+                  highlightedPathKey={highlightedPathKey}
+                  selectedPathKeys={selectedPathKeys}
+                  activeTool={activeTool}
+                  confidenceAnnotations={confidenceAnnotations}
+                    confidenceEditor={confidenceEditor}
+                  activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
                   rolePreviewPlan={rolePreviewPlan}
                   confirmedHeightPlan={confirmedHeightPlan}

@@ -88,7 +88,8 @@ function buildHeightCandidatePathKeys(
     }
 
     const sameSemanticName =
-      selectedName.length > 0 && normalizeObjectName(summary.name) === selectedName;
+      selectedName.length > 0 &&
+      normalizeObjectName(summary.name) === selectedName;
 
     const geometricallySimilar = selectedSummary.similarPathKeys.includes(
       summary.pathKey,
@@ -228,8 +229,9 @@ export default function FuzzyCADHome() {
     }
 
     return (
-      objectSummaries.find((summary) => summary.pathKey === highlightedPathKey) ??
-      null
+      objectSummaries.find(
+        (summary) => summary.pathKey === highlightedPathKey,
+      ) ?? null
     );
   }, [highlightedPathKey, objectSummaries]);
 
@@ -239,7 +241,8 @@ export default function FuzzyCADHome() {
         objectSummaries.find((summary) => summary.pathKey === pathKey),
       )
       .filter(
-        (summary): summary is AxialStretchObjectSummary => summary !== undefined,
+        (summary): summary is AxialStretchObjectSummary =>
+          summary !== undefined,
       );
   }, [heightCandidatePathKeys, objectSummaries]);
 
@@ -247,12 +250,11 @@ export default function FuzzyCADHome() {
     heightCandidatePathKeys[0] ?? highlightedPathKey ?? null;
 
   const viewerSelectedPathKeys = useMemo(() => {
-    if (heightCandidateOpen) {
+    if (
+      (heightCandidateOpen || heightConfidenceOpen) &&
+      heightCandidatePathKeys.length > 0
+    ) {
       return heightCandidatePathKeys;
-    }
-
-    if (heightConfidenceOpen && heightReferencePathKey) {
-      return [heightReferencePathKey];
     }
 
     return lassoPathKeys;
@@ -260,7 +262,6 @@ export default function FuzzyCADHome() {
     heightCandidateOpen,
     heightConfidenceOpen,
     heightCandidatePathKeys,
-    heightReferencePathKey,
     lassoPathKeys,
   ]);
 
@@ -474,19 +475,24 @@ export default function FuzzyCADHome() {
   }
 
   function applyHeightConfidence() {
-    const targetPathKey = heightReferencePathKey;
+    const targetPathKeys =
+      heightCandidatePathKeys.length > 0
+        ? heightCandidatePathKeys
+        : heightReferencePathKey
+          ? [heightReferencePathKey]
+          : [];
 
-    if (!targetPathKey) {
+    if (targetPathKeys.length === 0) {
       setHeightConfidenceOpen(false);
       return;
     }
 
     setConfidenceAnnotations((previous) => [
-      ...previous.filter((item) => item.pathKey !== targetPathKey),
-      {
-        pathKey: targetPathKey,
-        confidence: confidenceDraft,
-      },
+      ...previous.filter((item) => !targetPathKeys.includes(item.pathKey)),
+      ...targetPathKeys.map((pathKey) => ({
+        pathKey,
+        confidence: { ...confidenceDraft },
+      })),
     ]);
 
     setHeightConfidenceOpen(false);
@@ -549,9 +555,25 @@ export default function FuzzyCADHome() {
           activeTool={activeTool}
           rolePreviewPlan={pendingHeightRolePreview}
           confirmedHeightPlan={confirmedHeightPlan}
-          enableManipulationHandles={!heightPreviewOpen && Boolean(confirmedHeightPlan)}
+          enableManipulationHandles={
+            !heightPreviewOpen && Boolean(confirmedHeightPlan)
+          }
           manipulationValue={manipulationValue}
           confidenceAnnotations={confidenceAnnotations}
+          confidenceEditor={
+            heightConfidenceOpen && heightReferencePathKey
+              ? {
+                  pathKey: heightReferencePathKey,
+                  confidence: confidenceDraft,
+                  onConfidenceChange: updateConfidenceDraft,
+                  onApply: applyHeightConfidence,
+                  onCancel: () => {
+                    setHeightConfidenceOpen(false);
+                    setActiveTool("select");
+                  },
+                }
+              : null
+          }
           onManipulationChange={setManipulationValue}
           onMeshGraph={setMeshGraph}
           onObjectSummaries={setObjectSummaries}
@@ -592,39 +614,30 @@ export default function FuzzyCADHome() {
             operation="height"
             title={
               heightCandidatePathKeys.length > 0
-                ? "Related leg objects detected"
-                : "Select one leg first"
+                ? "Related objects found"
+                : "Select one object first"
             }
             description={
-              heightCandidatePathKeys.length > 0
-                ? "FuzzyCAD found objects with similar names or similar geometry. Confirm to treat them as related tripod legs, then annotate the selected reference leg."
-                : "Click one existing tripod leg in the viewer, then click Height again."
+              heightCandidatePathKeys.length > 1
+                ? `This object seems related to ${
+                    heightCandidatePathKeys.length - 1 === 1
+                      ? "one other object"
+                      : `${heightCandidatePathKeys.length - 1} other objects`
+                  }. Do you also want to include ${
+                    heightCandidatePathKeys.length - 1 === 1 ? "it" : "them"
+                  } in this uncertainty annotation?`
+                : heightCandidatePathKeys.length === 1
+                  ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
+                  : "Click one object in the viewer, then click Height again."
             }
-            suggestedObjects={heightCandidateSummaries.map(getObjectDisplayName)}
             confirmLabel={
-              heightCandidatePathKeys.length > 0 ? "Confirm group" : "OK"
+              heightCandidatePathKeys.length > 1
+                ? "Yes, include them"
+                : "Continue"
             }
-            cancelLabel="Cancel"
+            cancelLabel="Not now"
             onConfirm={confirmHeightCandidateGroup}
             onCancel={cancelHeightCandidateGroup}
-          />
-        ) : null}
-
-        {heightConfidenceOpen ? (
-          <OperationPreviewPanel
-            operation="height"
-            title="Mark leg confidence"
-            description="Set confidence for the selected reference leg. Low confidence creates a stronger blurry 3D ghost along that axis; medium confidence creates a lighter haze; high confidence stays sharp."
-            showConfidenceControls
-            axisConfidence={confidenceDraft}
-            confirmLabel="Apply blur"
-            cancelLabel="Cancel"
-            onConfidenceChange={updateConfidenceDraft}
-            onConfirm={applyHeightConfidence}
-            onCancel={() => {
-              setHeightConfidenceOpen(false);
-              setActiveTool("select");
-            }}
           />
         ) : null}
 
