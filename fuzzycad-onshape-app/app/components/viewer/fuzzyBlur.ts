@@ -62,12 +62,12 @@ function getAxisMask(axis: ConfidenceAxis) {
 
 function getShellColor(level: ConfidenceLevel) {
   if (level === "low") {
-    // Stronger blue for low confidence.
-    return new THREE.Color(0x1f5cff);
+    // Saturated blue = low confidence / larger unresolved range.
+    return new THREE.Color(0x1455ff);
   }
 
-  // Lighter blue for medium confidence.
-  return new THREE.Color(0x8fc7ff);
+  // Pale cyan-blue = medium confidence / smaller unresolved range.
+  return new THREE.Color(0x9edcff);
 }
 
 function getMeshMaterials(mesh: THREE.Mesh) {
@@ -161,9 +161,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
       return;
     }
 
-    const originalMaterials = object.userData[
-      FUZZY_ORIGINAL_MATERIALS
-    ] as THREE.Material[] | undefined;
+    const originalMaterials = object.userData[FUZZY_ORIGINAL_MATERIALS] as
+      | THREE.Material[]
+      | undefined;
 
     if (!originalMaterials) {
       return;
@@ -399,39 +399,40 @@ transformedPosition += sign(position) * uAxisMask * axisExpansion;
         return mix(nxy0, nxy1, f.z);
       }
 
-      void main() {
-        // Only show the shell where the selected axis is visually relevant.
-        // This avoids turning the whole object into one uniform blue layer.
-        float axisMask = smoothstep(0.22, 0.85, vAxisPresence);
+void main() {
+  // Only show the shell where the selected axis is visually relevant.
+  float axisMask = smoothstep(0.22, 0.85, vAxisPresence);
 
-        if (axisMask < 0.025) {
-          discard;
-        }
+  if (axisMask < 0.025) {
+    discard;
+  }
 
-        float n1 = noise(vLocalPosition * 15.0);
-        float n2 = noise(vLocalPosition * 41.0 + vec3(3.7, 8.1, 2.4));
-        float n = mix(n1, n2, 0.45);
+  float n1 = noise(vLocalPosition * 15.0);
+  float n2 = noise(vLocalPosition * 41.0 + vec3(3.7, 8.1, 2.4));
+  float n = mix(n1, n2, 0.45);
 
-        float shellFade = 1.0 - uLayerRatio * 0.72;
+  // Noise only makes the shell feel fuzzy; it should not encode confidence.
+  float particleMask = smoothstep(0.18, 0.84, n + axisMask * 0.28);
 
-        // Low confidence is more visible and more spatially diffuse.
-        float visibilityBoost = mix(0.7, 1.15, uIsLow);
+  // Confidence is encoded by:
+  // 1) whether a shell exists
+  // 2) shell width
+  // 3) discrete shell color
+  //
+  // It is NOT encoded by a dark-to-light gradient.
+  float baseAlpha = mix(0.16, 0.25, uIsLow);
 
-        float particleMask = smoothstep(0.16, 0.84, n + axisMask * 0.32);
+  // Outer layers fade only slightly so they read as volume, not as lower confidence.
+  float layerFade = mix(1.0, 0.72, uLayerRatio);
 
-        float alpha =
-          0.035 * uStrength * shellFade +
-          particleMask * axisMask * uStrength * 0.22 * shellFade * visibilityBoost;
+  float alpha = baseAlpha * axisMask * particleMask * layerFade;
 
-        // Outer layers are softer and more transparent.
-        alpha *= mix(0.82, 0.28, uLayerRatio);
+  if (alpha < 0.018) {
+    discard;
+  }
 
-        if (alpha < 0.014) {
-          discard;
-        }
-
-        gl_FragColor = vec4(uColor, alpha);
-      }
+  gl_FragColor = vec4(uColor, alpha);
+}
     `,
   });
 
