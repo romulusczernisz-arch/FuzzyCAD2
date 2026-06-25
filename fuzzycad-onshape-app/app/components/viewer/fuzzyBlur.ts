@@ -9,7 +9,7 @@ export type { FuzzyConfidenceAnnotation };
 
 const FUZZY_ORIGINAL_MATERIALS = "__fuzzycad_original_materials__";
 const FUZZY_ACTIVE_MATERIAL = "__fuzzycad_active_material__";
-const FUZZY_VISUAL_GROUP = "__fuzzycad_uncertainty_visual_group__";
+const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
 
 function confidenceToStrength(level: ConfidenceLevel) {
   if (level === "low") {
@@ -17,7 +17,7 @@ function confidenceToStrength(level: ConfidenceLevel) {
   }
 
   if (level === "medium") {
-    return 0.48;
+    return 0.45;
   }
 
   return 0.0;
@@ -52,28 +52,58 @@ function getMaterialColor(material: THREE.Material) {
     return materialWithColor.color.clone();
   }
 
-  return new THREE.Color(0x6aa8ff);
+  return new THREE.Color(0x9ca3af);
 }
 
-function makeDimmedMaterial(sourceMaterial: THREE.Material, strength: number) {
-  const materialWithMap = sourceMaterial as THREE.MeshStandardMaterial;
+function makeDimmedOriginalMaterial(
+  sourceMaterial: THREE.Material,
+  strength: number,
+) {
+  const source = sourceMaterial as THREE.MeshStandardMaterial;
 
   const material = new THREE.MeshStandardMaterial({
     color: getMaterialColor(sourceMaterial),
-    map: materialWithMap.map ?? null,
+    map: source.map ?? null,
     transparent: true,
-    opacity: strength >= 1 ? 0.28 : 0.46,
+
+    // 原 object 还在，但非常弱。你如果想完全隐藏，可以把这里改成 0.02。
+    opacity: strength >= 1 ? 0.08 : 0.16,
+
     depthWrite: false,
     side: THREE.DoubleSide,
     roughness: 1,
     metalness: 0,
-    emissive: new THREE.Color(0x3b82f6),
-    emissiveIntensity: strength >= 1 ? 0.18 : 0.08,
   });
 
   material.userData[FUZZY_ACTIVE_MATERIAL] = true;
 
   return material;
+}
+
+function clearFuzzyVisualChildren(scene: THREE.Object3D) {
+  const childrenToRemove: THREE.Object3D[] = [];
+
+  scene.traverse((object) => {
+    if (object.userData?.[FUZZY_VISUAL_CHILD]) {
+      childrenToRemove.push(object);
+    }
+  });
+
+  for (const child of childrenToRemove) {
+    child.parent?.remove(child);
+
+    if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+
+      for (const material of materials) {
+        material.dispose();
+      }
+    }
+  }
 }
 
 function restoreOriginalMaterials(scene: THREE.Object3D) {
@@ -103,34 +133,6 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
 
     delete object.userData[FUZZY_ORIGINAL_MATERIALS];
   });
-}
-
-function clearFuzzyVisualGroups(scene: THREE.Object3D) {
-  const groups: THREE.Object3D[] = [];
-
-  scene.traverse((object) => {
-    if (object.name === FUZZY_VISUAL_GROUP) {
-      groups.push(object);
-    }
-  });
-
-  for (const group of groups) {
-    group.traverse((child) => {
-      if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
-        child.geometry.dispose();
-
-        const materials = Array.isArray(child.material)
-          ? child.material
-          : [child.material];
-
-        for (const material of materials) {
-          material.dispose();
-        }
-      }
-    });
-
-    group.parent?.remove(group);
-  }
 }
 
 function hasSelectedAncestor(
@@ -177,49 +179,48 @@ function findTopLevelObjectsByPathKeys(
       return;
     }
 
+    if (object.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
     objects.push(object);
   });
 
   return objects;
 }
 
-function dimObjectMaterial(object: THREE.Object3D, strength: number) {
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) {
-      return;
-    }
+function dimOriginalMesh(mesh: THREE.Mesh, strength: number) {
+  const currentMaterials = getMeshMaterials(mesh);
 
-    const currentMaterials = getMeshMaterials(child);
+  if (!mesh.userData[FUZZY_ORIGINAL_MATERIALS]) {
+    mesh.userData[FUZZY_ORIGINAL_MATERIALS] = currentMaterials;
+  }
 
-    if (!child.userData[FUZZY_ORIGINAL_MATERIALS]) {
-      child.userData[FUZZY_ORIGINAL_MATERIALS] = currentMaterials;
-    }
+  const dimmedMaterials = currentMaterials.map((material) =>
+    makeDimmedOriginalMaterial(material, strength),
+  );
 
-    const fuzzyMaterials = currentMaterials.map((material) =>
-      makeDimmedMaterial(material, strength),
-    );
-
-    child.material =
-      Array.isArray(child.material) ? fuzzyMaterials : fuzzyMaterials[0];
-  });
+  mesh.material = Array.isArray(mesh.material) ? dimmedMaterials : dimmedMaterials[0];
 }
 
-function createDashedBoundaryForMesh({
-  mesh,
-  strength,
-}: {
-  mesh: THREE.Mesh;
-  strength: number;
-}) {
-  const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 22);
+function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
+  const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 18);
 
   const material = new THREE.LineDashedMaterial({
-    color: strength >= 1 ? 0x005dff : 0x4f8cff,
-    linewidth: 2,
-    dashSize: strength >= 1 ? 0.016 : 0.03,
-    gapSize: strength >= 1 ? 0.012 : 0.026,
+    // 你说不一定要蓝色，所以这里改成黑色。
+    color: 0x111111,
+
+    // WebGL 里 linewidth 很多浏览器不会真正变粗，所以主要靠 opacity/dash/gap。
+    linewidth: 1,
+
+    // “松一点”的 dashed line：dash 和 gap 都比之前大。
+    dashSize: strength >= 1 ? 0.055 : 0.075,
+    gapSize: strength >= 1 ? 0.038 : 0.052,
+
     transparent: true,
-    opacity: strength >= 1 ? 1.0 : 0.72,
+    opacity: strength >= 1 ? 0.95 : 0.65,
+
+    // 让 dashed boundary 永远更容易看见。
     depthTest: false,
     depthWrite: false,
   });
@@ -227,41 +228,17 @@ function createDashedBoundaryForMesh({
   const line = new THREE.LineSegments(edgeGeometry, material);
 
   line.computeLineDistances();
-  line.renderOrder = 999;
-  line.matrixAutoUpdate = false;
-  line.matrix.copy(mesh.matrixWorld);
-  line.userData.fuzzyBoundary = true;
+  line.renderOrder = 1000;
+  line.userData[FUZZY_VISUAL_CHILD] = true;
 
+  // 关键：直接作为 mesh 的 child。
+  // 这样它使用 mesh 的 local geometry，不需要 matrixWorld，所以不会偏位。
   return line;
 }
 
-function createDashedBoundaryGroup(object: THREE.Object3D, strength: number) {
-  const group = new THREE.Group();
-
-  group.name = FUZZY_VISUAL_GROUP;
-  group.userData.fuzzyBoundary = true;
-
-  object.updateMatrixWorld(true);
-
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) {
-      return;
-    }
-
-    group.add(
-      createDashedBoundaryForMesh({
-        mesh: child,
-        strength,
-      }),
-    );
-  });
-
-  return group;
-}
-
-function makeVolumeBlurMaterial(confidence: AxisConfidenceMap) {
+function makeFuzzyVolumeMaterial(confidence: AxisConfidenceMap) {
   const axisStrength = getAxisStrength(confidence);
-  const maxStrength = Math.max(axisStrength.x, axisStrength.y, axisStrength.z);
+  const maxStrength = getMaxUncertainty(confidence);
 
   const material = new THREE.ShaderMaterial({
     transparent: true,
@@ -282,9 +259,28 @@ function makeVolumeBlurMaterial(confidence: AxisConfidenceMap) {
     vertexShader: `
       varying vec3 vLocalPosition;
 
+      uniform vec3 uAxisStrength;
+
       void main() {
         vLocalPosition = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+
+        vec3 transformedPosition = position;
+
+        // 这一步不是生成 bounding box，而是让 object 自己的 geometry
+        // 在不确定轴向上略微膨胀，所以会形成贴着原模型的 fuzzy volume。
+        vec3 directionFromCenter = normalize(position + vec3(0.0001));
+
+        transformedPosition += directionFromCenter * (
+          0.035 +
+          uMaxStrength * 0.045
+        );
+
+        // 轴向不确定越强，对该方向的扰动越明显。
+        transformedPosition.x += sign(position.x) * uAxisStrength.x * 0.018;
+        transformedPosition.y += sign(position.y) * uAxisStrength.y * 0.055;
+        transformedPosition.z += sign(position.z) * uAxisStrength.z * 0.018;
+
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(transformedPosition, 1.0);
       }
     `,
     fragmentShader: `
@@ -326,25 +322,22 @@ function makeVolumeBlurMaterial(confidence: AxisConfidenceMap) {
       }
 
       void main() {
-        // Box geometry is normalized around local center.
-        // Values near +/- side faces should become more visible for uncertain axes.
-        vec3 normalizedPosition = abs(vLocalPosition);
+        vec3 p = normalize(abs(vLocalPosition) + vec3(0.0001));
 
-        float xFace = smoothstep(0.22, 0.5, normalizedPosition.x) * uAxisStrength.x;
-        float yFace = smoothstep(0.22, 0.5, normalizedPosition.y) * uAxisStrength.y;
-        float zFace = smoothstep(0.22, 0.5, normalizedPosition.z) * uAxisStrength.z;
+        float xFuzz = p.x * uAxisStrength.x;
+        float yFuzz = p.y * uAxisStrength.y;
+        float zFuzz = p.z * uAxisStrength.z;
 
-        float faceUncertainty = max(max(xFace, yFace), zFace);
+        float axisFuzz = max(max(xFuzz, yFuzz), zFuzz);
 
-        float n1 = noise(vLocalPosition * 9.0);
-        float n2 = noise(vLocalPosition * 23.0 + vec3(4.1, 2.7, 8.3));
-        float fuzzyNoise = mix(n1, n2, 0.45);
+        float n1 = noise(vLocalPosition * 18.0);
+        float n2 = noise(vLocalPosition * 47.0 + vec3(3.7, 8.1, 2.4));
+        float n = mix(n1, n2, 0.45);
 
-        float particleMask = smoothstep(0.26, 0.94, fuzzyNoise + faceUncertainty * 0.42);
+        float particle = smoothstep(0.18, 0.88, n + axisFuzz * 0.42);
 
-        float alpha =
-          0.035 * uMaxStrength +
-          faceUncertainty * 0.28 * particleMask;
+        // low confidence 会更明显；medium 会轻一些。
+        float alpha = 0.035 * uMaxStrength + particle * axisFuzz * 0.22;
 
         if (alpha < 0.018) {
           discard;
@@ -355,63 +348,47 @@ function makeVolumeBlurMaterial(confidence: AxisConfidenceMap) {
     `,
   });
 
+  material.userData[FUZZY_ACTIVE_MATERIAL] = true;
+
   return material;
 }
 
-function createVolumeBlurBox({
-  object,
-  confidence,
-}: {
-  object: THREE.Object3D;
-  confidence: AxisConfidenceMap;
-}) {
-  const box = new THREE.Box3().setFromObject(object);
-  const center = new THREE.Vector3();
-  const size = new THREE.Vector3();
+function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
+  // 关键：这里用 mesh.geometry，不用 bounding box。
+  // 所以 fuzzy volume 是沿着真实 object geometry 的。
+  const material = makeFuzzyVolumeMaterial(confidence);
+  const volume = new THREE.Mesh(mesh.geometry, material);
 
-  box.getCenter(center);
-  box.getSize(size);
+  volume.renderOrder = 999;
+  volume.userData[FUZZY_VISUAL_CHILD] = true;
 
-  const axisStrength = getAxisStrength(confidence);
-
-  // Expand only along uncertain axes.
-  // High confidence axis does not expand.
-  const expandedSize = new THREE.Vector3(
-    size.x * (1 + axisStrength.x * 0.55),
-    size.y * (1 + axisStrength.y * 0.55),
-    size.z * (1 + axisStrength.z * 0.55),
-  );
-
-  expandedSize.x = Math.max(expandedSize.x, 0.01);
-  expandedSize.y = Math.max(expandedSize.y, 0.01);
-  expandedSize.z = Math.max(expandedSize.z, 0.01);
-
-  const geometry = new THREE.BoxGeometry(
-    expandedSize.x,
-    expandedSize.y,
-    expandedSize.z,
-  );
-
-  // Normalize local coordinates to roughly -0.5 to 0.5 in shader.
-  geometry.computeBoundingBox();
-
-  const material = makeVolumeBlurMaterial(confidence);
-
-  const mesh = new THREE.Mesh(geometry, material);
-
-  mesh.position.copy(center);
-  mesh.renderOrder = 998;
-  mesh.userData.fuzzyVolume = true;
-
-  return mesh;
+  return volume;
 }
 
-function applyUncertaintyVisualToObject({
-  scene,
+function applyUncertaintyToMesh({
+  mesh,
+  confidence,
+  strength,
+}: {
+  mesh: THREE.Mesh;
+  confidence: AxisConfidenceMap;
+  strength: number;
+}) {
+  dimOriginalMesh(mesh, strength);
+
+  const fuzzyVolume = createFuzzyVolume(mesh, confidence);
+  const dashedBoundary = createDashedBoundary(mesh, strength);
+
+  // 关键：这两个 visual 都直接挂在原 mesh 下面。
+  // 这样 dashed line 和 fuzzy volume 一定和原 mesh 重合。
+  mesh.add(fuzzyVolume);
+  mesh.add(dashedBoundary);
+}
+
+function applyUncertaintyToObject({
   object,
   confidence,
 }: {
-  scene: THREE.Object3D;
   object: THREE.Object3D;
   confidence: AxisConfidenceMap;
 }) {
@@ -421,31 +398,35 @@ function applyUncertaintyVisualToObject({
 
   const strength = getMaxUncertainty(confidence);
 
-  dimObjectMaterial(object, strength);
+  const meshes: THREE.Mesh[] = [];
 
-  const boundaryGroup = createDashedBoundaryGroup(object, strength);
-  const volumeBlur = createVolumeBlurBox({
-    object,
-    confidence,
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    meshes.push(child);
   });
 
-  const visualGroup = new THREE.Group();
-
-  visualGroup.name = FUZZY_VISUAL_GROUP;
-  visualGroup.userData.fuzzyUncertaintyVisual = true;
-
-  visualGroup.add(volumeBlur);
-  visualGroup.add(boundaryGroup);
-
-  scene.add(visualGroup);
+  for (const mesh of meshes) {
+    applyUncertaintyToMesh({
+      mesh,
+      confidence,
+      strength,
+    });
+  }
 }
 
 export function applyFuzzyConfidence(
   scene: THREE.Object3D,
   annotations: FuzzyConfidenceAnnotation[],
 ) {
+  clearFuzzyVisualChildren(scene);
   restoreOriginalMaterials(scene);
-  clearFuzzyVisualGroups(scene);
 
   if (annotations.length === 0) {
     return;
@@ -473,8 +454,7 @@ export function applyFuzzyConfidence(
       continue;
     }
 
-    applyUncertaintyVisualToObject({
-      scene,
+    applyUncertaintyToObject({
       object,
       confidence: annotation.confidence,
     });
