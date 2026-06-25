@@ -336,18 +336,19 @@ function makeAxisShellMaterial({
         vec3 safePosition = position + vec3(0.0001);
         vec3 directionFromCenter = normalize(safePosition);
 
-        // Medium = narrow shell. Low = wider shell.
-        float baseExpansion = mix(0.004, 0.018, uLayerRatio) * uStrength;
-        float axisExpansion = mix(0.018, 0.13, uLayerRatio) * uStrength;
+// Medium = narrow shell. Low = wider shell.
+// Reduced expansion: about 40% of the previous range.
+float baseExpansion = mix(0.002, 0.007, uLayerRatio) * uStrength;
+float axisExpansion = mix(0.007, 0.052, uLayerRatio) * uStrength;
 
-        // Low confidence gets a larger unresolved range.
-        axisExpansion *= mix(0.75, 1.25, uIsLow);
+// Low confidence is still wider than medium, but no longer balloons too far.
+axisExpansion *= mix(0.7, 1.0, uIsLow);
 
-        // A very small normal expansion keeps the shell outside the original object.
-        transformedPosition += directionFromCenter * baseExpansion;
+// A small normal expansion keeps the shell just outside the reference object.
+transformedPosition += directionFromCenter * baseExpansion;
 
-        // Main axis-specific expansion.
-        transformedPosition += sign(position) * uAxisMask * axisExpansion;
+// Main axis-specific expansion.
+transformedPosition += sign(position) * uAxisMask * axisExpansion;
 
         vec3 normalizedPosition = normalize(abs(position) + vec3(0.0001));
 
