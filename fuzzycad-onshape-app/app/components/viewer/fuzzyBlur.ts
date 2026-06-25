@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type {
   AxisConfidenceMap,
+  ConfidenceAxis,
   ConfidenceLevel,
   FuzzyConfidenceAnnotation,
 } from "../../lib/uncertainty/types";
@@ -17,28 +18,56 @@ function confidenceToStrength(level: ConfidenceLevel) {
   }
 
   if (level === "medium") {
-    return 0.35;
+    return 0.42;
   }
 
   return 0.0;
 }
 
-function getAxisStrength(confidence: AxisConfidenceMap) {
-  return new THREE.Vector3(
+function getMaxUncertainty(confidence: AxisConfidenceMap) {
+  return Math.max(
     confidenceToStrength(confidence.x),
     confidenceToStrength(confidence.y),
     confidenceToStrength(confidence.z),
   );
 }
 
-function getMaxUncertainty(confidence: AxisConfidenceMap) {
-  const axisStrength = getAxisStrength(confidence);
-
-  return Math.max(axisStrength.x, axisStrength.y, axisStrength.z);
-}
-
 function hasUncertainty(confidence: AxisConfidenceMap) {
   return getMaxUncertainty(confidence) > 0;
+}
+
+function getLayerCount(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 3;
+  }
+
+  if (level === "medium") {
+    return 1;
+  }
+
+  return 0;
+}
+
+function getAxisMask(axis: ConfidenceAxis) {
+  if (axis === "x") {
+    return new THREE.Vector3(1, 0, 0);
+  }
+
+  if (axis === "y") {
+    return new THREE.Vector3(0, 1, 0);
+  }
+
+  return new THREE.Vector3(0, 0, 1);
+}
+
+function getShellColor(level: ConfidenceLevel) {
+  if (level === "low") {
+    // Stronger blue for low confidence.
+    return new THREE.Color(0x1f5cff);
+  }
+
+  // Lighter blue for medium confidence.
+  return new THREE.Color(0x8fc7ff);
 }
 
 function getMeshMaterials(mesh: THREE.Mesh) {
@@ -66,8 +95,8 @@ function makeDimmedOriginalMaterial(
     map: source.map ?? null,
     transparent: true,
 
-    // 原 object 只作为很淡的 reference geometry。
-    // 如果你想只保留 dash line，可以继续把这两个值调低。
+    // Original CAD geometry becomes a weak reference layer.
+    // Lower these values if you want only dashed line + shells.
     opacity: strength >= 1 ? 0.07 : 0.15,
 
     depthWrite: false,
@@ -107,7 +136,8 @@ function clearFuzzyVisualChildren(scene: THREE.Object3D) {
       return;
     }
 
-    // 只收集最外层 visual group，避免重复 dispose child。
+    // Only remove top-level visual nodes. Nested visual children are disposed
+    // together with their parent group.
     if (object.parent?.userData?.[FUZZY_VISUAL_CHILD]) {
       return;
     }
@@ -231,7 +261,7 @@ function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
     color: 0x111111,
     linewidth: 1,
 
-    // 比之前更松：不要让 dash line 看起来像密集 mesh edge。
+    // Loose dashed boundary. This remains the reference geometry.
     dashSize: strength >= 1 ? 0.095 : 0.115,
     gapSize: strength >= 1 ? 0.14 : 0.17,
 
@@ -250,17 +280,20 @@ function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
   return line;
 }
 
-function makeFuzzyVolumeMaterial({
-  confidence,
+function makeAxisShellMaterial({
+  axis,
+  level,
   layerIndex,
   layerCount,
 }: {
-  confidence: AxisConfidenceMap;
+  axis: ConfidenceAxis;
+  level: ConfidenceLevel;
   layerIndex: number;
   layerCount: number;
 }) {
-  const axisStrength = getAxisStrength(confidence);
-  const maxStrength = getMaxUncertainty(confidence);
+  const strength = confidenceToStrength(level);
+  const axisMask = getAxisMask(axis);
+  const color = getShellColor(level);
   const layerRatio = layerIndex / Math.max(layerCount - 1, 1);
 
   const material = new THREE.ShaderMaterial({
@@ -270,64 +303,68 @@ function makeFuzzyVolumeMaterial({
     side: THREE.DoubleSide,
     blending: THREE.NormalBlending,
     uniforms: {
-      uAxisStrength: {
-        value: axisStrength,
+      uAxisMask: {
+        value: axisMask,
       },
-      uMaxStrength: {
-        value: maxStrength,
+      uStrength: {
+        value: strength,
       },
       uLayerRatio: {
         value: layerRatio,
       },
       uColor: {
-        value: new THREE.Color(0x2b6cff),
+        value: color,
+      },
+      uIsLow: {
+        value: level === "low" ? 1.0 : 0.0,
       },
     },
     vertexShader: `
       varying vec3 vLocalPosition;
-      varying float vAxisFuzz;
+      varying float vAxisPresence;
 
-      uniform vec3 uAxisStrength;
-      uniform float uMaxStrength;
+      uniform vec3 uAxisMask;
+      uniform float uStrength;
       uniform float uLayerRatio;
+      uniform float uIsLow;
 
       void main() {
         vLocalPosition = position;
 
         vec3 transformedPosition = position;
 
-        vec3 directionFromCenter = normalize(position + vec3(0.0001));
+        vec3 safePosition = position + vec3(0.0001);
+        vec3 directionFromCenter = normalize(safePosition);
 
-        // 新逻辑：
-        // 内层几乎贴着 object；外层才扩出去。
-        // 越不确定，扩得越宽。
-        float shellExpansion = mix(0.006, 0.085, uLayerRatio) * uMaxStrength;
+        // Medium = narrow shell. Low = wider shell.
+        float baseExpansion = mix(0.004, 0.018, uLayerRatio) * uStrength;
+        float axisExpansion = mix(0.018, 0.13, uLayerRatio) * uStrength;
 
-        transformedPosition += directionFromCenter * shellExpansion;
+        // Low confidence gets a larger unresolved range.
+        axisExpansion *= mix(0.75, 1.25, uIsLow);
 
-        // 轴向扩张：high = 0，所以 high confidence 方向不会被染色/扩张。
-        transformedPosition.x += sign(position.x) * uAxisStrength.x * mix(0.002, 0.026, uLayerRatio);
-        transformedPosition.y += sign(position.y) * uAxisStrength.y * mix(0.006, 0.065, uLayerRatio);
-        transformedPosition.z += sign(position.z) * uAxisStrength.z * mix(0.002, 0.026, uLayerRatio);
+        // A very small normal expansion keeps the shell outside the original object.
+        transformedPosition += directionFromCenter * baseExpansion;
 
-        vec3 p = normalize(abs(position) + vec3(0.0001));
+        // Main axis-specific expansion.
+        transformedPosition += sign(position) * uAxisMask * axisExpansion;
 
-        float xFuzz = p.x * uAxisStrength.x;
-        float yFuzz = p.y * uAxisStrength.y;
-        float zFuzz = p.z * uAxisStrength.z;
+        vec3 normalizedPosition = normalize(abs(position) + vec3(0.0001));
 
-        vAxisFuzz = max(max(xFuzz, yFuzz), zFuzz);
+        // How much this vertex belongs to the selected axis direction.
+        vAxisPresence = dot(normalizedPosition, uAxisMask);
 
         gl_Position = projectionMatrix * modelViewMatrix * vec4(transformedPosition, 1.0);
       }
     `,
     fragmentShader: `
       varying vec3 vLocalPosition;
-      varying float vAxisFuzz;
+      varying float vAxisPresence;
 
-      uniform float uMaxStrength;
+      uniform float uStrength;
       uniform float uLayerRatio;
       uniform vec3 uColor;
+      uniform float uIsLow;
 
       float hash(vec3 p) {
         p = fract(p * 0.3183099 + vec3(0.13, 0.37, 0.61));
@@ -362,32 +399,33 @@ function makeFuzzyVolumeMaterial({
       }
 
       void main() {
-        float n1 = noise(vLocalPosition * 16.0);
-        float n2 = noise(vLocalPosition * 43.0 + vec3(3.7, 8.1, 2.4));
-        float n = mix(n1, n2, 0.45);
+        // Only show the shell where the selected axis is visually relevant.
+        // This avoids turning the whole object into one uniform blue layer.
+        float axisMask = smoothstep(0.22, 0.85, vAxisPresence);
 
-        // vAxisFuzz 越大，说明这个 fragment 越接近不确定轴向的显著区域。
-        float uncertaintyMask = clamp(vAxisFuzz, 0.0, 1.0);
-
-        // High confidence 区域不给颜色；uncertainty 低于阈值直接不显示。
-        if (uncertaintyMask < 0.05) {
+        if (axisMask < 0.025) {
           discard;
         }
 
-        // 外层更淡，内层更贴合 object。
-        float shellFade = 1.0 - uLayerRatio * 0.78;
+        float n1 = noise(vLocalPosition * 15.0);
+        float n2 = noise(vLocalPosition * 41.0 + vec3(3.7, 8.1, 2.4));
+        float n = mix(n1, n2, 0.45);
 
-        // 蓝色 shell 里加入一点 noise，让它不是普通半透明塑料。
-        float particleMask = smoothstep(0.18, 0.82, n + uncertaintyMask * 0.35);
+        float shellFade = 1.0 - uLayerRatio * 0.72;
+
+        // Low confidence is more visible and more spatially diffuse.
+        float visibilityBoost = mix(0.7, 1.15, uIsLow);
+
+        float particleMask = smoothstep(0.16, 0.84, n + axisMask * 0.32);
 
         float alpha =
-          0.035 * uMaxStrength * shellFade +
-          particleMask * uncertaintyMask * 0.24 * shellFade;
+          0.035 * uStrength * shellFade +
+          particleMask * axisMask * uStrength * 0.22 * shellFade * visibilityBoost;
 
-        // 越外层越透明，形成 blue -> transparent 的范围感。
-        alpha *= mix(0.9, 0.28, uLayerRatio);
+        // Outer layers are softer and more transparent.
+        alpha *= mix(0.82, 0.28, uLayerRatio);
 
-        if (alpha < 0.015) {
+        if (alpha < 0.014) {
           discard;
         }
 
@@ -401,28 +439,81 @@ function makeFuzzyVolumeMaterial({
   return material;
 }
 
+function createAxisShell({
+  mesh,
+  axis,
+  level,
+}: {
+  mesh: THREE.Mesh;
+  axis: ConfidenceAxis;
+  level: ConfidenceLevel;
+}) {
+  const layerCount = getLayerCount(level);
+
+  if (layerCount === 0) {
+    return null;
+  }
+
+  const group = new THREE.Group();
+
+  group.userData[FUZZY_VISUAL_CHILD] = true;
+
+  for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
+    const material = makeAxisShellMaterial({
+      axis,
+      level,
+      layerIndex,
+      layerCount,
+    });
+
+    const shell = new THREE.Mesh(mesh.geometry.clone(), material);
+
+    shell.renderOrder = 999 - layerIndex;
+    shell.userData[FUZZY_VISUAL_CHILD] = true;
+
+    group.add(shell);
+  }
+
+  return group;
+}
+
 function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
   const group = new THREE.Group();
 
   group.userData[FUZZY_VISUAL_CHILD] = true;
 
-  // 只做 3 层，比之前 4 层更克制，避免底下拖出太多层。
-  const layerCount = 3;
+  const xShell = createAxisShell({
+    mesh,
+    axis: "x",
+    level: confidence.x,
+  });
 
-  for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
-    const material = makeFuzzyVolumeMaterial({
-      confidence,
-      layerIndex,
-      layerCount,
-    });
+  const yShell = createAxisShell({
+    mesh,
+    axis: "y",
+    level: confidence.y,
+  });
 
-    // Clone geometry to avoid disposing the original CAD mesh geometry.
-    const volume = new THREE.Mesh(mesh.geometry.clone(), material);
+  const zShell = createAxisShell({
+    mesh,
+    axis: "z",
+    level: confidence.z,
+  });
 
-    volume.renderOrder = 999 - layerIndex;
-    volume.userData[FUZZY_VISUAL_CHILD] = true;
+  if (xShell) {
+    group.add(xShell);
+  }
 
-    group.add(volume);
+  if (yShell) {
+    group.add(yShell);
+  }
+
+  if (zShell) {
+    group.add(zShell);
+  }
+
+  if (group.children.length === 0) {
+    return null;
   }
 
   return group;
@@ -442,7 +533,10 @@ function applyUncertaintyToMesh({
   const fuzzyVolume = createFuzzyVolume(mesh, confidence);
   const dashedBoundary = createDashedBoundary(mesh, strength);
 
-  mesh.add(fuzzyVolume);
+  if (fuzzyVolume) {
+    mesh.add(fuzzyVolume);
+  }
+
   mesh.add(dashedBoundary);
 }
 
