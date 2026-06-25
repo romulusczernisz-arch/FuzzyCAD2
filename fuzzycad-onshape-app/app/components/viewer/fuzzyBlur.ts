@@ -204,26 +204,21 @@ function dimOriginalMesh(mesh: THREE.Mesh, strength: number) {
 }
 
 function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
-  const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 18);
+ const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 35);
 
-  const material = new THREE.LineDashedMaterial({
-    // 你说不一定要蓝色，所以这里改成黑色。
-    color: 0x111111,
+const material = new THREE.LineDashedMaterial({
+  color: 0x111111,
+  linewidth: 1,
 
-    // WebGL 里 linewidth 很多浏览器不会真正变粗，所以主要靠 opacity/dash/gap。
-    linewidth: 1,
+  // Longer dash and much longer gap, so the boundary reads less like dense mesh edges.
+  dashSize: strength >= 1 ? 0.09 : 0.11,
+  gapSize: strength >= 1 ? 0.09 : 0.12,
 
-    // “松一点”的 dashed line：dash 和 gap 都比之前大。
-    dashSize: strength >= 1 ? 0.055 : 0.075,
-    gapSize: strength >= 1 ? 0.038 : 0.052,
-
-    transparent: true,
-    opacity: strength >= 1 ? 0.95 : 0.65,
-
-    // 让 dashed boundary 永远更容易看见。
-    depthTest: false,
-    depthWrite: false,
-  });
+  transparent: true,
+  opacity: strength >= 1 ? 0.92 : 0.62,
+  depthTest: false,
+  depthWrite: false,
+});
 
   const line = new THREE.LineSegments(edgeGeometry, material);
 
