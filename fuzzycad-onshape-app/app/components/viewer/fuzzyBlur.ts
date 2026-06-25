@@ -80,18 +80,8 @@ function makeDimmedOriginalMaterial(
   return material;
 }
 
-function clearFuzzyVisualChildren(scene: THREE.Object3D) {
-  const childrenToRemove: THREE.Object3D[] = [];
-
-  scene.traverse((object) => {
-    if (object.userData?.[FUZZY_VISUAL_CHILD]) {
-      childrenToRemove.push(object);
-    }
-  });
-
-  for (const child of childrenToRemove) {
-    child.parent?.remove(child);
-
+function disposeObjectVisual(object: THREE.Object3D) {
+  object.traverse((child) => {
     if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
       child.geometry.dispose();
 
@@ -103,6 +93,25 @@ function clearFuzzyVisualChildren(scene: THREE.Object3D) {
         material.dispose();
       }
     }
+  });
+}
+
+function clearFuzzyVisualChildren(scene: THREE.Object3D) {
+  const childrenToRemove: THREE.Object3D[] = [];
+
+  scene.traverse((object) => {
+    if (object.userData?.[FUZZY_VISUAL_CHILD]) {
+      childrenToRemove.push(object);
+    }
+  });
+
+  for (const child of childrenToRemove) {
+    if (!child.parent) {
+      continue;
+    }
+
+    disposeObjectVisual(child);
+    child.parent.remove(child);
   }
 }
 
@@ -231,15 +240,25 @@ const material = new THREE.LineDashedMaterial({
   return line;
 }
 
-function makeFuzzyVolumeMaterial(confidence: AxisConfidenceMap) {
+function makeFuzzyVolumeMaterial({
+  confidence,
+  layerIndex,
+  layerCount,
+}: {
+  confidence: AxisConfidenceMap;
+  layerIndex: number;
+  layerCount: number;
+}) {
   const axisStrength = getAxisStrength(confidence);
   const maxStrength = getMaxUncertainty(confidence);
+  const layerRatio = layerIndex / Math.max(layerCount - 1, 1);
 
   const material = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     depthTest: false,
     side: THREE.DoubleSide,
+    blending: THREE.NormalBlending,
     uniforms: {
       uAxisStrength: {
         value: axisStrength,
@@ -247,43 +266,50 @@ function makeFuzzyVolumeMaterial(confidence: AxisConfidenceMap) {
       uMaxStrength: {
         value: maxStrength,
       },
-      uColor: {
-        value: new THREE.Color(0x2b6cff),
+      uLayerRatio: {
+        value: layerRatio,
       },
     },
     vertexShader: `
       varying vec3 vLocalPosition;
+      varying float vAxisFuzz;
 
       uniform vec3 uAxisStrength;
+      uniform float uMaxStrength;
+      uniform float uLayerRatio;
 
       void main() {
         vLocalPosition = position;
 
         vec3 transformedPosition = position;
 
-        // 这一步不是生成 bounding box，而是让 object 自己的 geometry
-        // 在不确定轴向上略微膨胀，所以会形成贴着原模型的 fuzzy volume。
         vec3 directionFromCenter = normalize(position + vec3(0.0001));
 
-        transformedPosition += directionFromCenter * (
-          0.035 +
-          uMaxStrength * 0.045
-        );
+        float baseExpansion = mix(0.018, 0.105, uLayerRatio) * uMaxStrength;
 
-        // 轴向不确定越强，对该方向的扰动越明显。
-        transformedPosition.x += sign(position.x) * uAxisStrength.x * 0.018;
-        transformedPosition.y += sign(position.y) * uAxisStrength.y * 0.055;
-        transformedPosition.z += sign(position.z) * uAxisStrength.z * 0.018;
+        transformedPosition += directionFromCenter * baseExpansion;
+
+        // Extra expansion along uncertain axes.
+        transformedPosition.x += sign(position.x) * uAxisStrength.x * mix(0.006, 0.035, uLayerRatio);
+        transformedPosition.y += sign(position.y) * uAxisStrength.y * mix(0.018, 0.095, uLayerRatio);
+        transformedPosition.z += sign(position.z) * uAxisStrength.z * mix(0.006, 0.035, uLayerRatio);
+
+        vec3 p = normalize(abs(position) + vec3(0.0001));
+        float xFuzz = p.x * uAxisStrength.x;
+        float yFuzz = p.y * uAxisStrength.y;
+        float zFuzz = p.z * uAxisStrength.z;
+
+        vAxisFuzz = max(max(xFuzz, yFuzz), zFuzz);
 
         gl_Position = projectionMatrix * modelViewMatrix * vec4(transformedPosition, 1.0);
       }
     `,
     fragmentShader: `
       varying vec3 vLocalPosition;
+      varying float vAxisFuzz;
 
-      uniform vec3 uAxisStrength;
       uniform float uMaxStrength;
-      uniform vec3 uColor;
+      uniform float uLayerRatio;
 
       float hash(vec3 p) {
         p = fract(p * 0.3183099 + vec3(0.13, 0.37, 0.61));
@@ -316,29 +342,47 @@ function makeFuzzyVolumeMaterial(confidence: AxisConfidenceMap) {
         return mix(nxy0, nxy1, f.z);
       }
 
+      vec3 heatColor(float t) {
+        vec3 blue = vec3(0.10, 0.35, 1.00);
+        vec3 cyan = vec3(0.10, 0.85, 1.00);
+        vec3 yellow = vec3(1.00, 0.82, 0.18);
+        vec3 orange = vec3(1.00, 0.34, 0.08);
+
+        if (t < 0.33) {
+          return mix(blue, cyan, t / 0.33);
+        }
+
+        if (t < 0.66) {
+          return mix(cyan, yellow, (t - 0.33) / 0.33);
+        }
+
+        return mix(yellow, orange, (t - 0.66) / 0.34);
+      }
+
       void main() {
-        vec3 p = normalize(abs(vLocalPosition) + vec3(0.0001));
-
-        float xFuzz = p.x * uAxisStrength.x;
-        float yFuzz = p.y * uAxisStrength.y;
-        float zFuzz = p.z * uAxisStrength.z;
-
-        float axisFuzz = max(max(xFuzz, yFuzz), zFuzz);
-
         float n1 = noise(vLocalPosition * 18.0);
-        float n2 = noise(vLocalPosition * 47.0 + vec3(3.7, 8.1, 2.4));
-        float n = mix(n1, n2, 0.45);
+        float n2 = noise(vLocalPosition * 51.0 + vec3(3.7, 8.1, 2.4));
+        float n = mix(n1, n2, 0.5);
 
-        float particle = smoothstep(0.18, 0.88, n + axisFuzz * 0.42);
+        float heat = clamp(vAxisFuzz * 0.75 + n * 0.25, 0.0, 1.0);
 
-        // low confidence 会更明显；medium 会轻一些。
-        float alpha = 0.035 * uMaxStrength + particle * axisFuzz * 0.22;
+        // Inner shells are brighter; outer shells are softer.
+        float shellFade = 1.0 - uLayerRatio * 0.72;
+
+        float particleMask = smoothstep(0.16, 0.86, n + vAxisFuzz * 0.48);
+
+        float alpha =
+          0.055 * uMaxStrength * shellFade +
+          particleMask * vAxisFuzz * 0.28 * shellFade;
+
+        // Outer layers should feel like fog, not solid transparent plastic.
+        alpha *= mix(1.0, 0.42, uLayerRatio);
 
         if (alpha < 0.018) {
           discard;
         }
 
-        gl_FragColor = vec4(uColor, alpha);
+        gl_FragColor = vec4(heatColor(heat), alpha);
       }
     `,
   });
@@ -349,15 +393,28 @@ function makeFuzzyVolumeMaterial(confidence: AxisConfidenceMap) {
 }
 
 function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
-  // 关键：这里用 mesh.geometry，不用 bounding box。
-  // 所以 fuzzy volume 是沿着真实 object geometry 的。
-  const material = makeFuzzyVolumeMaterial(confidence);
-  const volume = new THREE.Mesh(mesh.geometry, material);
+  const group = new THREE.Group();
 
-  volume.renderOrder = 999;
-  volume.userData[FUZZY_VISUAL_CHILD] = true;
+  group.userData[FUZZY_VISUAL_CHILD] = true;
 
-  return volume;
+  const layerCount = 4;
+
+  for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
+    const material = makeFuzzyVolumeMaterial({
+      confidence,
+      layerIndex,
+      layerCount,
+    });
+
+    const volume = new THREE.Mesh(mesh.geometry, material);
+
+    volume.renderOrder = 999 - layerIndex;
+    volume.userData[FUZZY_VISUAL_CHILD] = true;
+
+    group.add(volume);
+  }
+
+  return group;
 }
 
 function applyUncertaintyToMesh({
