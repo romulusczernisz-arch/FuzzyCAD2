@@ -60,48 +60,142 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
   );
 }
 
-function normalizeObjectName(name: string | null) {
+
+function normalizeSemanticObjectName(name: string | null) {
   if (!name) {
     return "";
   }
 
   return name
     .toLowerCase()
+
+    // Remove Onshape / imported instance suffixes.
+    // LowerLeg_1 -> lowerleg
+    // LowerLeg_2 -> lowerleg
+    // LowerLeg (3) -> lowerleg
     .replace(/\s*\(\d+\)\s*$/g, "")
     .replace(/[_\-\s]*\d+\s*$/g, "")
+
+    // Normalize separators.
+    .replace(/[_\-\s]+/g, "")
+
     .trim();
+}
+
+function getSizeSimilarity(
+  source: AxialStretchObjectSummary,
+  target: AxialStretchObjectSummary,
+) {
+  const sourceSize = source.aabbSizeWorld;
+  const targetSize = target.aabbSizeWorld;
+
+  const ratios = sourceSize.map((sourceValue, index) => {
+    const targetValue = targetSize[index];
+
+    const minValue = Math.min(sourceValue, targetValue);
+    const maxValue = Math.max(sourceValue, targetValue);
+
+    if (maxValue < 1e-6) {
+      return 1;
+    }
+
+    return minValue / maxValue;
+  });
+
+  return Math.min(...ratios);
+}
+
+function getAxisSimilarity(
+  source: AxialStretchObjectSummary,
+  target: AxialStretchObjectSummary,
+) {
+  const sourceAxis = source.principalAxisWorld;
+  const targetAxis = target.principalAxisWorld;
+
+  return Math.abs(
+    sourceAxis[0] * targetAxis[0] +
+      sourceAxis[1] * targetAxis[1] +
+      sourceAxis[2] * targetAxis[2],
+  );
+}
+
+function isStrictGeometryMatch(
+  source: AxialStretchObjectSummary,
+  target: AxialStretchObjectSummary,
+) {
+  if (source.pathKey === target.pathKey) {
+    return false;
+  }
+
+  const sizeSimilarity = getSizeSimilarity(source, target);
+  const axisSimilarity = getAxisSimilarity(source, target);
+
+  const lengthRatio =
+    Math.min(source.axisLength, target.axisLength) /
+    Math.max(source.axisLength, target.axisLength);
+
+  const thicknessRatio =
+    Math.min(source.crossSectionSize, target.crossSectionSize) /
+    Math.max(source.crossSectionSize, target.crossSectionSize);
+
+  return (
+    // Both objects should be elongated objects, not blocks/caps/clamps.
+    source.elongationRatio > 2.3 &&
+    target.elongationRatio > 2.3 &&
+
+    // Bounding box dimensions should be close.
+    sizeSimilarity > 0.78 &&
+
+    // Principal directions should be close.
+    axisSimilarity > 0.86 &&
+
+    // Length and thickness should both be close.
+    lengthRatio > 0.78 &&
+    thicknessRatio > 0.7
+  );
 }
 
 function buildHeightCandidatePathKeys(
   selectedSummary: AxialStretchObjectSummary,
   objectSummaries: AxialStretchObjectSummary[],
 ) {
-  const selectedName = normalizeObjectName(selectedSummary.name);
+  const selectedSemanticName = normalizeSemanticObjectName(
+    selectedSummary.name,
+  );
 
-  const candidateSet = new Set<string>();
-
-  candidateSet.add(selectedSummary.pathKey);
-
-  for (const summary of objectSummaries) {
+  const semanticMatches = objectSummaries.filter((summary) => {
     if (summary.pathKey === selectedSummary.pathKey) {
-      continue;
+      return false;
     }
 
-    const sameSemanticName =
-      selectedName.length > 0 &&
-      normalizeObjectName(summary.name) === selectedName;
-
-    const geometricallySimilar = selectedSummary.similarPathKeys.includes(
-      summary.pathKey,
-    );
-
-    if (sameSemanticName || geometricallySimilar) {
-      candidateSet.add(summary.pathKey);
+    if (!selectedSemanticName) {
+      return false;
     }
+
+    return normalizeSemanticObjectName(summary.name) === selectedSemanticName;
+  });
+
+  // Important:
+  // If semantic matches exist, trust them first.
+  // This prevents geometry matching from pulling in clamps, pivots, caps, etc.
+  if (semanticMatches.length > 0) {
+    return [
+      selectedSummary.pathKey,
+      ...semanticMatches.map((summary) => summary.pathKey),
+    ];
   }
 
-  return Array.from(candidateSet);
+  // Geometry fallback only happens when naming does not give us related objects.
+  const geometryMatches = objectSummaries.filter((summary) =>
+    isStrictGeometryMatch(selectedSummary, summary),
+  );
+
+  return [
+    selectedSummary.pathKey,
+    ...geometryMatches.map((summary) => summary.pathKey),
+  ];
 }
+
 
 function getObjectDisplayName(summary: AxialStretchObjectSummary) {
   return summary.name || summary.pathKey;
