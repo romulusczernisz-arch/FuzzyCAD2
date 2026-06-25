@@ -17,7 +17,7 @@ function confidenceToStrength(level: ConfidenceLevel) {
   }
 
   if (level === "medium") {
-    return 0.45;
+    return 0.35;
   }
 
   return 0.0;
@@ -66,8 +66,9 @@ function makeDimmedOriginalMaterial(
     map: source.map ?? null,
     transparent: true,
 
-    // 原 object 还在，但非常弱。你如果想完全隐藏，可以把这里改成 0.02。
-    opacity: strength >= 1 ? 0.08 : 0.16,
+    // 原 object 只作为很淡的 reference geometry。
+    // 如果你想只保留 dash line，可以继续把这两个值调低。
+    opacity: strength >= 1 ? 0.07 : 0.15,
 
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -82,16 +83,18 @@ function makeDimmedOriginalMaterial(
 
 function disposeObjectVisual(object: THREE.Object3D) {
   object.traverse((child) => {
-    if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
-      child.geometry.dispose();
+    if (!(child instanceof THREE.LineSegments || child instanceof THREE.Mesh)) {
+      return;
+    }
 
-      const materials = Array.isArray(child.material)
-        ? child.material
-        : [child.material];
+    child.geometry.dispose();
 
-      for (const material of materials) {
-        material.dispose();
-      }
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+
+    for (const material of materials) {
+      material.dispose();
     }
   });
 }
@@ -100,9 +103,16 @@ function clearFuzzyVisualChildren(scene: THREE.Object3D) {
   const childrenToRemove: THREE.Object3D[] = [];
 
   scene.traverse((object) => {
-    if (object.userData?.[FUZZY_VISUAL_CHILD]) {
-      childrenToRemove.push(object);
+    if (!object.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
     }
+
+    // 只收集最外层 visual group，避免重复 dispose child。
+    if (object.parent?.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    childrenToRemove.push(object);
   });
 
   for (const child of childrenToRemove) {
@@ -209,25 +219,27 @@ function dimOriginalMesh(mesh: THREE.Mesh, strength: number) {
     makeDimmedOriginalMaterial(material, strength),
   );
 
-  mesh.material = Array.isArray(mesh.material) ? dimmedMaterials : dimmedMaterials[0];
+  mesh.material = Array.isArray(mesh.material)
+    ? dimmedMaterials
+    : dimmedMaterials[0];
 }
 
 function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
- const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 35);
+  const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry, 40);
 
-const material = new THREE.LineDashedMaterial({
-  color: 0x111111,
-  linewidth: 1,
+  const material = new THREE.LineDashedMaterial({
+    color: 0x111111,
+    linewidth: 1,
 
-  // Longer dash and much longer gap, so the boundary reads less like dense mesh edges.
-  dashSize: strength >= 1 ? 0.09 : 0.11,
-  gapSize: strength >= 1 ? 0.09 : 0.12,
+    // 比之前更松：不要让 dash line 看起来像密集 mesh edge。
+    dashSize: strength >= 1 ? 0.095 : 0.115,
+    gapSize: strength >= 1 ? 0.14 : 0.17,
 
-  transparent: true,
-  opacity: strength >= 1 ? 0.92 : 0.62,
-  depthTest: false,
-  depthWrite: false,
-});
+    transparent: true,
+    opacity: strength >= 1 ? 0.9 : 0.6,
+    depthTest: false,
+    depthWrite: false,
+  });
 
   const line = new THREE.LineSegments(edgeGeometry, material);
 
@@ -235,8 +247,6 @@ const material = new THREE.LineDashedMaterial({
   line.renderOrder = 1000;
   line.userData[FUZZY_VISUAL_CHILD] = true;
 
-  // 关键：直接作为 mesh 的 child。
-  // 这样它使用 mesh 的 local geometry，不需要 matrixWorld，所以不会偏位。
   return line;
 }
 
@@ -269,6 +279,9 @@ function makeFuzzyVolumeMaterial({
       uLayerRatio: {
         value: layerRatio,
       },
+      uColor: {
+        value: new THREE.Color(0x2b6cff),
+      },
     },
     vertexShader: `
       varying vec3 vLocalPosition;
@@ -285,16 +298,20 @@ function makeFuzzyVolumeMaterial({
 
         vec3 directionFromCenter = normalize(position + vec3(0.0001));
 
-        float baseExpansion = mix(0.018, 0.105, uLayerRatio) * uMaxStrength;
+        // 新逻辑：
+        // 内层几乎贴着 object；外层才扩出去。
+        // 越不确定，扩得越宽。
+        float shellExpansion = mix(0.006, 0.085, uLayerRatio) * uMaxStrength;
 
-        transformedPosition += directionFromCenter * baseExpansion;
+        transformedPosition += directionFromCenter * shellExpansion;
 
-        // Extra expansion along uncertain axes.
-        transformedPosition.x += sign(position.x) * uAxisStrength.x * mix(0.006, 0.035, uLayerRatio);
-        transformedPosition.y += sign(position.y) * uAxisStrength.y * mix(0.018, 0.095, uLayerRatio);
-        transformedPosition.z += sign(position.z) * uAxisStrength.z * mix(0.006, 0.035, uLayerRatio);
+        // 轴向扩张：high = 0，所以 high confidence 方向不会被染色/扩张。
+        transformedPosition.x += sign(position.x) * uAxisStrength.x * mix(0.002, 0.026, uLayerRatio);
+        transformedPosition.y += sign(position.y) * uAxisStrength.y * mix(0.006, 0.065, uLayerRatio);
+        transformedPosition.z += sign(position.z) * uAxisStrength.z * mix(0.002, 0.026, uLayerRatio);
 
         vec3 p = normalize(abs(position) + vec3(0.0001));
+
         float xFuzz = p.x * uAxisStrength.x;
         float yFuzz = p.y * uAxisStrength.y;
         float zFuzz = p.z * uAxisStrength.z;
@@ -310,6 +327,7 @@ function makeFuzzyVolumeMaterial({
 
       uniform float uMaxStrength;
       uniform float uLayerRatio;
+      uniform vec3 uColor;
 
       float hash(vec3 p) {
         p = fract(p * 0.3183099 + vec3(0.13, 0.37, 0.61));
@@ -320,6 +338,7 @@ function makeFuzzyVolumeMaterial({
       float noise(vec3 p) {
         vec3 i = floor(p);
         vec3 f = fract(p);
+
         f = f * f * (3.0 - 2.0 * f);
 
         float n000 = hash(i + vec3(0.0, 0.0, 0.0));
@@ -342,47 +361,37 @@ function makeFuzzyVolumeMaterial({
         return mix(nxy0, nxy1, f.z);
       }
 
-      vec3 heatColor(float t) {
-        vec3 blue = vec3(0.10, 0.35, 1.00);
-        vec3 cyan = vec3(0.10, 0.85, 1.00);
-        vec3 yellow = vec3(1.00, 0.82, 0.18);
-        vec3 orange = vec3(1.00, 0.34, 0.08);
-
-        if (t < 0.33) {
-          return mix(blue, cyan, t / 0.33);
-        }
-
-        if (t < 0.66) {
-          return mix(cyan, yellow, (t - 0.33) / 0.33);
-        }
-
-        return mix(yellow, orange, (t - 0.66) / 0.34);
-      }
-
       void main() {
-        float n1 = noise(vLocalPosition * 18.0);
-        float n2 = noise(vLocalPosition * 51.0 + vec3(3.7, 8.1, 2.4));
-        float n = mix(n1, n2, 0.5);
+        float n1 = noise(vLocalPosition * 16.0);
+        float n2 = noise(vLocalPosition * 43.0 + vec3(3.7, 8.1, 2.4));
+        float n = mix(n1, n2, 0.45);
 
-        float heat = clamp(vAxisFuzz * 0.75 + n * 0.25, 0.0, 1.0);
+        // vAxisFuzz 越大，说明这个 fragment 越接近不确定轴向的显著区域。
+        float uncertaintyMask = clamp(vAxisFuzz, 0.0, 1.0);
 
-        // Inner shells are brighter; outer shells are softer.
-        float shellFade = 1.0 - uLayerRatio * 0.72;
-
-        float particleMask = smoothstep(0.16, 0.86, n + vAxisFuzz * 0.48);
-
-        float alpha =
-          0.055 * uMaxStrength * shellFade +
-          particleMask * vAxisFuzz * 0.28 * shellFade;
-
-        // Outer layers should feel like fog, not solid transparent plastic.
-        alpha *= mix(1.0, 0.42, uLayerRatio);
-
-        if (alpha < 0.018) {
+        // High confidence 区域不给颜色；uncertainty 低于阈值直接不显示。
+        if (uncertaintyMask < 0.05) {
           discard;
         }
 
-        gl_FragColor = vec4(heatColor(heat), alpha);
+        // 外层更淡，内层更贴合 object。
+        float shellFade = 1.0 - uLayerRatio * 0.78;
+
+        // 蓝色 shell 里加入一点 noise，让它不是普通半透明塑料。
+        float particleMask = smoothstep(0.18, 0.82, n + uncertaintyMask * 0.35);
+
+        float alpha =
+          0.035 * uMaxStrength * shellFade +
+          particleMask * uncertaintyMask * 0.24 * shellFade;
+
+        // 越外层越透明，形成 blue -> transparent 的范围感。
+        alpha *= mix(0.9, 0.28, uLayerRatio);
+
+        if (alpha < 0.015) {
+          discard;
+        }
+
+        gl_FragColor = vec4(uColor, alpha);
       }
     `,
   });
@@ -397,7 +406,8 @@ function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
 
   group.userData[FUZZY_VISUAL_CHILD] = true;
 
-  const layerCount = 4;
+  // 只做 3 层，比之前 4 层更克制，避免底下拖出太多层。
+  const layerCount = 3;
 
   for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
     const material = makeFuzzyVolumeMaterial({
@@ -406,7 +416,8 @@ function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
       layerCount,
     });
 
-    const volume = new THREE.Mesh(mesh.geometry, material);
+    // Clone geometry to avoid disposing the original CAD mesh geometry.
+    const volume = new THREE.Mesh(mesh.geometry.clone(), material);
 
     volume.renderOrder = 999 - layerIndex;
     volume.userData[FUZZY_VISUAL_CHILD] = true;
@@ -431,8 +442,6 @@ function applyUncertaintyToMesh({
   const fuzzyVolume = createFuzzyVolume(mesh, confidence);
   const dashedBoundary = createDashedBoundary(mesh, strength);
 
-  // 关键：这两个 visual 都直接挂在原 mesh 下面。
-  // 这样 dashed line 和 fuzzy volume 一定和原 mesh 重合。
   mesh.add(fuzzyVolume);
   mesh.add(dashedBoundary);
 }
@@ -449,7 +458,6 @@ function applyUncertaintyToObject({
   }
 
   const strength = getMaxUncertainty(confidence);
-
   const meshes: THREE.Mesh[] = [];
 
   object.traverse((child) => {
