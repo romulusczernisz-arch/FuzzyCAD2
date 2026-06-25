@@ -32,6 +32,13 @@ import OperationPreviewPanel, {
 import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
 import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
+import {
+  DEFAULT_HEIGHT_CONFIDENCE,
+  type AxisConfidenceMap,
+  type ConfidenceAxis,
+  type ConfidenceLevel,
+  type FuzzyConfidenceAnnotation,
+} from "./lib/uncertainty/types";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -51,6 +58,52 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
         "name" in item,
     )
   );
+}
+
+function normalizeObjectName(name: string | null) {
+  if (!name) {
+    return "";
+  }
+
+  return name
+    .toLowerCase()
+    .replace(/\s*\(\d+\)\s*$/g, "")
+    .replace(/[_\-\s]*\d+\s*$/g, "")
+    .trim();
+}
+
+function buildHeightCandidatePathKeys(
+  selectedSummary: AxialStretchObjectSummary,
+  objectSummaries: AxialStretchObjectSummary[],
+) {
+  const selectedName = normalizeObjectName(selectedSummary.name);
+
+  const candidateSet = new Set<string>();
+
+  candidateSet.add(selectedSummary.pathKey);
+
+  for (const summary of objectSummaries) {
+    if (summary.pathKey === selectedSummary.pathKey) {
+      continue;
+    }
+
+    const sameSemanticName =
+      selectedName.length > 0 && normalizeObjectName(summary.name) === selectedName;
+
+    const geometricallySimilar = selectedSummary.similarPathKeys.includes(
+      summary.pathKey,
+    );
+
+    if (sameSemanticName || geometricallySimilar) {
+      candidateSet.add(summary.pathKey);
+    }
+  }
+
+  return Array.from(candidateSet);
+}
+
+function getObjectDisplayName(summary: AxialStretchObjectSummary) {
+  return summary.name || summary.pathKey;
 }
 
 export default function FuzzyCADHome() {
@@ -128,20 +181,30 @@ export default function FuzzyCADHome() {
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<OperationTool>("select");
+
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
-
-   const [confirmedHeightPlan, setConfirmedHeightPlan] =
-  useState<RolePreviewPlan | null>(null);
-
-const [manipulationValue, setManipulationValue] = useState(0); 
+  const [confirmedHeightPlan, setConfirmedHeightPlan] =
+    useState<RolePreviewPlan | null>(null);
+  const [manipulationValue, setManipulationValue] = useState(0);
 
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
   const [pendingHeightAxis, setPendingHeightAxis] =
     useState<OperationAxis>("y");
-
   const [pendingHeightDirection, setPendingHeightDirection] =
     useState<OperationDirection>("positive");
+
+  const [heightCandidateOpen, setHeightCandidateOpen] = useState(false);
+  const [heightCandidatePathKeys, setHeightCandidatePathKeys] = useState<
+    string[]
+  >([]);
+  const [heightConfidenceOpen, setHeightConfidenceOpen] = useState(false);
+  const [confidenceDraft, setConfidenceDraft] = useState<AxisConfidenceMap>(
+    DEFAULT_HEIGHT_CONFIDENCE,
+  );
+  const [confidenceAnnotations, setConfidenceAnnotations] = useState<
+    FuzzyConfidenceAnnotation[]
+  >([]);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -158,6 +221,48 @@ const [manipulationValue, setManipulationValue] = useState(0);
 
     return data.filter((element) => element.elementType === "ASSEMBLY");
   }, [elementsResult]);
+
+  const selectedObjectSummary = useMemo(() => {
+    if (!highlightedPathKey) {
+      return null;
+    }
+
+    return (
+      objectSummaries.find((summary) => summary.pathKey === highlightedPathKey) ??
+      null
+    );
+  }, [highlightedPathKey, objectSummaries]);
+
+  const heightCandidateSummaries = useMemo(() => {
+    return heightCandidatePathKeys
+      .map((pathKey) =>
+        objectSummaries.find((summary) => summary.pathKey === pathKey),
+      )
+      .filter(
+        (summary): summary is AxialStretchObjectSummary => summary !== undefined,
+      );
+  }, [heightCandidatePathKeys, objectSummaries]);
+
+  const heightReferencePathKey =
+    heightCandidatePathKeys[0] ?? highlightedPathKey ?? null;
+
+  const viewerSelectedPathKeys = useMemo(() => {
+    if (heightCandidateOpen) {
+      return heightCandidatePathKeys;
+    }
+
+    if (heightConfidenceOpen && heightReferencePathKey) {
+      return [heightReferencePathKey];
+    }
+
+    return lassoPathKeys;
+  }, [
+    heightCandidateOpen,
+    heightConfidenceOpen,
+    heightCandidatePathKeys,
+    heightReferencePathKey,
+    lassoPathKeys,
+  ]);
 
   const connectHref = `/api/oauth/start?documentId=${encodeURIComponent(
     documentId || "",
@@ -182,10 +287,15 @@ const [manipulationValue, setManipulationValue] = useState(0);
     setHighlightedPathKey(null);
     setLassoPathKeys([]);
     setPendingHeightRolePreview(null);
-setConfirmedHeightPlan(null);
-setHeightPreviewOpen(false);
-setManipulationValue(0);
-setActiveTool("select");
+    setConfirmedHeightPlan(null);
+    setHeightPreviewOpen(false);
+    setManipulationValue(0);
+    setActiveTool("select");
+    setHeightCandidateOpen(false);
+    setHeightCandidatePathKeys([]);
+    setHeightConfidenceOpen(false);
+    setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+    setConfidenceAnnotations([]);
     setGeometryLoadResult(null);
     resetPlacementTree();
 
@@ -320,33 +430,77 @@ setActiveTool("select");
     }
   }
 
-function startHeightPreview() {
-  setActiveTool("height");
-  setConfirmedHeightPlan(null);
-  setManipulationValue(0);
+  function startHeightUncertainty() {
+    setActiveTool("height");
+    setPendingHeightRolePreview(null);
+    setConfirmedHeightPlan(null);
+    setManipulationValue(0);
+    setHeightPreviewOpen(false);
+    setHeightConfidenceOpen(false);
+    setLassoPathKeys([]);
 
-    console.log("Height preview input", {
-      selectedPathKeysForPlanning,
-      resolvedAxialStretchPlan,
-    });
-
-    if (
-      selectedPathKeysForPlanning.length === 0 ||
-      resolvedAxialStretchPlan.stretchTargetPathKeys.length === 0
-    ) {
-      setPendingHeightRolePreview(null);
-      setHeightPreviewOpen(false);
+    if (!selectedObjectSummary) {
+      setHeightCandidateOpen(true);
+      setHeightCandidatePathKeys([]);
       return;
     }
 
-    setPendingHeightRolePreview({
-      stretchTargetPathKeys: resolvedAxialStretchPlan.stretchTargetPathKeys,
-      moveWithEndPathKeys: resolvedAxialStretchPlan.moveWithEndPathKeys,
-      fixedAnchorPathKeys: resolvedAxialStretchPlan.fixedAnchorPathKeys,
-      excludedPathKeys: resolvedAxialStretchPlan.excludedPathKeys,
-    });
+    const candidates = buildHeightCandidatePathKeys(
+      selectedObjectSummary,
+      objectSummaries,
+    );
 
-    setHeightPreviewOpen(true);
+    setHeightCandidatePathKeys(candidates);
+    setHeightCandidateOpen(true);
+  }
+
+  function confirmHeightCandidateGroup() {
+    if (heightCandidatePathKeys.length === 0) {
+      setHeightCandidateOpen(false);
+      setHeightConfidenceOpen(false);
+      return;
+    }
+
+    setHeightCandidateOpen(false);
+    setHeightConfidenceOpen(true);
+    setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+  }
+
+  function cancelHeightCandidateGroup() {
+    setHeightCandidateOpen(false);
+    setHeightCandidatePathKeys([]);
+    setHeightConfidenceOpen(false);
+    setActiveTool("select");
+  }
+
+  function applyHeightConfidence() {
+    const targetPathKey = heightReferencePathKey;
+
+    if (!targetPathKey) {
+      setHeightConfidenceOpen(false);
+      return;
+    }
+
+    setConfidenceAnnotations((previous) => [
+      ...previous.filter((item) => item.pathKey !== targetPathKey),
+      {
+        pathKey: targetPathKey,
+        confidence: confidenceDraft,
+      },
+    ]);
+
+    setHeightConfidenceOpen(false);
+    setActiveTool("select");
+  }
+
+  function updateConfidenceDraft(
+    axis: ConfidenceAxis,
+    confidence: ConfidenceLevel,
+  ) {
+    setConfidenceDraft((previous) => ({
+      ...previous,
+      [axis]: confidence,
+    }));
   }
 
   function handleAssemblyChange(assemblyId: string) {
@@ -387,17 +541,18 @@ function startHeightPreview() {
       />
 
       <div className={styles.viewerPane}>
-<FuzzyCADGeometryViewer
-  gltfUrl={gltfUrl}
-  placements={placements}
-  highlightedPathKey={highlightedPathKey}
-  selectedPathKeys={lassoPathKeys}
-  activeTool={activeTool}
-  rolePreviewPlan={pendingHeightRolePreview}
-  confirmedHeightPlan={confirmedHeightPlan}
-  enableManipulationHandles={!heightPreviewOpen && Boolean(confirmedHeightPlan)}
-  manipulationValue={manipulationValue}
-  onManipulationChange={setManipulationValue}
+        <FuzzyCADGeometryViewer
+          gltfUrl={gltfUrl}
+          placements={placements}
+          highlightedPathKey={highlightedPathKey}
+          selectedPathKeys={viewerSelectedPathKeys}
+          activeTool={activeTool}
+          rolePreviewPlan={pendingHeightRolePreview}
+          confirmedHeightPlan={confirmedHeightPlan}
+          enableManipulationHandles={!heightPreviewOpen && Boolean(confirmedHeightPlan)}
+          manipulationValue={manipulationValue}
+          confidenceAnnotations={confidenceAnnotations}
+          onManipulationChange={setManipulationValue}
           onMeshGraph={setMeshGraph}
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
@@ -413,21 +568,66 @@ function startHeightPreview() {
           disabled={!gltfUrl}
           onToolChange={(tool) => {
             if (tool === "height") {
-              startHeightPreview();
+              startHeightUncertainty();
               return;
             }
 
-setActiveTool(tool);
-setPendingHeightRolePreview(null);
-setConfirmedHeightPlan(null);
-setManipulationValue(0);
-setHeightPreviewOpen(false);
+            setActiveTool(tool);
+            setPendingHeightRolePreview(null);
+            setConfirmedHeightPlan(null);
+            setManipulationValue(0);
+            setHeightPreviewOpen(false);
+            setHeightCandidateOpen(false);
+            setHeightCandidatePathKeys([]);
+            setHeightConfidenceOpen(false);
 
             if (tool === "select") {
               setLassoPathKeys([]);
             }
           }}
         />
+
+        {heightCandidateOpen ? (
+          <OperationPreviewPanel
+            operation="height"
+            title={
+              heightCandidatePathKeys.length > 0
+                ? "Related leg objects detected"
+                : "Select one leg first"
+            }
+            description={
+              heightCandidatePathKeys.length > 0
+                ? "FuzzyCAD found objects with similar names or similar geometry. Confirm to treat them as related tripod legs, then annotate the selected reference leg."
+                : "Click one existing tripod leg in the viewer, then click Height again."
+            }
+            suggestedObjects={heightCandidateSummaries.map(getObjectDisplayName)}
+            confirmLabel={
+              heightCandidatePathKeys.length > 0 ? "Confirm group" : "OK"
+            }
+            cancelLabel="Cancel"
+            onConfirm={confirmHeightCandidateGroup}
+            onCancel={cancelHeightCandidateGroup}
+          />
+        ) : null}
+
+        {heightConfidenceOpen ? (
+          <OperationPreviewPanel
+            operation="height"
+            title="Mark leg confidence"
+            description="Set confidence for the selected reference leg. Low confidence creates a stronger blurry 3D ghost along that axis; medium confidence creates a lighter haze; high confidence stays sharp."
+            showConfidenceControls
+            axisConfidence={confidenceDraft}
+            confirmLabel="Apply blur"
+            cancelLabel="Cancel"
+            onConfidenceChange={updateConfidenceDraft}
+            onConfirm={applyHeightConfidence}
+            onCancel={() => {
+              setHeightConfidenceOpen(false);
+              setActiveTool("select");
+            }}
+          />
+        ) : null}
+
         {heightPreviewOpen && pendingHeightRolePreview ? (
           <OperationPreviewPanel
             operation="height"
@@ -445,19 +645,19 @@ setHeightPreviewOpen(false);
               fixedAnchor: pendingHeightRolePreview.fixedAnchorPathKeys.length,
               excluded: pendingHeightRolePreview.excludedPathKeys.length,
             }}
-onConfirm={() => {
-  setConfirmedHeightPlan(pendingHeightRolePreview);
-  setManipulationValue(0);
-  setHeightPreviewOpen(false);
-  setActiveTool("height");
-}}
-           onCancel={() => {
-  setPendingHeightRolePreview(null);
-  setConfirmedHeightPlan(null);
-  setManipulationValue(0);
-  setHeightPreviewOpen(false);
-  setActiveTool("select");
-}}
+            onConfirm={() => {
+              setConfirmedHeightPlan(pendingHeightRolePreview);
+              setManipulationValue(0);
+              setHeightPreviewOpen(false);
+              setActiveTool("height");
+            }}
+            onCancel={() => {
+              setPendingHeightRolePreview(null);
+              setConfirmedHeightPlan(null);
+              setManipulationValue(0);
+              setHeightPreviewOpen(false);
+              setActiveTool("select");
+            }}
           />
         ) : null}
       </div>
@@ -483,6 +683,10 @@ onConfirm={() => {
                   (item) => item.selectedByLasso,
                 ).length,
               },
+            },
+            {
+              title: "Height Confidence Annotations",
+              value: confidenceAnnotations,
             },
             {
               title: "Compact AI Context",

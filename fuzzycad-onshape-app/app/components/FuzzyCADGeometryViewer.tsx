@@ -12,6 +12,11 @@ import { applyPlacements, type PartPlacement } from "./viewer/placement";
 import { applyPathHighlight } from "./viewer/highlight";
 import { prepareRenderableMeshes } from "./viewer/materials";
 import type { OperationTool } from "../lib/operations/types";
+import {
+  applyFuzzyConfidence,
+  type FuzzyConfidenceAnnotation,
+} from "./viewer/fuzzyBlur";
+
 import LassoOverlay from "./viewer/LassoOverlay";
 import {
   selectPathKeysByLasso,
@@ -51,6 +56,7 @@ type FuzzyCADGeometryViewerProps = {
   highlightedPathKey?: string | null;
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
+  confidenceAnnotations?: FuzzyConfidenceAnnotation[];
   /** Path keys the active sizing/angle handle should act on. */
   activePathKeys?: string[];
   /** Current value of the active manipulation (world units for height/extend, degrees for angle). */
@@ -168,12 +174,14 @@ function Model({
   highlightedPathKey,
   selectedPathKeys,
   activeTool,
+  confidenceAnnotations,
   activePathKeys,
   manipulationValue,
   rolePreviewPlan,
   confirmedHeightPlan,
   enableManipulationHandles = true,
   lassoPolygon,
+  
   onMeshGraph,
   onObjectSummaries,
   onSelectedNode,
@@ -181,12 +189,14 @@ function Model({
   onObjectLassoSelection,
   onManipulationChange,
   onManipulationDragStateChange,
+  
 }: {
   url: string;
   placements?: PartPlacement[];
   highlightedPathKey?: string | null;
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
+  confidenceAnnotations?: FuzzyConfidenceAnnotation[];
   activePathKeys?: string[];
   manipulationValue?: number;
   rolePreviewPlan?: RolePreviewPlan | null;
@@ -280,6 +290,16 @@ function Model({
 
     applyPathHighlight(scene, activeHighlights);
   }, [scene, highlightedPathKey, selectedPathKeys]);
+
+    useEffect(() => {
+    applyFuzzyConfidence(scene, confidenceAnnotations ?? []);
+    invalidate();
+
+    return () => {
+      applyFuzzyConfidence(scene, []);
+      invalidate();
+    };
+  }, [scene, confidenceAnnotations, invalidate]);
 
   // --- Sizing / angle handle setup -------------------------------------
 
@@ -566,6 +586,7 @@ export default function FuzzyCADGeometryViewer({
   highlightedPathKey,
   selectedPathKeys,
   activeTool = "select",
+  confidenceAnnotations,
   activePathKeys,
   manipulationValue,
   rolePreviewPlan,
@@ -617,13 +638,14 @@ export default function FuzzyCADGeometryViewer({
 
             <Suspense fallback={null}>
               <Bounds fit clip margin={1.2}>
-                <Model
-                  url={gltfUrl}
-                  placements={placements}
-                  highlightedPathKey={highlightedPathKey}
-                  selectedPathKeys={selectedPathKeys}
-                  activeTool={activeTool}
-                  activePathKeys={activePathKeys}
+<Model
+  url={gltfUrl}
+  placements={placements}
+  highlightedPathKey={highlightedPathKey}
+  selectedPathKeys={selectedPathKeys}
+  activeTool={activeTool}
+  confidenceAnnotations={confidenceAnnotations}
+  activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
                   rolePreviewPlan={rolePreviewPlan}
                   confirmedHeightPlan={confirmedHeightPlan}

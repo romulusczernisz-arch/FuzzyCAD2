@@ -1,4 +1,9 @@
 import type { OperationTool } from "../lib/operations/types";
+import type {
+  AxisConfidenceMap,
+  ConfidenceAxis,
+  ConfidenceLevel,
+} from "../lib/uncertainty/types";
 import styles from "./OperationPreviewPanel.module.css";
 
 export type OperationAxis = "x" | "y" | "z";
@@ -18,16 +23,34 @@ type OperationPreviewPanelProps = {
   axis?: OperationAxis;
   direction?: OperationDirection;
   showAxisControls?: boolean;
+  showConfidenceControls?: boolean;
+  axisConfidence?: AxisConfidenceMap;
+  suggestedObjects?: string[];
   roleCounts?: RoleCounts;
   confirmLabel?: string;
   cancelLabel?: string;
   onAxisChange?: (axis: OperationAxis) => void;
   onDirectionChange?: (direction: OperationDirection) => void;
+  onConfidenceChange?: (
+    axis: ConfidenceAxis,
+    confidence: ConfidenceLevel,
+  ) => void;
   onConfirm: () => void;
   onCancel: () => void;
 };
 
 const AXES: OperationAxis[] = ["x", "y", "z"];
+
+const CONFIDENCE_AXES: ConfidenceAxis[] = ["x", "y", "z"];
+
+const CONFIDENCE_LEVELS: {
+  value: ConfidenceLevel;
+  label: string;
+}[] = [
+  { value: "high", label: "High" },
+  { value: "medium", label: "Medium" },
+  { value: "low", label: "Low" },
+];
 
 const DIRECTIONS: {
   value: OperationDirection;
@@ -45,11 +68,15 @@ export default function OperationPreviewPanel({
   axis = "y",
   direction = "positive",
   showAxisControls = false,
+  showConfidenceControls = false,
+  axisConfidence,
+  suggestedObjects,
   roleCounts,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   onAxisChange,
   onDirectionChange,
+  onConfidenceChange,
   onConfirm,
   onCancel,
 }: OperationPreviewPanelProps) {
@@ -63,6 +90,17 @@ export default function OperationPreviewPanel({
       </div>
 
       {description ? <p className={styles.description}>{description}</p> : null}
+
+      {suggestedObjects && suggestedObjects.length > 0 ? (
+        <div className={styles.suggestionList}>
+          <div className={styles.configLabel}>Detected related objects</div>
+          {suggestedObjects.map((item) => (
+            <div key={item} className={styles.suggestionItem}>
+              {item}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {showAxisControls ? (
         <div className={styles.configBlock}>
@@ -105,6 +143,39 @@ export default function OperationPreviewPanel({
               ))}
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {showConfidenceControls && axisConfidence ? (
+        <div className={styles.confidenceGrid}>
+          <div className={styles.configLabel}>Axis confidence</div>
+
+          {CONFIDENCE_AXES.map((confidenceAxis) => (
+            <div key={confidenceAxis} className={styles.confidenceRow}>
+              <span className={styles.confidenceLabel}>
+                {confidenceAxis.toUpperCase()}
+              </span>
+
+              <div className={styles.segmented}>
+                {CONFIDENCE_LEVELS.map((level) => (
+                  <button
+                    key={level.value}
+                    type="button"
+                    className={
+                      axisConfidence[confidenceAxis] === level.value
+                        ? `${styles.segmentButton} ${styles.segmentButtonActive}`
+                        : styles.segmentButton
+                    }
+                    onClick={() =>
+                      onConfidenceChange?.(confidenceAxis, level.value)
+                    }
+                  >
+                    {level.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
 

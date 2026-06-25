@@ -185,3 +185,41 @@
   background: rgba(255, 255, 255, 0.72);
   color: #475569;
 }
+
+.suggestionList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.suggestionItem {
+  padding: 7px 9px;
+  border: 1px solid rgba(43, 108, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(43, 108, 255, 0.06);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.confidenceGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.confidenceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.confidenceLabel {
+  width: 18px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}

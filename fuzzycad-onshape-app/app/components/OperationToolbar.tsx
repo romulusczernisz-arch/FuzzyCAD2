@@ -15,6 +15,7 @@ type ToolItem = {
   label: string;
   title: string;
   icon: ReactNode;
+  hidden?: boolean;
 };
 
 function SelectIcon() {
@@ -92,11 +93,12 @@ const tools: ToolItem[] = [
     label: "Lasso",
     title: "Lasso multiple objects",
     icon: <LassoIcon />,
+    hidden: true,
   },
   {
     id: "height",
     label: "Height",
-    title: "Change tripod height",
+    title: "Mark height uncertainty",
     icon: <HeightIcon />,
   },
   {
@@ -127,29 +129,31 @@ export default function OperationToolbar({
   return (
     <div className={styles.operationToolbarWrap}>
       <div className={styles.operationToolbar} aria-label="FuzzyCAD tools">
-        {tools.map((tool) => {
-          const active = activeTool === tool.id;
+        {tools
+          .filter((tool) => !tool.hidden)
+          .map((tool) => {
+            const active = activeTool === tool.id;
 
-          return (
-            <button
-              key={tool.id}
-              type="button"
-              title={tool.title}
-              disabled={disabled}
-              className={
-                active
-                  ? `${styles.operationToolButton} ${styles.operationToolButtonActive}`
-                  : styles.operationToolButton
-              }
-              onClick={() => {
-                onToolChange(tool.id);
-              }}
-            >
-              <span className={styles.operationToolIcon}>{tool.icon}</span>
-              <span className={styles.operationToolLabel}>{tool.label}</span>
-            </button>
-          );
-        })}
+            return (
+              <button
+                key={tool.id}
+                type="button"
+                title={tool.title}
+                disabled={disabled}
+                className={
+                  active
+                    ? `${styles.operationToolButton} ${styles.operationToolButtonActive}`
+                    : styles.operationToolButton
+                }
+                onClick={() => {
+                  onToolChange(tool.id);
+                }}
+              >
+                <span className={styles.operationToolIcon}>{tool.icon}</span>
+                <span className={styles.operationToolLabel}>{tool.label}</span>
+              </button>
+            );
+          })}
       </div>
     </div>
   );
