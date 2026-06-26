@@ -71,6 +71,8 @@ export type FuzzyConfidenceEditor = {
     axis: ConfidenceAxis,
     direction: ConfidenceDirection,
   ) => void;
+  canRemove?: boolean;
+  onRemove?: () => void;
   onApply: () => void;
   onCancel: () => void;
 };
@@ -341,46 +343,74 @@ function ConfidenceEditorWidget({
         <div
           style={{
             display: "flex",
-            justifyContent: "flex-end",
+            justifyContent: editor.canRemove ? "space-between" : "flex-end",
             gap: 6,
             marginTop: 8,
           }}
         >
-          <button
-            type="button"
-            onClick={editor.onCancel}
-            style={{
-              height: 26,
-              padding: "0 9px",
-              borderRadius: 8,
-              border: "1px solid rgba(148, 163, 184, 0.6)",
-              background: "rgba(255,255,255,0.7)",
-              color: "#475569",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 700,
-            }}
-          >
-            Cancel
-          </button>
+          {editor.canRemove && editor.onRemove ? (
+            <button
+              type="button"
+              onClick={editor.onRemove}
+              style={{
+                height: 26,
+                padding: "0 9px",
+                borderRadius: 8,
+                border: "1px solid rgba(239, 68, 68, 0.55)",
+                background: "rgba(254, 242, 242, 0.85)",
+                color: "#dc2626",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              Remove
+            </button>
+          ) : null}
 
-          <button
-            type="button"
-            onClick={editor.onApply}
+          <div
             style={{
-              height: 26,
-              padding: "0 9px",
-              borderRadius: 8,
-              border: "1px solid #2b6cff",
-              background: "#2b6cff",
-              color: "white",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 700,
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 6,
             }}
           >
-            Apply
-          </button>
+            <button
+              type="button"
+              onClick={editor.onCancel}
+              style={{
+                height: 26,
+                padding: "0 9px",
+                borderRadius: 8,
+                border: "1px solid rgba(148, 163, 184, 0.6)",
+                background: "rgba(255,255,255,0.7)",
+                color: "#475569",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              onClick={editor.onApply}
+              style={{
+                height: 26,
+                padding: "0 9px",
+                borderRadius: 8,
+                border: "1px solid #2b6cff",
+                background: "#2b6cff",
+                color: "white",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              Apply
+            </button>
+          </div>
         </div>
       </div>
     </Html>

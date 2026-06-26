@@ -346,6 +346,19 @@ export default function FuzzyCADHome() {
   const heightReferencePathKey =
     heightCandidatePathKeys[0] ?? highlightedPathKey ?? null;
 
+      const heightEditorCanRemove = useMemo(() => {
+    const targetPathKeys =
+      heightCandidatePathKeys.length > 0
+        ? heightCandidatePathKeys
+        : heightReferencePathKey
+          ? [heightReferencePathKey]
+          : [];
+
+    return targetPathKeys.some((pathKey) =>
+      confidenceAnnotations.some((annotation) => annotation.pathKey === pathKey),
+    );
+  }, [heightCandidatePathKeys, heightReferencePathKey, confidenceAnnotations]);
+
   const viewerSelectedPathKeys = useMemo(() => {
     if (
       (heightCandidateOpen || heightConfidenceOpen) &&
@@ -553,6 +566,25 @@ export default function FuzzyCADHome() {
     setHeightCandidateOpen(true);
   }
 
+    function getExistingConfidenceAnnotation(pathKey: string | null) {
+    if (!pathKey) {
+      return null;
+    }
+
+    return (
+      confidenceAnnotations.find((annotation) => annotation.pathKey === pathKey) ??
+      null
+    );
+  }
+
+  function getCurrentHeightTargetPathKeys() {
+    return heightCandidatePathKeys.length > 0
+      ? heightCandidatePathKeys
+      : heightReferencePathKey
+        ? [heightReferencePathKey]
+        : [];
+  }
+
   function confirmHeightCandidateGroup() {
     if (heightCandidatePathKeys.length === 0) {
       setHeightCandidateOpen(false);
@@ -560,8 +592,21 @@ export default function FuzzyCADHome() {
       return;
     }
 
+    const referencePathKey = heightCandidatePathKeys[0] ?? highlightedPathKey;
+    const existingAnnotation = getExistingConfidenceAnnotation(referencePathKey);
+
     setHeightCandidateOpen(false);
     setHeightConfidenceOpen(true);
+
+    if (existingAnnotation) {
+      setConfidenceDraft({ ...existingAnnotation.confidence });
+      setConfidenceDirectionDraft({
+        ...DEFAULT_HEIGHT_DIRECTIONS,
+        ...(existingAnnotation.directions ?? {}),
+      });
+      return;
+    }
+
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
     setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
   }
@@ -574,12 +619,7 @@ export default function FuzzyCADHome() {
   }
 
   function applyHeightConfidence() {
-    const targetPathKeys =
-      heightCandidatePathKeys.length > 0
-        ? heightCandidatePathKeys
-        : heightReferencePathKey
-          ? [heightReferencePathKey]
-          : [];
+    const targetPathKeys = getCurrentHeightTargetPathKeys();
 
     if (targetPathKeys.length === 0) {
       setHeightConfidenceOpen(false);
@@ -594,6 +634,22 @@ export default function FuzzyCADHome() {
         directions: { ...confidenceDirectionDraft },
       })),
     ]);
+
+    setHeightConfidenceOpen(false);
+    setActiveTool("select");
+  }
+
+    function removeHeightConfidence() {
+    const targetPathKeys = getCurrentHeightTargetPathKeys();
+
+    if (targetPathKeys.length === 0) {
+      setHeightConfidenceOpen(false);
+      return;
+    }
+
+    setConfidenceAnnotations((previous) =>
+      previous.filter((item) => !targetPathKeys.includes(item.pathKey)),
+    );
 
     setHeightConfidenceOpen(false);
     setActiveTool("select");
@@ -678,6 +734,8 @@ export default function FuzzyCADHome() {
                   directions: confidenceDirectionDraft,
                   onConfidenceChange: updateConfidenceDraft,
                   onDirectionChange: updateConfidenceDirectionDraft,
+                  canRemove: heightEditorCanRemove,
+                  onRemove: removeHeightConfidence,
                   onApply: applyHeightConfidence,
                   onCancel: () => {
                     setHeightConfidenceOpen(false);
