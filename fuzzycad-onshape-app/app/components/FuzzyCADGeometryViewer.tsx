@@ -21,6 +21,7 @@ import type {
 } from "../lib/uncertainty/types";
 import {
   applyFuzzyConfidence,
+  type ConfidenceAxisFrame,
   type FuzzyConfidenceAnnotation,
 } from "./viewer/fuzzyBlur";
 
@@ -50,6 +51,7 @@ import {
 export type { MeshGraphNode } from "./viewer/meshGraph";
 export type { PartPlacement, PlacementReport } from "./viewer/placement";
 export type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
+
 export type RolePreviewPlan = {
   stretchTargetPathKeys: string[];
   moveWithEndPathKeys: string[];
@@ -385,6 +387,40 @@ function ConfidenceEditorWidget({
   );
 }
 
+function getObjectAxisFrame(
+  summary: AxialStretchObjectSummary,
+): ConfidenceAxisFrame {
+  const yAxis = new THREE.Vector3(...summary.principalAxisWorld);
+
+  if (yAxis.lengthSq() < 1e-10) {
+    yAxis.set(0, 1, 0);
+  } else {
+    yAxis.normalize();
+  }
+
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const worldX = new THREE.Vector3(1, 0, 0);
+
+  const helper = Math.abs(yAxis.dot(worldUp)) > 0.92 ? worldX : worldUp;
+
+  const xAxis = new THREE.Vector3().crossVectors(helper, yAxis).normalize();
+
+  const zAxis = new THREE.Vector3().crossVectors(yAxis, xAxis).normalize();
+
+  return {
+    x: [xAxis.x, xAxis.y, xAxis.z],
+    y: [yAxis.x, yAxis.y, yAxis.z],
+    z: [zAxis.x, zAxis.y, zAxis.z],
+  };
+}
+
+function getAxisVectorFromFrame(
+  frame: ConfidenceAxisFrame,
+  axis: ConfidenceAxis,
+) {
+  return new THREE.Vector3(...frame[axis]).normalize();
+}
+
 type UncertaintyArrowSpec = {
   pathKey: string;
   axis: ConfidenceAxis;
@@ -409,32 +445,22 @@ function getArrowLength(
   return level === "low" ? base * 1.45 : base;
 }
 
-function getArrowAxisVector(axis: ConfidenceAxis) {
-  if (axis === "x") {
-    return new THREE.Vector3(1, 0, 0);
-  }
-
-  if (axis === "y") {
-    return new THREE.Vector3(0, 1, 0);
-  }
-
-  return new THREE.Vector3(0, 0, 1);
-}
-
 function getArrowStart(
   summary: AxialStretchObjectSummary,
+  frame: ConfidenceAxisFrame,
   axis: ConfidenceAxis,
   direction: "positive" | "negative",
 ): [number, number, number] {
   const center = new THREE.Vector3(...summary.aabbCenterWorld);
-  const size = new THREE.Vector3(...summary.aabbSizeWorld);
-  const axisVector = getArrowAxisVector(axis);
+  const axisVector = getAxisVectorFromFrame(frame, axis);
   const sign = direction === "positive" ? 1 : -1;
 
   const halfLengthAlongAxis =
-    axis === "x" ? size.x / 2 : axis === "y" ? size.y / 2 : size.z / 2;
+    axis === "y"
+      ? summary.axisLength / 2
+      : Math.max(summary.crossSectionSize * 1.2, 0.035);
 
-  const pad = Math.max(summary.crossSectionSize * 0.8, 0.025);
+  const pad = Math.max(summary.crossSectionSize * 0.9, 0.025);
 
   const start = center
     .clone()
@@ -445,12 +471,13 @@ function getArrowStart(
 
 function getArrowEnd(
   start: [number, number, number],
+  frame: ConfidenceAxisFrame,
   axis: ConfidenceAxis,
   direction: "positive" | "negative",
   length: number,
 ): [number, number, number] {
   const startVector = new THREE.Vector3(...start);
-  const axisVector = getArrowAxisVector(axis);
+  const axisVector = getAxisVectorFromFrame(frame, axis);
   const sign = direction === "positive" ? 1 : -1;
 
   const end = startVector.add(axisVector.multiplyScalar(sign * length));
@@ -675,6 +702,16 @@ function Model({
     [scene, selectedPathKeys],
   );
 
+  const axisFramesByPathKey = useMemo(() => {
+    const frames = new Map<string, ConfidenceAxisFrame>();
+
+    for (const summary of objectSummaries) {
+      frames.set(summary.pathKey, getObjectAxisFrame(summary));
+    }
+
+    return frames;
+  }, [objectSummaries]);
+
   const heightPreviewSession = useMemo(() => {
     if (!confirmedHeightPlan) {
       return null;
@@ -754,14 +791,18 @@ function Model({
   }, [scene, highlightedPathKey, selectedPathKeys]);
 
   useEffect(() => {
-    applyFuzzyConfidence(scene, visualConfidenceAnnotations);
+    applyFuzzyConfidence(
+      scene,
+      visualConfidenceAnnotations,
+      axisFramesByPathKey,
+    );
     invalidate();
 
     return () => {
       applyFuzzyConfidence(scene, []);
       invalidate();
     };
-  }, [scene, visualConfidenceAnnotations, invalidate]);
+  }, [scene, visualConfidenceAnnotations, axisFramesByPathKey, invalidate]);
 
   // --- Sizing / angle handle setup -------------------------------------
 
@@ -795,6 +836,7 @@ function Model({
     ) {
       return null;
     }
+
     const activeSummaries = objectSummaries.filter((summary) =>
       activePathKeys.includes(summary.pathKey),
     );
@@ -810,9 +852,6 @@ function Model({
     }
 
     if (activeTool === "height") {
-      // World-up axis. Anchor the bar at the highest point of the
-      // selection, base at the lowest, so dragging up/down raises or
-      // lowers the selection along the assembly's height direction.
       let baseY = Infinity;
       let tipY = -Infinity;
       let anchorX = 0;
@@ -841,8 +880,6 @@ function Model({
     }
 
     if (activeTool === "extend") {
-      // Extend along the selected object's own principal axis, from its
-      // negative end toward its positive end.
       const primary = activeSummaries[0];
       const axis = new THREE.Vector3(...primary.principalAxisWorld);
 
@@ -861,7 +898,6 @@ function Model({
       };
     }
 
-    // activeTool === "angle"
     const primary = activeSummaries[0];
 
     return {
@@ -952,6 +988,9 @@ function Model({
         continue;
       }
 
+      const frame =
+        axisFramesByPathKey.get(summary.pathKey) ?? getObjectAxisFrame(summary);
+
       (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
         const level = annotation.confidence[axis];
 
@@ -965,9 +1004,9 @@ function Model({
           axisDirection === "both" ? ["positive", "negative"] : [axisDirection];
 
         for (const direction of arrowDirections) {
-          const start = getArrowStart(summary, axis, direction);
+          const start = getArrowStart(summary, frame, axis, direction);
           const length = getArrowLength(level, summary);
-          const end = getArrowEnd(start, axis, direction, length);
+          const end = getArrowEnd(start, frame, axis, direction, length);
 
           arrows.push({
             pathKey: annotation.pathKey,
@@ -977,27 +1016,24 @@ function Model({
             start,
             end,
             color: getArrowColor(level),
-            label: `${axis.toUpperCase()}${direction === "positive" ? "+" : "−"}`,
+            label: `${axis.toUpperCase()}${
+              direction === "positive" ? "+" : "−"
+            }`,
           });
         }
       });
     }
 
     return arrows;
-  }, [objectSummaries, visualConfidenceAnnotations]);
+  }, [objectSummaries, visualConfidenceAnnotations, axisFramesByPathKey]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
-  // Reset the "already applied" tracker whenever the handle target changes
-  // (new selection/tool). Geometry already nudged for a prior selection
-  // stays as-is; the new selection starts from its current pose.
   useEffect(() => {
     appliedValueRef.current = 0;
   }, [handleConfig]);
 
-  // Apply the delta between the new manipulation value and what's already
-  // been applied to the matched objects.
   useEffect(() => {
     if (!handleConfig) {
       return;
@@ -1108,6 +1144,7 @@ function Model({
           onDragStateChange={handleDragStateChange}
         />
       ) : null}
+
       {handleConfig?.kind === "angle" ? (
         <AngleHandle
           pivotWorld={handleConfig.pivotWorld}
@@ -1145,6 +1182,7 @@ export default function FuzzyCADGeometryViewer({
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
   const [manipulationDragging, setManipulationDragging] = useState(false);
+
   function clearSelection() {
     onSelectedNode?.(null);
     onSelectedPathKey?.(null);
