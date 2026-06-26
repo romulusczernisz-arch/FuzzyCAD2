@@ -32,24 +32,26 @@ export default function UncertaintyMarksPanel({
 }: UncertaintyMarksPanelProps) {
   const annotations = document.annotations;
 
-  return (
-    <aside
-      style={{
-        position: "absolute",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: 320,
-        zIndex: 18,
-        padding: "18px 14px",
-        overflowY: "auto",
-        borderLeft: "1px solid rgba(148, 163, 184, 0.28)",
-        background: "#f8fbff",
-        boxShadow: "-8px 0 24px rgba(15, 23, 42, 0.08)",
-        fontFamily: "Arial, sans-serif",
-        color: "#172033",
-      }}
-    >
+return (
+  <aside
+    style={{
+      position: "absolute",
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 320,
+      zIndex: 18,
+      padding: "18px 14px",
+      overflowY: "auto",
+      borderLeft: "1px solid rgba(148, 163, 184, 0.28)",
+      background: "#f8fbff",
+      boxShadow: "-8px 0 24px rgba(15, 23, 42, 0.08)",
+      fontFamily: "Arial, sans-serif",
+      color: "#172033",
+      pointerEvents: "none",
+    }}
+  >
+    <div style={{ pointerEvents: "auto" }}>
       <div
         style={{
           display: "flex",
@@ -137,14 +139,10 @@ export default function UncertaintyMarksPanel({
                 padding: 10,
                 borderRadius: 15,
                 border: selected
-                  ? "1px solid rgba(43, 108, 255, 0.95)"
-                  : "1px solid rgba(148, 163, 184, 0.34)",
-                background: selected
-                  ? "rgba(43, 108, 255, 0.09)"
-                  : "rgba(255, 255, 255, 0.78)",
-                boxShadow: selected
-                  ? "0 12px 24px rgba(43, 108, 255, 0.18)"
-                  : "0 8px 18px rgba(15, 23, 42, 0.08)",
+                  ? "1px solid rgba(37, 99, 235, 0.5)"
+                  : "1px solid rgba(148, 163, 184, 0.28)",
+                background: selected ? "#eef5ff" : "#ffffff",
+                boxShadow: selected ? "inset 3px 0 0 #2563eb" : "none",
                 cursor: "pointer",
               }}
             >
@@ -172,7 +170,7 @@ export default function UncertaintyMarksPanel({
                     padding: "2px 7px",
                     borderRadius: 999,
                     background: selected
-                      ? "rgba(43, 108, 255, 0.16)"
+                      ? "rgba(37, 99, 235, 0.12)"
                       : "rgba(226, 232, 240, 0.78)",
                     color: selected ? "#1d4ed8" : "#64748b",
                     fontSize: 9,
@@ -264,6 +262,7 @@ export default function UncertaintyMarksPanel({
           );
         })}
       </div>
-    </aside>
-  );
+    </div>
+  </aside>
+);
 }
