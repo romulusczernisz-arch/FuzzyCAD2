@@ -93,6 +93,7 @@ const tools: ToolItem[] = [
     label: "Lasso",
     title: "Lasso multiple objects",
     icon: <LassoIcon />,
+    hidden: true,
   },
   {
     id: "extend",
