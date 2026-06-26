@@ -25,6 +25,7 @@ import {
 } from "./lib/onshapeClient";
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
+import UncertaintyMarksPanel from "./components/UncertaintyMarksPanel";
 import OperationPreviewPanel, {
   type OperationAxis,
   type OperationDirection,
@@ -44,9 +45,13 @@ import {
 import {
   createEmptyUncertaintyDocument,
   findSizeAnnotationForPathKey,
+  makeSizeAnnotationId,
   removeSizeAnnotationsForPathKeys,
+  removeUncertaintyAnnotationById,
   toFuzzyConfidenceAnnotations,
+  updateUncertaintyAnnotationComment,
   upsertSizeAnnotation,
+  type SizeUncertaintyAnnotation,
 } from "./lib/uncertainty/document";
 
 const FuzzyCADGeometryViewer = dynamic(
@@ -316,10 +321,9 @@ export default function FuzzyCADHome() {
     }),
   );
 
-  const confidenceAnnotations = useMemo(
-    () => toFuzzyConfidenceAnnotations(uncertaintyDocument),
-    [uncertaintyDocument],
-  );
+  const [selectedUncertaintyId, setSelectedUncertaintyId] = useState<
+    string | null
+  >(null);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -328,23 +332,41 @@ export default function FuzzyCADHome() {
   const oauthStatus = params.get("oauth");
 
   const currentUncertaintySource = useMemo(
-  () => ({
-    documentId,
-    workspaceId,
-    elementId,
-    assemblyElementId: selectedAssemblyId || null,
-    server,
-  }),
-  [documentId, workspaceId, elementId, selectedAssemblyId, server],
-);
+    () => ({
+      documentId,
+      workspaceId,
+      elementId,
+      assemblyElementId: selectedAssemblyId || null,
+      server,
+    }),
+    [documentId, workspaceId, elementId, selectedAssemblyId, server],
+  );
 
-const uncertaintyDocumentWithCurrentSource = useMemo(
-  () => ({
-    ...uncertaintyDocument,
-    source: currentUncertaintySource,
-  }),
-  [uncertaintyDocument, currentUncertaintySource],
-); 
+  const uncertaintyDocumentWithCurrentSource = useMemo(
+    () => ({
+      ...uncertaintyDocument,
+      source: currentUncertaintySource,
+    }),
+    [uncertaintyDocument, currentUncertaintySource],
+  );
+
+  const visibleUncertaintyDocument = useMemo(() => {
+    if (!selectedUncertaintyId) {
+      return uncertaintyDocumentWithCurrentSource;
+    }
+
+    return {
+      ...uncertaintyDocumentWithCurrentSource,
+      annotations: uncertaintyDocumentWithCurrentSource.annotations.filter(
+        (annotation) => annotation.id === selectedUncertaintyId,
+      ),
+    };
+  }, [uncertaintyDocumentWithCurrentSource, selectedUncertaintyId]);
+
+  const confidenceAnnotations = useMemo(
+    () => toFuzzyConfidenceAnnotations(visibleUncertaintyDocument),
+    [visibleUncertaintyDocument],
+  );
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
@@ -382,9 +404,7 @@ const uncertaintyDocumentWithCurrentSource = useMemo(
   const heightReferencePathKey =
     heightCandidatePathKeys[0] ?? highlightedPathKey ?? null;
 
-    
-
-     const heightEditorCanRemove = useMemo(() => {
+  const heightEditorCanRemove = useMemo(() => {
     const targetPathKeys =
       heightCandidatePathKeys.length > 0
         ? heightCandidatePathKeys
@@ -393,9 +413,9 @@ const uncertaintyDocumentWithCurrentSource = useMemo(
           : [];
 
     return targetPathKeys.some((pathKey) =>
-      confidenceAnnotations.some((annotation) => annotation.pathKey === pathKey),
+      Boolean(findSizeAnnotationForPathKey(uncertaintyDocument, pathKey)),
     );
-  }, [heightCandidatePathKeys, heightReferencePathKey, confidenceAnnotations]);
+  }, [heightCandidatePathKeys, heightReferencePathKey, uncertaintyDocument]);
 
   const viewerSelectedPathKeys = useMemo(() => {
     if (
@@ -445,9 +465,10 @@ const uncertaintyDocumentWithCurrentSource = useMemo(
     setHeightConfidenceOpen(false);
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
     setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
-setUncertaintyDocument(
-  createEmptyUncertaintyDocument(currentUncertaintySource),
-);
+    setSelectedUncertaintyId(null);
+    setUncertaintyDocument(
+      createEmptyUncertaintyDocument(currentUncertaintySource),
+    );
     setGeometryLoadResult(null);
     resetPlacementTree();
 
@@ -582,37 +603,35 @@ setUncertaintyDocument(
     }
   }
 
-  
+  function startHeightUncertainty() {
+    setActiveTool("height");
+    setPendingHeightRolePreview(null);
+    setConfirmedHeightPlan(null);
+    setManipulationValue(0);
+    setHeightPreviewOpen(false);
+    setHeightConfidenceOpen(false);
+    setLassoPathKeys([]);
 
-function startHeightUncertainty() {
-  setActiveTool("height");
-  setPendingHeightRolePreview(null);
-  setConfirmedHeightPlan(null);
-  setManipulationValue(0);
-  setHeightPreviewOpen(false);
-  setHeightConfidenceOpen(false);
-  setLassoPathKeys([]);
+    if (!selectedObjectSummary) {
+      setHeightCandidateOpen(true);
+      setHeightCandidatePathKeys([]);
+      return;
+    }
 
-  if (!selectedObjectSummary) {
+    const candidates = buildHeightCandidatePathKeys(
+      selectedObjectSummary,
+      objectSummaries,
+    );
+
+    setHeightCandidatePathKeys(candidates);
+
+    if (candidates.length <= 1) {
+      openHeightConfidenceEditor(candidates);
+      return;
+    }
+
     setHeightCandidateOpen(true);
-    setHeightCandidatePathKeys([]);
-    return;
   }
-
-  const candidates = buildHeightCandidatePathKeys(
-    selectedObjectSummary,
-    objectSummaries,
-  );
-
-  setHeightCandidatePathKeys(candidates);
-
-  if (candidates.length <= 1) {
-    openHeightConfidenceEditor(candidates);
-    return;
-  }
-
-  setHeightCandidateOpen(true);
-}
 
   function getExistingConfidenceAnnotation(pathKey: string | null) {
     return findSizeAnnotationForPathKey(uncertaintyDocument, pathKey);
@@ -627,47 +646,50 @@ function startHeightUncertainty() {
   }
 
   function openHeightConfidenceEditor(targetPathKeys: string[]) {
-  const referencePathKey = targetPathKeys[0] ?? null;
-  const existingAnnotation = getExistingConfidenceAnnotation(referencePathKey);
+    const referencePathKey = targetPathKeys[0] ?? null;
+    const existingAnnotation =
+      getExistingConfidenceAnnotation(referencePathKey);
 
-  setHeightCandidateOpen(false);
-  setHeightCandidatePathKeys(targetPathKeys);
-  setHeightConfidenceOpen(true);
-
-  if (existingAnnotation) {
-    setConfidenceDraft({ ...existingAnnotation.confidence });
-    setConfidenceDirectionDraft({
-      ...DEFAULT_HEIGHT_DIRECTIONS,
-      ...(existingAnnotation.directions ?? {}),
-    });
-    return;
-  }
-
-  setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
-  setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
-}
-
-function confirmHeightCandidateGroup() {
-  if (heightCandidatePathKeys.length === 0) {
     setHeightCandidateOpen(false);
-    setHeightConfidenceOpen(false);
-    return;
+    setHeightCandidatePathKeys(targetPathKeys);
+    setHeightConfidenceOpen(true);
+
+    if (existingAnnotation) {
+      setSelectedUncertaintyId(existingAnnotation.id);
+      setConfidenceDraft({ ...existingAnnotation.confidence });
+      setConfidenceDirectionDraft({
+        ...DEFAULT_HEIGHT_DIRECTIONS,
+        ...(existingAnnotation.directions ?? {}),
+      });
+      return;
+    }
+
+    setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+    setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
   }
 
-  openHeightConfidenceEditor(heightCandidatePathKeys);
-}
+  function confirmHeightCandidateGroup() {
+    if (heightCandidatePathKeys.length === 0) {
+      setHeightCandidateOpen(false);
+      setHeightConfidenceOpen(false);
+      return;
+    }
 
-function confirmSelectedOnlyHeightCandidate() {
-  const selectedOnlyPathKey = heightCandidatePathKeys[0] ?? highlightedPathKey;
-
-  if (!selectedOnlyPathKey) {
-    setHeightCandidateOpen(false);
-    setHeightConfidenceOpen(false);
-    return;
+    openHeightConfidenceEditor(heightCandidatePathKeys);
   }
 
-  openHeightConfidenceEditor([selectedOnlyPathKey]);
-}
+  function confirmSelectedOnlyHeightCandidate() {
+    const selectedOnlyPathKey =
+      heightCandidatePathKeys[0] ?? highlightedPathKey;
+
+    if (!selectedOnlyPathKey) {
+      setHeightCandidateOpen(false);
+      setHeightConfidenceOpen(false);
+      return;
+    }
+
+    openHeightConfidenceEditor([selectedOnlyPathKey]);
+  }
 
   function cancelHeightCandidateGroup() {
     setHeightCandidateOpen(false);
@@ -684,20 +706,21 @@ function confirmSelectedOnlyHeightCandidate() {
       return;
     }
 
-setUncertaintyDocument((previous) =>
-  upsertSizeAnnotation(
-    {
-      ...previous,
-      source: currentUncertaintySource,
-    },
-    {
-      pathKeys: targetPathKeys,
-      confidence: confidenceDraft,
-      directions: confidenceDirectionDraft,
-    },
-  ),
-);
+    setUncertaintyDocument((previous) =>
+      upsertSizeAnnotation(
+        {
+          ...previous,
+          source: currentUncertaintySource,
+        },
+        {
+          pathKeys: targetPathKeys,
+          confidence: confidenceDraft,
+          directions: confidenceDirectionDraft,
+        },
+      ),
+    );
 
+    setSelectedUncertaintyId(makeSizeAnnotationId(targetPathKeys));
     setHeightConfidenceOpen(false);
     setActiveTool("select");
   }
@@ -710,18 +733,64 @@ setUncertaintyDocument((previous) =>
       return;
     }
 
-setUncertaintyDocument((previous) =>
-  removeSizeAnnotationsForPathKeys(
-    {
-      ...previous,
-      source: currentUncertaintySource,
-    },
-    targetPathKeys,
-  ),
-);
+    setUncertaintyDocument((previous) =>
+      removeSizeAnnotationsForPathKeys(
+        {
+          ...previous,
+          source: currentUncertaintySource,
+        },
+        targetPathKeys,
+      ),
+    );
 
+    setSelectedUncertaintyId(null);
     setHeightConfidenceOpen(false);
     setActiveTool("select");
+  }
+
+  function selectUncertaintyCard(annotationId: string | null) {
+    setSelectedUncertaintyId(annotationId);
+  }
+
+  function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
+    setActiveTool("height");
+    setPendingHeightRolePreview(null);
+    setConfirmedHeightPlan(null);
+    setManipulationValue(0);
+    setHeightPreviewOpen(false);
+    setLassoPathKeys([]);
+    setSelectedUncertaintyId(annotation.id);
+
+    openHeightConfidenceEditor(annotation.target.pathKeys);
+  }
+
+  function deleteUncertaintyCard(annotationId: string) {
+    setUncertaintyDocument((previous) =>
+      removeUncertaintyAnnotationById(
+        {
+          ...previous,
+          source: currentUncertaintySource,
+        },
+        annotationId,
+      ),
+    );
+
+    setSelectedUncertaintyId((previous) =>
+      previous === annotationId ? null : previous,
+    );
+  }
+
+  function updateUncertaintyCardComment(annotationId: string, comment: string) {
+    setUncertaintyDocument((previous) =>
+      updateUncertaintyAnnotationComment(
+        {
+          ...previous,
+          source: currentUncertaintySource,
+        },
+        annotationId,
+        comment,
+      ),
+    );
   }
 
   function updateConfidenceDraft(
@@ -848,50 +917,61 @@ setUncertaintyDocument((previous) =>
           }}
         />
 
+        <UncertaintyMarksPanel
+          document={uncertaintyDocumentWithCurrentSource}
+          selectedAnnotationId={selectedUncertaintyId}
+          onSelectAnnotation={selectUncertaintyCard}
+          onEditSizeAnnotation={editSizeUncertaintyCard}
+          onDeleteAnnotation={deleteUncertaintyCard}
+          onCommentChange={updateUncertaintyCardComment}
+        />
+
         {heightCandidateOpen ? (
-  <OperationPreviewPanel
-    operation="height"
-    title={
-      heightCandidatePathKeys.length > 0
-        ? "Related objects found"
-        : "Select one object first"
-    }
-    description={
-      heightCandidatePathKeys.length > 1
-        ? `FuzzyCAD found ${
-            heightCandidatePathKeys.length - 1 === 1
-              ? "one related object"
-              : `${heightCandidatePathKeys.length - 1} related objects`
-          }. You can annotate only the selected object, or apply the same size uncertainty annotation to the related objects as a group.`
-        : heightCandidatePathKeys.length === 1
-          ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
-          : "Click one object in the viewer, then click Size."
-    }
-    suggestedObjects={
-      heightCandidatePathKeys.length > 1
-        ? heightCandidateSummaries.map(getObjectDisplayName)
-        : undefined
-    }
-    confirmLabel={
-      heightCandidatePathKeys.length > 1 ? "Include related" : "Continue"
-    }
-    secondaryConfirmLabel={
-      heightCandidatePathKeys.length > 1 ? "Selected only" : undefined
-    }
-    cancelLabel="Cancel"
-    onConfirm={
-      heightCandidatePathKeys.length > 1
-        ? confirmHeightCandidateGroup
-        : confirmSelectedOnlyHeightCandidate
-    }
-    onSecondaryConfirm={
-      heightCandidatePathKeys.length > 1
-        ? confirmSelectedOnlyHeightCandidate
-        : undefined
-    }
-    onCancel={cancelHeightCandidateGroup}
-  />
-) : null}
+          <OperationPreviewPanel
+            operation="height"
+            title={
+              heightCandidatePathKeys.length > 0
+                ? "Related objects found"
+                : "Select one object first"
+            }
+            description={
+              heightCandidatePathKeys.length > 1
+                ? `FuzzyCAD found ${
+                    heightCandidatePathKeys.length - 1 === 1
+                      ? "one related object"
+                      : `${heightCandidatePathKeys.length - 1} related objects`
+                  }. You can annotate only the selected object, or apply the same size uncertainty annotation to the related objects as a group.`
+                : heightCandidatePathKeys.length === 1
+                  ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
+                  : "Click one object in the viewer, then click Size."
+            }
+            suggestedObjects={
+              heightCandidatePathKeys.length > 1
+                ? heightCandidateSummaries.map(getObjectDisplayName)
+                : undefined
+            }
+            confirmLabel={
+              heightCandidatePathKeys.length > 1
+                ? "Include related"
+                : "Continue"
+            }
+            secondaryConfirmLabel={
+              heightCandidatePathKeys.length > 1 ? "Selected only" : undefined
+            }
+            cancelLabel="Cancel"
+            onConfirm={
+              heightCandidatePathKeys.length > 1
+                ? confirmHeightCandidateGroup
+                : confirmSelectedOnlyHeightCandidate
+            }
+            onSecondaryConfirm={
+              heightCandidatePathKeys.length > 1
+                ? confirmSelectedOnlyHeightCandidate
+                : undefined
+            }
+            onCancel={cancelHeightCandidateGroup}
+          />
+        ) : null}
 
         {heightPreviewOpen && pendingHeightRolePreview ? (
           <OperationPreviewPanel
@@ -949,10 +1029,10 @@ setUncertaintyDocument((previous) =>
                 ).length,
               },
             },
-{
-  title: "Uncertainty Document",
-  value: uncertaintyDocumentWithCurrentSource,
-},
+            {
+              title: "Uncertainty Document",
+              value: uncertaintyDocumentWithCurrentSource,
+            },
             {
               title: "Derived Size Visual Annotations",
               value: confidenceAnnotations,

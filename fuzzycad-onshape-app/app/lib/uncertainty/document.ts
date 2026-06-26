@@ -30,6 +30,7 @@ export type SizeUncertaintyAnnotation = {
   };
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
+  comment?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -41,16 +42,6 @@ export function createEmptyUncertaintyDocument(
     version: "0.1",
     source,
     annotations: [],
-  };
-}
-
-export function updateUncertaintyDocumentSource(
-  document: FuzzyCADUncertaintyDocument,
-  source: FuzzyCADUncertaintySource,
-): FuzzyCADUncertaintyDocument {
-  return {
-    ...document,
-    source,
   };
 }
 
@@ -66,6 +57,7 @@ function createSizeAnnotation(input: {
   pathKeys: string[];
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
+  comment?: string;
   createdAt?: string;
   updatedAt?: string;
 }): SizeUncertaintyAnnotation | null {
@@ -88,6 +80,7 @@ function createSizeAnnotation(input: {
     },
     confidence: { ...input.confidence },
     directions: { ...input.directions },
+    comment: input.comment,
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
   };
@@ -109,6 +102,7 @@ function removePathKeysFromSizeAnnotation(
     pathKeys: remainingPathKeys,
     confidence: annotation.confidence,
     directions: annotation.directions,
+    comment: annotation.comment,
     createdAt: annotation.createdAt,
     updatedAt: new Date().toISOString(),
   });
@@ -133,17 +127,11 @@ export function upsertSizeAnnotation(
   const id = makeSizeAnnotationId(pathKeys);
 
   const existingExactAnnotation = document.annotations.find(
-    (annotation) => annotation.type === "size" && annotation.id === id,
+    (annotation) => annotation.id === id,
   );
 
   const preservedAnnotations = document.annotations
-    .map((annotation) => {
-      if (annotation.type !== "size") {
-        return annotation;
-      }
-
-      return removePathKeysFromSizeAnnotation(annotation, pathKeySet);
-    })
+    .map((annotation) => removePathKeysFromSizeAnnotation(annotation, pathKeySet))
     .filter(
       (
         annotation,
@@ -154,6 +142,7 @@ export function upsertSizeAnnotation(
     pathKeys,
     confidence: input.confidence,
     directions: input.directions,
+    comment: existingExactAnnotation?.comment,
     createdAt: existingExactAnnotation?.createdAt ?? now,
     updatedAt: now,
   });
@@ -184,18 +173,49 @@ export function removeSizeAnnotationsForPathKeys(
   return {
     ...document,
     annotations: document.annotations
-      .map((annotation) => {
-        if (annotation.type !== "size") {
-          return annotation;
-        }
-
-        return removePathKeysFromSizeAnnotation(annotation, pathKeySet);
-      })
+      .map((annotation) =>
+        removePathKeysFromSizeAnnotation(annotation, pathKeySet),
+      )
       .filter(
         (
           annotation,
         ): annotation is FuzzyCADUncertaintyAnnotation => annotation !== null,
       ),
+  };
+}
+
+export function removeUncertaintyAnnotationById(
+  document: FuzzyCADUncertaintyDocument,
+  annotationId: string,
+): FuzzyCADUncertaintyDocument {
+  return {
+    ...document,
+    annotations: document.annotations.filter(
+      (annotation) => annotation.id !== annotationId,
+    ),
+  };
+}
+
+export function updateUncertaintyAnnotationComment(
+  document: FuzzyCADUncertaintyDocument,
+  annotationId: string,
+  comment: string,
+): FuzzyCADUncertaintyDocument {
+  const now = new Date().toISOString();
+
+  return {
+    ...document,
+    annotations: document.annotations.map((annotation) => {
+      if (annotation.id !== annotationId) {
+        return annotation;
+      }
+
+      return {
+        ...annotation,
+        comment,
+        updatedAt: now,
+      };
+    }),
   };
 }
 
@@ -208,10 +228,8 @@ export function findSizeAnnotationForPathKey(
   }
 
   return (
-    document.annotations.find(
-      (annotation): annotation is SizeUncertaintyAnnotation =>
-        annotation.type === "size" &&
-        annotation.target.pathKeys.includes(pathKey),
+    document.annotations.find((annotation) =>
+      annotation.target.pathKeys.includes(pathKey),
     ) ?? null
   );
 }
@@ -219,15 +237,11 @@ export function findSizeAnnotationForPathKey(
 export function toFuzzyConfidenceAnnotations(
   document: FuzzyCADUncertaintyDocument,
 ): FuzzyConfidenceAnnotation[] {
-  return document.annotations.flatMap((annotation) => {
-    if (annotation.type !== "size") {
-      return [];
-    }
-
-    return annotation.target.pathKeys.map((pathKey) => ({
+  return document.annotations.flatMap((annotation) =>
+    annotation.target.pathKeys.map((pathKey) => ({
       pathKey,
       confidence: annotation.confidence,
       directions: annotation.directions,
-    }));
-  });
+    })),
+  );
 }
