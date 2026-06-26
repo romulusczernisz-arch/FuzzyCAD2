@@ -733,6 +733,10 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
         manipulationValue={confirmedHeightPlan && !heightPreviewOpen ? manipulationValue : undefined}
         applyStatus={applyStatus}
         applyError={applyError}
+        hasInferredPlan={
+          !confirmedHeightPlan &&
+          (resolvedAxialStretchPlan?.stretchTargetPathKeys.length ?? 0) > 0
+        }
         onAssemblyChange={handleAssemblyChange}
         onLoadAssembly={loadSelectedAssembly}
         onSelectPathKey={setHighlightedPathKey}
@@ -741,6 +745,19 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
         }}
         onApply={confirmedHeightPlan && !heightPreviewOpen ? () => void applyOnshapeChanges() : undefined}
         onResetApply={resetSizeOperationState}
+        onStartHeightChange={() => {
+          const plan = resolvedAxialStretchPlan;
+          if (plan && plan.stretchTargetPathKeys.length > 0) {
+            setPendingHeightRolePreview({
+              stretchTargetPathKeys: plan.stretchTargetPathKeys,
+              moveWithEndPathKeys: plan.moveWithEndPathKeys,
+              fixedAnchorPathKeys: plan.fixedAnchorPathKeys,
+              excludedPathKeys: plan.excludedPathKeys,
+            });
+            setHeightPreviewOpen(true);
+            setActiveTool("height");
+          }
+        }}
       />
 
       <div className={styles.viewerPane}>

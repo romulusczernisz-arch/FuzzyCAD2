@@ -23,12 +23,14 @@ type FuzzyCADSidebarProps = {
   manipulationValue?: number;
   applyStatus?: "idle" | "applying" | "success" | "error";
   applyError?: string | null;
+  hasInferredPlan?: boolean;
   onAssemblyChange: (assemblyId: string) => void;
   onLoadAssembly: () => void;
   onSelectPathKey: (pathKey: string | null) => void;
   onToggleDev: () => void;
   onApply?: () => void;
   onResetApply?: () => void;
+  onStartHeightChange?: () => void;
 };
 
 export default function FuzzyCADSidebar({
@@ -43,12 +45,14 @@ export default function FuzzyCADSidebar({
   manipulationValue,
   applyStatus = "idle",
   applyError,
+  hasInferredPlan,
   onAssemblyChange,
   onLoadAssembly,
   onSelectPathKey,
   onToggleDev,
   onApply,
   onResetApply,
+  onStartHeightChange,
 }: FuzzyCADSidebarProps) {
   const hasPendingChange =
     onApply !== undefined && Math.abs(manipulationValue ?? 0) > 1e-9;
@@ -63,6 +67,14 @@ export default function FuzzyCADSidebar({
         </a>
       ) : null}
 
+      {/* Step 1: inferred plan ready — offer to start the height change flow */}
+      {hasInferredPlan && !hasPendingChange && applyStatus === "idle" ? (
+        <button className={styles.primaryButton} onClick={onStartHeightChange}>
+          Apply annotation
+        </button>
+      ) : null}
+
+      {/* Step 2: manipulation active — show value + apply/reset */}
       {hasPendingChange || applyStatus === "success" || applyStatus === "error" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ fontSize: 12, color: "#555", fontWeight: 600 }}>
