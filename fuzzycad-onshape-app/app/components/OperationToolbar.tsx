@@ -96,7 +96,7 @@ const tools: ToolItem[] = [
   },
   {
     id: "extend",
-    label: "Height",
+    label: "Size",
     title: "Stretch assembly height",
     icon: <SizeIcon />,
   },
