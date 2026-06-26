@@ -588,8 +588,8 @@ function UncertaintyLegendOverlay() {
       <div
         style={{
           position: "absolute",
-          top: 14,
-          right: 14,
+          bottom: 90,
+          left: 14,
           width: 230,
           padding: "12px 12px 10px",
           borderRadius: 14,

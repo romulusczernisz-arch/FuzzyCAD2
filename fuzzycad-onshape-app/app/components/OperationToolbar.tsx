@@ -93,14 +93,11 @@ const tools: ToolItem[] = [
     label: "Lasso",
     title: "Lasso multiple objects",
     icon: <LassoIcon />,
-    hidden: true,
   },
   {
-    // Internally this is still "height" for now.
-    // UI-wise, it is now the size uncertainty annotation tool.
-    id: "height",
-    label: "Size",
-    title: "Mark size uncertainty",
+    id: "extend",
+    label: "Height",
+    title: "Stretch assembly height",
     icon: <SizeIcon />,
   },
   {

@@ -112,3 +112,29 @@ export async function fetchFuzzycadRelationshipGraph(
 
   return res.json() as Promise<ApiResult>;
 }
+
+export type OccurrenceUpdate = {
+  /** Full occurrence path array (split of pathKey on "/"). */
+  path: string[];
+  /** 16-element row-major 4×4 transform matrix. */
+  transform: number[];
+};
+
+export async function applyOnshapeOccurrenceTransforms(
+  query: AssemblyQuery,
+  occurrences: OccurrenceUpdate[]
+): Promise<ApiResult> {
+  const res = await fetch("/api/onshape/assembly-transforms", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentId: query.documentId,
+      workspaceId: query.workspaceId,
+      assemblyElementId: query.assemblyElementId,
+      server: query.server,
+      occurrences,
+    }),
+  });
+
+  return res.json() as Promise<ApiResult>;
+}

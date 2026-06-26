@@ -37,6 +37,8 @@ import OperationPreviewPanel, {
 import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
 import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
+import { computeOccurrenceUpdates } from "./lib/operations/computeOccurrenceUpdates";
+import { applyOnshapeOccurrenceTransforms } from "./lib/onshapeClient";
 import {
   DEFAULT_HEIGHT_CONFIDENCE,
   DEFAULT_HEIGHT_DIRECTIONS,
@@ -156,6 +158,8 @@ export default function FuzzyCADHome() {
   const [manipulationValue, setManipulationValue] = useState(0);
 
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
+  const [applyStatus, setApplyStatus] = useState<"idle" | "applying" | "success" | "error">("idle");
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [pendingHeightAxis, setPendingHeightAxis] =
     useState<OperationAxis>("y");
   const [pendingHeightDirection, setPendingHeightDirection] =
@@ -297,6 +301,8 @@ function resetSizeOperationState() {
   setConfirmedHeightPlan(null);
   setManipulationValue(0);
   setHeightPreviewOpen(false);
+  setApplyStatus("idle");
+  setApplyError(null);
   closeSizeUncertaintyEditor();
 }
 
@@ -624,6 +630,52 @@ function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
     updateAnnotationComment(annotationId, comment);
   }
 
+  async function applyOnshapeChanges() {
+    if (!confirmedHeightPlan || !documentId || !workspaceId || !selectedAssemblyId) {
+      return;
+    }
+
+    const occurrences = computeOccurrenceUpdates(
+      confirmedHeightPlan,
+      objectSummaries,
+      manipulationValue,
+      placements,
+    );
+
+    if (occurrences.length === 0) {
+      return;
+    }
+
+    setApplyStatus("applying");
+    setApplyError(null);
+
+    try {
+      const result = await applyOnshapeOccurrenceTransforms(
+        {
+          documentId,
+          workspaceId,
+          assemblyElementId: selectedAssemblyId,
+          server,
+        },
+        occurrences,
+      );
+
+      if (result.ok) {
+        setApplyStatus("success");
+      } else {
+        setApplyStatus("error");
+        setApplyError(
+          typeof result.error === "string"
+            ? result.error
+            : `Onshape returned status ${result.status ?? "unknown"}`,
+        );
+      }
+    } catch (err) {
+      setApplyStatus("error");
+      setApplyError(err instanceof Error ? err.message : "Unknown error");
+    }
+  }
+
   function updateConfidenceDraft(
     axis: ConfidenceAxis,
     confidence: ConfidenceLevel,
@@ -678,12 +730,17 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
         partTree={partTree}
         highlightedPathKey={highlightedPathKey}
         dev={dev}
+        manipulationValue={confirmedHeightPlan && !heightPreviewOpen ? manipulationValue : undefined}
+        applyStatus={applyStatus}
+        applyError={applyError}
         onAssemblyChange={handleAssemblyChange}
         onLoadAssembly={loadSelectedAssembly}
         onSelectPathKey={setHighlightedPathKey}
         onToggleDev={() => {
           setDev((value) => !value);
         }}
+        onApply={confirmedHeightPlan && !heightPreviewOpen ? () => void applyOnshapeChanges() : undefined}
+        onResetApply={resetSizeOperationState}
       />
 
       <div className={styles.viewerPane}>
@@ -739,12 +796,35 @@ onObjectLassoSelection={(pathKeys) => {
               return;
             }
 
-           setActiveTool(tool);
-resetSizeOperationState();
+            if (tool === "extend") {
+              // Show the height stretch role preview from the inferred plan.
+              const plan = resolvedAxialStretchPlan;
 
-if (tool === "select") {
-  setLassoPathKeys([]);
-}
+              if (
+                plan &&
+                plan.stretchTargetPathKeys.length > 0
+              ) {
+                setPendingHeightRolePreview({
+                  stretchTargetPathKeys: plan.stretchTargetPathKeys,
+                  moveWithEndPathKeys: plan.moveWithEndPathKeys,
+                  fixedAnchorPathKeys: plan.fixedAnchorPathKeys,
+                  excludedPathKeys: plan.excludedPathKeys,
+                });
+                setHeightPreviewOpen(true);
+                setActiveTool("height");
+              } else {
+                setActiveTool("lasso");
+              }
+
+              return;
+            }
+
+            setActiveTool(tool);
+            resetSizeOperationState();
+
+            if (tool === "select") {
+              setLassoPathKeys([]);
+            }
           }}
         />
 
@@ -836,6 +916,7 @@ if (tool === "select") {
             }}
           />
         ) : null}
+
       </div>
 
       {dev ? (
