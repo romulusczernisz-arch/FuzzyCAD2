@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import type {
   AxisConfidenceMap,
+  AxisDirectionMap,
   ConfidenceAxis,
+  ConfidenceDirection,
   ConfidenceLevel,
   FuzzyConfidenceAnnotation,
 } from "../../lib/uncertainty/types";
@@ -12,13 +14,19 @@ const FUZZY_ORIGINAL_MATERIALS = "__fuzzycad_original_materials__";
 const FUZZY_ACTIVE_MATERIAL = "__fuzzycad_active_material__";
 const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
 
+const DEFAULT_DIRECTIONS: AxisDirectionMap = {
+  x: "both",
+  y: "both",
+  z: "both",
+};
+
 function confidenceToStrength(level: ConfidenceLevel) {
   if (level === "low") {
     return 1.0;
   }
 
   if (level === "medium") {
-    return 0.42;
+    return 0.55;
   }
 
   return 0.0;
@@ -48,7 +56,7 @@ function getLayerCount(level: ConfidenceLevel) {
   return 0;
 }
 
-function getAxisMask(axis: ConfidenceAxis) {
+function getWorldAxis(axis: ConfidenceAxis) {
   if (axis === "x") {
     return new THREE.Vector3(1, 0, 0);
   }
@@ -60,13 +68,23 @@ function getAxisMask(axis: ConfidenceAxis) {
   return new THREE.Vector3(0, 0, 1);
 }
 
+function directionToMode(direction: ConfidenceDirection) {
+  if (direction === "positive") {
+    return 1.0;
+  }
+
+  if (direction === "negative") {
+    return -1.0;
+  }
+
+  return 0.0;
+}
+
 function getShellColor(level: ConfidenceLevel) {
   if (level === "low") {
-    // Saturated blue = low confidence / larger unresolved range.
     return new THREE.Color(0x1455ff);
   }
 
-  // Pale cyan-blue = medium confidence / smaller unresolved range.
   return new THREE.Color(0x9edcff);
 }
 
@@ -94,11 +112,7 @@ function makeDimmedOriginalMaterial(
     color: getMaterialColor(sourceMaterial),
     map: source.map ?? null,
     transparent: true,
-
-    // Original CAD geometry becomes a weak reference layer.
-    // Lower these values if you want only dashed line + shells.
     opacity: strength >= 1 ? 0.07 : 0.15,
-
     depthWrite: false,
     side: THREE.DoubleSide,
     roughness: 1,
@@ -136,8 +150,6 @@ function clearFuzzyVisualChildren(scene: THREE.Object3D) {
       return;
     }
 
-    // Only remove top-level visual nodes. Nested visual children are disposed
-    // together with their parent group.
     if (object.parent?.userData?.[FUZZY_VISUAL_CHILD]) {
       return;
     }
@@ -161,9 +173,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
       return;
     }
 
-    const originalMaterials = object.userData[FUZZY_ORIGINAL_MATERIALS] as
-      | THREE.Material[]
-      | undefined;
+    const originalMaterials = object.userData[
+      FUZZY_ORIGINAL_MATERIALS
+    ] as THREE.Material[] | undefined;
 
     if (!originalMaterials) {
       return;
@@ -260,11 +272,8 @@ function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
   const material = new THREE.LineDashedMaterial({
     color: 0x111111,
     linewidth: 1,
-
-    // Loose dashed boundary. This remains the reference geometry.
     dashSize: strength >= 1 ? 0.095 : 0.115,
     gapSize: strength >= 1 ? 0.14 : 0.17,
-
     transparent: true,
     opacity: strength >= 1 ? 0.9 : 0.6,
     depthTest: false,
@@ -281,20 +290,25 @@ function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
 }
 
 function makeAxisShellMaterial({
+  objectCenterWorld,
   axis,
   level,
+  direction,
   layerIndex,
   layerCount,
 }: {
+  objectCenterWorld: THREE.Vector3;
   axis: ConfidenceAxis;
   level: ConfidenceLevel;
+  direction: ConfidenceDirection;
   layerIndex: number;
   layerCount: number;
 }) {
   const strength = confidenceToStrength(level);
-  const axisMask = getAxisMask(axis);
+  const worldAxis = getWorldAxis(axis);
   const color = getShellColor(level);
   const layerRatio = layerIndex / Math.max(layerCount - 1, 1);
+  const directionMode = directionToMode(direction);
 
   const material = new THREE.ShaderMaterial({
     transparent: true,
@@ -303,8 +317,11 @@ function makeAxisShellMaterial({
     side: THREE.DoubleSide,
     blending: THREE.NormalBlending,
     uniforms: {
-      uAxisMask: {
-        value: axisMask,
+      uWorldAxis: {
+        value: worldAxis,
+      },
+      uObjectCenterWorld: {
+        value: objectCenterWorld,
       },
       uStrength: {
         value: strength,
@@ -318,49 +335,63 @@ function makeAxisShellMaterial({
       uIsLow: {
         value: level === "low" ? 1.0 : 0.0,
       },
+      uDirectionMode: {
+        value: directionMode,
+      },
     },
     vertexShader: `
-      varying vec3 vLocalPosition;
+      varying vec3 vWorldPosition;
       varying float vAxisPresence;
+      varying float vDirectionAllowed;
 
-      uniform vec3 uAxisMask;
+      uniform vec3 uWorldAxis;
+      uniform vec3 uObjectCenterWorld;
       uniform float uStrength;
       uniform float uLayerRatio;
       uniform float uIsLow;
+      uniform float uDirectionMode;
 
       void main() {
-        vLocalPosition = position;
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vec3 transformedWorldPosition = worldPosition.xyz;
 
-        vec3 transformedPosition = position;
+        vec3 fromCenter = worldPosition.xyz - uObjectCenterWorld;
+        float axisCoordinate = dot(fromCenter, uWorldAxis);
+        float axisSign = axisCoordinate >= 0.0 ? 1.0 : -1.0;
 
-        vec3 safePosition = position + vec3(0.0001);
-        vec3 directionFromCenter = normalize(safePosition);
+        float directionAllowed = 1.0;
 
-// Medium = narrow shell. Low = wider shell.
-// Reduced expansion: about 40% of the previous range.
-float baseExpansion = mix(0.002, 0.007, uLayerRatio) * uStrength;
-float axisExpansion = mix(0.007, 0.052, uLayerRatio) * uStrength;
+        if (uDirectionMode > 0.5) {
+          directionAllowed = axisSign > 0.0 ? 1.0 : 0.0;
+        } else if (uDirectionMode < -0.5) {
+          directionAllowed = axisSign < 0.0 ? 1.0 : 0.0;
+        }
 
-// Low confidence is still wider than medium, but no longer balloons too far.
-axisExpansion *= mix(0.7, 1.0, uIsLow);
+        // Medium: visible but close to the object.
+        // Low: wider unresolved range.
+        float baseExpansion = mix(0.002, 0.008, uLayerRatio) * uStrength;
+        float axisExpansion = mix(0.011, 0.06, uLayerRatio) * uStrength;
 
-// A small normal expansion keeps the shell just outside the reference object.
-transformedPosition += directionFromCenter * baseExpansion;
+        axisExpansion *= mix(0.75, 1.0, uIsLow);
 
-// Main axis-specific expansion.
-transformedPosition += sign(position) * uAxisMask * axisExpansion;
+        vec3 safeFromCenter = normalize(fromCenter + vec3(0.0001));
 
-        vec3 normalizedPosition = normalize(abs(position) + vec3(0.0001));
+        transformedWorldPosition += safeFromCenter * baseExpansion * directionAllowed;
+        transformedWorldPosition += uWorldAxis * axisSign * axisExpansion * directionAllowed;
 
-        // How much this vertex belongs to the selected axis direction.
-        vAxisPresence = dot(normalizedPosition, uAxisMask);
+        vec3 normalizedFromCenter = normalize(abs(fromCenter) + vec3(0.0001));
+        vec3 absAxis = abs(uWorldAxis);
 
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(transformedPosition, 1.0);
+        vAxisPresence = dot(normalizedFromCenter, absAxis);
+        vDirectionAllowed = directionAllowed;
+
+        gl_Position = projectionMatrix * viewMatrix * vec4(transformedWorldPosition, 1.0);
       }
     `,
     fragmentShader: `
-      varying vec3 vLocalPosition;
+      varying vec3 vWorldPosition;
       varying float vAxisPresence;
+      varying float vDirectionAllowed;
 
       uniform float uStrength;
       uniform float uLayerRatio;
@@ -399,40 +430,38 @@ transformedPosition += sign(position) * uAxisMask * axisExpansion;
         return mix(nxy0, nxy1, f.z);
       }
 
-void main() {
-  // Only show the shell where the selected axis is visually relevant.
-  float axisMask = smoothstep(0.22, 0.85, vAxisPresence);
+      void main() {
+        if (vDirectionAllowed < 0.5) {
+          discard;
+        }
 
-  if (axisMask < 0.025) {
-    discard;
-  }
+        float axisMask = smoothstep(0.12, 0.78, vAxisPresence);
 
-  float n1 = noise(vLocalPosition * 15.0);
-  float n2 = noise(vLocalPosition * 41.0 + vec3(3.7, 8.1, 2.4));
-  float n = mix(n1, n2, 0.45);
+        if (axisMask < 0.018) {
+          discard;
+        }
 
-  // Noise only makes the shell feel fuzzy; it should not encode confidence.
-  float particleMask = smoothstep(0.18, 0.84, n + axisMask * 0.28);
+        float n1 = noise(gl_FragCoord.xyz * 0.035);
+        float n2 = noise(gl_FragCoord.xyz * 0.085 + vec3(3.7, 8.1, 2.4));
+        float n = mix(n1, n2, 0.45);
 
-  // Confidence is encoded by:
-  // 1) whether a shell exists
-  // 2) shell width
-  // 3) discrete shell color
-  //
-  // It is NOT encoded by a dark-to-light gradient.
-  float baseAlpha = mix(0.16, 0.25, uIsLow);
+        float particleMask = smoothstep(0.16, 0.82, n + axisMask * 0.3);
 
-  // Outer layers fade only slightly so they read as volume, not as lower confidence.
-  float layerFade = mix(1.0, 0.72, uLayerRatio);
+        float shellFade = 1.0 - uLayerRatio * 0.68;
+        float visibilityBoost = mix(0.85, 1.15, uIsLow);
 
-  float alpha = baseAlpha * axisMask * particleMask * layerFade;
+        float alpha =
+          0.045 * uStrength * shellFade +
+          particleMask * axisMask * uStrength * 0.24 * shellFade * visibilityBoost;
 
-  if (alpha < 0.018) {
-    discard;
-  }
+        alpha *= mix(0.9, 0.34, uLayerRatio);
 
-  gl_FragColor = vec4(uColor, alpha);
-}
+        if (alpha < 0.014) {
+          discard;
+        }
+
+        gl_FragColor = vec4(uColor, alpha);
+      }
     `,
   });
 
@@ -443,12 +472,16 @@ void main() {
 
 function createAxisShell({
   mesh,
+  objectCenterWorld,
   axis,
   level,
+  direction,
 }: {
   mesh: THREE.Mesh;
+  objectCenterWorld: THREE.Vector3;
   axis: ConfidenceAxis;
   level: ConfidenceLevel;
+  direction: ConfidenceDirection;
 }) {
   const layerCount = getLayerCount(level);
 
@@ -462,8 +495,10 @@ function createAxisShell({
 
   for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
     const material = makeAxisShellMaterial({
+      objectCenterWorld,
       axis,
       level,
+      direction,
       layerIndex,
       layerCount,
     });
@@ -479,27 +514,43 @@ function createAxisShell({
   return group;
 }
 
-function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
+function createFuzzyVolume({
+  mesh,
+  objectCenterWorld,
+  confidence,
+  directions,
+}: {
+  mesh: THREE.Mesh;
+  objectCenterWorld: THREE.Vector3;
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+}) {
   const group = new THREE.Group();
 
   group.userData[FUZZY_VISUAL_CHILD] = true;
 
   const xShell = createAxisShell({
     mesh,
+    objectCenterWorld,
     axis: "x",
     level: confidence.x,
+    direction: directions.x,
   });
 
   const yShell = createAxisShell({
     mesh,
+    objectCenterWorld,
     axis: "y",
     level: confidence.y,
+    direction: directions.y,
   });
 
   const zShell = createAxisShell({
     mesh,
+    objectCenterWorld,
     axis: "z",
     level: confidence.z,
+    direction: directions.z,
   });
 
   if (xShell) {
@@ -523,16 +574,26 @@ function createFuzzyVolume(mesh: THREE.Mesh, confidence: AxisConfidenceMap) {
 
 function applyUncertaintyToMesh({
   mesh,
+  objectCenterWorld,
   confidence,
+  directions,
   strength,
 }: {
   mesh: THREE.Mesh;
+  objectCenterWorld: THREE.Vector3;
   confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
   strength: number;
 }) {
   dimOriginalMesh(mesh, strength);
 
-  const fuzzyVolume = createFuzzyVolume(mesh, confidence);
+  const fuzzyVolume = createFuzzyVolume({
+    mesh,
+    objectCenterWorld,
+    confidence,
+    directions,
+  });
+
   const dashedBoundary = createDashedBoundary(mesh, strength);
 
   if (fuzzyVolume) {
@@ -545,9 +606,11 @@ function applyUncertaintyToMesh({
 function applyUncertaintyToObject({
   object,
   confidence,
+  directions,
 }: {
   object: THREE.Object3D;
   confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
 }) {
   if (!hasUncertainty(confidence)) {
     return;
@@ -555,6 +618,11 @@ function applyUncertaintyToObject({
 
   const strength = getMaxUncertainty(confidence);
   const meshes: THREE.Mesh[] = [];
+
+  const objectBox = new THREE.Box3().setFromObject(object);
+  const objectCenterWorld = new THREE.Vector3();
+
+  objectBox.getCenter(objectCenterWorld);
 
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
@@ -571,7 +639,9 @@ function applyUncertaintyToObject({
   for (const mesh of meshes) {
     applyUncertaintyToMesh({
       mesh,
+      objectCenterWorld,
       confidence,
+      directions,
       strength,
     });
   }
@@ -613,6 +683,7 @@ export function applyFuzzyConfidence(
     applyUncertaintyToObject({
       object,
       confidence: annotation.confidence,
+      directions: annotation.directions ?? DEFAULT_DIRECTIONS,
     });
   }
 }

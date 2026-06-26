@@ -34,8 +34,11 @@ import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxial
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
 import {
   DEFAULT_HEIGHT_CONFIDENCE,
+  DEFAULT_HEIGHT_DIRECTIONS,
   type AxisConfidenceMap,
+  type AxisDirectionMap,
   type ConfidenceAxis,
+  type ConfidenceDirection,
   type ConfidenceLevel,
   type FuzzyConfidenceAnnotation,
 } from "./lib/uncertainty/types";
@@ -60,26 +63,27 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
   );
 }
 
-
 function normalizeSemanticObjectName(name: string | null) {
   if (!name) {
     return "";
   }
 
-  return name
-    .toLowerCase()
+  return (
+    name
+      .toLowerCase()
 
-    // Remove Onshape / imported instance suffixes.
-    // LowerLeg_1 -> lowerleg
-    // LowerLeg_2 -> lowerleg
-    // LowerLeg (3) -> lowerleg
-    .replace(/\s*\(\d+\)\s*$/g, "")
-    .replace(/[_\-\s]*\d+\s*$/g, "")
+      // Remove Onshape / imported instance suffixes.
+      // LowerLeg_1 -> lowerleg
+      // LowerLeg_2 -> lowerleg
+      // LowerLeg (3) -> lowerleg
+      .replace(/\s*\(\d+\)\s*$/g, "")
+      .replace(/[_\-\s]*\d+\s*$/g, "")
 
-    // Normalize separators.
-    .replace(/[_\-\s]+/g, "")
+      // Normalize separators.
+      .replace(/[_\-\s]+/g, "")
 
-    .trim();
+      .trim()
+  );
 }
 
 function getSizeSimilarity(
@@ -142,13 +146,10 @@ function isStrictGeometryMatch(
     // Both objects should be elongated objects, not blocks/caps/clamps.
     source.elongationRatio > 2.3 &&
     target.elongationRatio > 2.3 &&
-
     // Bounding box dimensions should be close.
     sizeSimilarity > 0.78 &&
-
     // Principal directions should be close.
     axisSimilarity > 0.86 &&
-
     // Length and thickness should both be close.
     lengthRatio > 0.78 &&
     thicknessRatio > 0.7
@@ -195,7 +196,6 @@ function buildHeightCandidatePathKeys(
     ...geometryMatches.map((summary) => summary.pathKey),
   ];
 }
-
 
 function getObjectDisplayName(summary: AxialStretchObjectSummary) {
   return summary.name || summary.pathKey;
@@ -297,6 +297,9 @@ export default function FuzzyCADHome() {
   const [confidenceDraft, setConfidenceDraft] = useState<AxisConfidenceMap>(
     DEFAULT_HEIGHT_CONFIDENCE,
   );
+  const [confidenceDirectionDraft, setConfidenceDirectionDraft] =
+    useState<AxisDirectionMap>(DEFAULT_HEIGHT_DIRECTIONS);
+
   const [confidenceAnnotations, setConfidenceAnnotations] = useState<
     FuzzyConfidenceAnnotation[]
   >([]);
@@ -390,6 +393,7 @@ export default function FuzzyCADHome() {
     setHeightCandidatePathKeys([]);
     setHeightConfidenceOpen(false);
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+    setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
     setConfidenceAnnotations([]);
     setGeometryLoadResult(null);
     resetPlacementTree();
@@ -559,6 +563,7 @@ export default function FuzzyCADHome() {
     setHeightCandidateOpen(false);
     setHeightConfidenceOpen(true);
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+    setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
   }
 
   function cancelHeightCandidateGroup() {
@@ -586,6 +591,7 @@ export default function FuzzyCADHome() {
       ...targetPathKeys.map((pathKey) => ({
         pathKey,
         confidence: { ...confidenceDraft },
+        directions: { ...confidenceDirectionDraft },
       })),
     ]);
 
@@ -602,6 +608,16 @@ export default function FuzzyCADHome() {
       [axis]: confidence,
     }));
   }
+
+  function updateConfidenceDirectionDraft(
+  axis: ConfidenceAxis,
+  direction: ConfidenceDirection,
+) {
+  setConfidenceDirectionDraft((previous) => ({
+    ...previous,
+    [axis]: direction,
+  }));
+}
 
   function handleAssemblyChange(assemblyId: string) {
     setSelectedAssemblyId(assemblyId);

@@ -14,7 +14,9 @@ import { prepareRenderableMeshes } from "./viewer/materials";
 import type { OperationTool } from "../lib/operations/types";
 import type {
   AxisConfidenceMap,
+  AxisDirectionMap,
   ConfidenceAxis,
+  ConfidenceDirection,
   ConfidenceLevel,
 } from "../lib/uncertainty/types";
 import {
@@ -58,9 +60,14 @@ export type RolePreviewPlan = {
 export type FuzzyConfidenceEditor = {
   pathKey: string;
   confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
   onConfidenceChange: (
     axis: ConfidenceAxis,
     confidence: ConfidenceLevel,
+  ) => void;
+  onDirectionChange: (
+    axis: ConfidenceAxis,
+    direction: ConfidenceDirection,
   ) => void;
   onApply: () => void;
   onCancel: () => void;
@@ -73,7 +80,7 @@ type FuzzyCADGeometryViewerProps = {
   selectedPathKeys?: string[];
   activeTool?: OperationTool;
   confidenceAnnotations?: FuzzyConfidenceAnnotation[];
-    confidenceEditor?: FuzzyConfidenceEditor | null;
+  confidenceEditor?: FuzzyConfidenceEditor | null;
   /** Path keys the active sizing/angle handle should act on. */
   activePathKeys?: string[];
   /** Current value of the active manipulation (world units for height/extend, degrees for angle). */
@@ -219,11 +226,11 @@ function ConfidenceEditorWidget({
           event.stopPropagation();
         }}
         style={{
-          minWidth: 156,
-          padding: "10px 10px 9px",
+          minWidth: 230,
+          padding: "10px",
           borderRadius: 14,
           border: "1px solid rgba(43, 108, 255, 0.45)",
-          background: "rgba(255, 255, 255, 0.88)",
+          background: "rgba(255, 255, 255, 0.9)",
           boxShadow: "0 12px 34px rgba(15, 23, 42, 0.22)",
           backdropFilter: "blur(14px)",
           fontFamily: "Arial, sans-serif",
@@ -234,7 +241,7 @@ function ConfidenceEditorWidget({
       >
         <div
           style={{
-            marginBottom: 7,
+            marginBottom: 8,
             fontSize: 11,
             fontWeight: 800,
             color: "#2b6cff",
@@ -247,39 +254,82 @@ function ConfidenceEditorWidget({
 
         {axes.map((axis) => {
           const level = editor.confidence[axis];
+          const direction = editor.directions[axis];
 
           return (
-            <button
+            <div
               key={axis}
-              type="button"
-              onClick={() => {
-                editor.onConfidenceChange(axis, getNextConfidenceLevel(level));
-              }}
               style={{
-                width: "100%",
-                height: 28,
-                marginBottom: 5,
                 display: "grid",
-                gridTemplateColumns: "24px 1fr",
+                gridTemplateColumns: "22px 82px 1fr",
+                gap: 6,
                 alignItems: "center",
-                gap: 8,
-                border: "1px solid rgba(148, 163, 184, 0.42)",
-                borderRadius: 9,
-                background:
-                  level === "low"
-                    ? "rgba(43, 108, 255, 0.16)"
-                    : level === "medium"
-                      ? "rgba(43, 108, 255, 0.08)"
-                      : "rgba(255, 255, 255, 0.72)",
-                color: "#334155",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
+                marginBottom: 6,
               }}
             >
-              <span>{axis.toUpperCase()}</span>
-              <span style={{ textAlign: "left" }}>{level}</span>
-            </button>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 900,
+                  color: "#334155",
+                }}
+              >
+                {axis.toUpperCase()}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  editor.onConfidenceChange(axis, getNextConfidenceLevel(level));
+                }}
+                style={{
+                  height: 28,
+                  border: "1px solid rgba(148, 163, 184, 0.42)",
+                  borderRadius: 9,
+                  background:
+                    level === "low"
+                      ? "rgba(20, 85, 255, 0.18)"
+                      : level === "medium"
+                        ? "rgba(158, 220, 255, 0.3)"
+                        : "rgba(255, 255, 255, 0.72)",
+                  color: "#334155",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textTransform: "capitalize",
+                }}
+              >
+                {level}
+              </button>
+
+              <select
+                value={direction}
+                disabled={level === "high"}
+                onChange={(event) => {
+                  editor.onDirectionChange(
+                    axis,
+                    event.target.value as ConfidenceDirection,
+                  );
+                }}
+                style={{
+                  height: 28,
+                  border: "1px solid rgba(148, 163, 184, 0.42)",
+                  borderRadius: 9,
+                  background:
+                    level === "high"
+                      ? "rgba(241, 245, 249, 0.8)"
+                      : "rgba(255,255,255,0.82)",
+                  color: level === "high" ? "#94a3b8" : "#334155",
+                  cursor: level === "high" ? "not-allowed" : "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                <option value="both">both</option>
+                <option value="positive">positive</option>
+                <option value="negative">negative</option>
+              </select>
+            </div>
           );
         })}
 
@@ -288,7 +338,7 @@ function ConfidenceEditorWidget({
             display: "flex",
             justifyContent: "flex-end",
             gap: 6,
-            marginTop: 7,
+            marginTop: 8,
           }}
         >
           <button
@@ -336,6 +386,7 @@ type UncertaintyArrowSpec = {
   pathKey: string;
   axis: ConfidenceAxis;
   level: ConfidenceLevel;
+  direction: "positive" | "negative";
   start: [number, number, number];
   end: [number, number, number];
   color: string;
@@ -355,41 +406,57 @@ function getArrowLength(
   return level === "low" ? base * 1.45 : base;
 }
 
-function getArrowStart(
-  summary: AxialStretchObjectSummary,
-  axis: ConfidenceAxis,
-): [number, number, number] {
-  const [cx, cy, cz] = summary.aabbCenterWorld;
-  const [sx, sy, sz] = summary.aabbSizeWorld;
-
-  const pad = Math.max(summary.crossSectionSize * 0.6, 0.02);
-
+function getArrowAxisVector(axis: ConfidenceAxis) {
   if (axis === "x") {
-    return [cx + sx / 2 + pad, cy + pad * 0.5, cz];
+    return new THREE.Vector3(1, 0, 0);
   }
 
   if (axis === "y") {
-    return [cx + pad * 0.8, cy + sy / 2 + pad, cz];
+    return new THREE.Vector3(0, 1, 0);
   }
 
-  return [cx, cy - pad * 0.5, cz + sz / 2 + pad];
+  return new THREE.Vector3(0, 0, 1);
+}
+
+function getArrowStart(
+  summary: AxialStretchObjectSummary,
+  axis: ConfidenceAxis,
+  direction: "positive" | "negative",
+): [number, number, number] {
+  const center = new THREE.Vector3(...summary.aabbCenterWorld);
+  const size = new THREE.Vector3(...summary.aabbSizeWorld);
+  const axisVector = getArrowAxisVector(axis);
+  const sign = direction === "positive" ? 1 : -1;
+
+  const halfLengthAlongAxis =
+    axis === "x" ? size.x / 2 : axis === "y" ? size.y / 2 : size.z / 2;
+
+  const pad = Math.max(summary.crossSectionSize * 0.8, 0.025);
+
+  const start = center
+    .clone()
+    .add(axisVector.clone().multiplyScalar(sign * (halfLengthAlongAxis + pad)));
+
+  return [start.x, start.y, start.z];
 }
 
 function getArrowEnd(
   start: [number, number, number],
   axis: ConfidenceAxis,
+  direction: "positive" | "negative",
   length: number,
 ): [number, number, number] {
-  if (axis === "x") {
-    return [start[0] + length, start[1], start[2]];
-  }
+  const startVector = new THREE.Vector3(...start);
+  const axisVector = getArrowAxisVector(axis);
+  const sign = direction === "positive" ? 1 : -1;
 
-  if (axis === "y") {
-    return [start[0], start[1] + length, start[2]];
-  }
+  const end = startVector.add(axisVector.multiplyScalar(sign * length));
 
-  return [start[0], start[1], start[2] + length];
+  return [end.x, end.y, end.z];
 }
+
+
+
 
 function UncertaintyArrow({
   start,
@@ -496,8 +563,6 @@ function UncertaintyLegendOverlay() {
             color: "#334155",
           }}
         >
-
-
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div
               style={{
@@ -629,15 +694,15 @@ function Model({
       return base;
     }
 
-    return [
-      ...base.filter((item) => item.pathKey !== confidenceEditor.pathKey),
-      {
-        pathKey: confidenceEditor.pathKey,
-        confidence: confidenceEditor.confidence,
-      },
-    ];
+  return [
+  ...base.filter((item) => item.pathKey !== confidenceEditor.pathKey),
+  {
+    pathKey: confidenceEditor.pathKey,
+    confidence: confidenceEditor.confidence,
+    directions: confidenceEditor.directions,
+  },
+];
   }, [confidenceAnnotations, confidenceEditor]);
-
 
   useEffect(() => {
     if (!heightPreviewSession) {
@@ -688,7 +753,7 @@ function Model({
     applyPathHighlight(scene, activeHighlights);
   }, [scene, highlightedPathKey, selectedPathKeys]);
 
-   useEffect(() => {
+  useEffect(() => {
     applyFuzzyConfidence(scene, visualConfidenceAnnotations);
     invalidate();
 
@@ -861,7 +926,7 @@ function Model({
       );
   }, [objectSummaries, rolePreviewPlan]);
 
-    const confidenceEditorSummary = useMemo(() => {
+  const confidenceEditorSummary = useMemo(() => {
     if (!confidenceEditor) {
       return null;
     }
@@ -873,45 +938,55 @@ function Model({
     );
   }, [confidenceEditor, objectSummaries]);
 
-    const uncertaintyArrows = useMemo(() => {
-    const summaryByPathKey = new Map(
-      objectSummaries.map((summary) => [summary.pathKey, summary]),
-    );
+const uncertaintyArrows = useMemo(() => {
+  const summaryByPathKey = new Map(
+    objectSummaries.map((summary) => [summary.pathKey, summary]),
+  );
 
-    const arrows: UncertaintyArrowSpec[] = [];
+  const arrows: UncertaintyArrowSpec[] = [];
 
-    for (const annotation of visualConfidenceAnnotations) {
-      const summary = summaryByPathKey.get(annotation.pathKey);
+  for (const annotation of visualConfidenceAnnotations) {
+    const summary = summaryByPathKey.get(annotation.pathKey);
 
-      if (!summary) {
-        continue;
+    if (!summary) {
+      continue;
+    }
+
+    (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+      const level = annotation.confidence[axis];
+
+      if (level === "high") {
+        return;
       }
 
-      (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
-        const level = annotation.confidence[axis];
+      const axisDirection = annotation.directions?.[axis] ?? "both";
 
-        if (level === "high") {
-          return;
-        }
+      const arrowDirections: ("positive" | "negative")[] =
+        axisDirection === "both"
+          ? ["positive", "negative"]
+          : [axisDirection];
 
-        const start = getArrowStart(summary, axis);
+      for (const direction of arrowDirections) {
+        const start = getArrowStart(summary, axis, direction);
         const length = getArrowLength(level, summary);
-        const end = getArrowEnd(start, axis, length);
+        const end = getArrowEnd(start, axis, direction, length);
 
         arrows.push({
           pathKey: annotation.pathKey,
           axis,
           level,
+          direction,
           start,
           end,
           color: getArrowColor(level),
-          label: axis.toUpperCase(),
+          label: `${axis.toUpperCase()}${direction === "positive" ? "+" : "−"}`,
         });
-      });
-    }
+      }
+    });
+  }
 
-    return arrows;
-  }, [objectSummaries, visualConfidenceAnnotations]);
+  return arrows;
+}, [objectSummaries, visualConfidenceAnnotations]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -1000,16 +1075,16 @@ function Model({
         />
       ))}
 
-            {confidenceEditor && confidenceEditorSummary ? (
+      {confidenceEditor && confidenceEditorSummary ? (
         <ConfidenceEditorWidget
           summary={confidenceEditorSummary}
           editor={confidenceEditor}
         />
       ) : null}
 
-            {uncertaintyArrows.map((arrow) => (
-        <UncertaintyArrow
-          key={`${arrow.pathKey}:${arrow.axis}`}
+{uncertaintyArrows.map((arrow) => (
+  <UncertaintyArrow
+    key={`${arrow.pathKey}:${arrow.axis}:${arrow.direction}`}
           start={arrow.start}
           end={arrow.end}
           color={arrow.color}
@@ -1116,7 +1191,7 @@ export default function FuzzyCADGeometryViewer({
                   selectedPathKeys={selectedPathKeys}
                   activeTool={activeTool}
                   confidenceAnnotations={confidenceAnnotations}
-                    confidenceEditor={confidenceEditor}
+                  confidenceEditor={confidenceEditor}
                   activePathKeys={activePathKeys}
                   manipulationValue={manipulationValue}
                   rolePreviewPlan={rolePreviewPlan}
