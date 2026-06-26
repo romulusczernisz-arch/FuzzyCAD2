@@ -280,7 +280,10 @@ function ConfidenceEditorWidget({
               <button
                 type="button"
                 onClick={() => {
-                  editor.onConfidenceChange(axis, getNextConfidenceLevel(level));
+                  editor.onConfidenceChange(
+                    axis,
+                    getNextConfidenceLevel(level),
+                  );
                 }}
                 style={{
                   height: 28,
@@ -454,9 +457,6 @@ function getArrowEnd(
 
   return [end.x, end.y, end.z];
 }
-
-
-
 
 function UncertaintyArrow({
   start,
@@ -694,14 +694,14 @@ function Model({
       return base;
     }
 
-  return [
-  ...base.filter((item) => item.pathKey !== confidenceEditor.pathKey),
-  {
-    pathKey: confidenceEditor.pathKey,
-    confidence: confidenceEditor.confidence,
-    directions: confidenceEditor.directions,
-  },
-];
+    return [
+      ...base.filter((item) => item.pathKey !== confidenceEditor.pathKey),
+      {
+        pathKey: confidenceEditor.pathKey,
+        confidence: confidenceEditor.confidence,
+        directions: confidenceEditor.directions,
+      },
+    ];
   }, [confidenceAnnotations, confidenceEditor]);
 
   useEffect(() => {
@@ -938,55 +938,53 @@ function Model({
     );
   }, [confidenceEditor, objectSummaries]);
 
-const uncertaintyArrows = useMemo(() => {
-  const summaryByPathKey = new Map(
-    objectSummaries.map((summary) => [summary.pathKey, summary]),
-  );
+  const uncertaintyArrows = useMemo(() => {
+    const summaryByPathKey = new Map(
+      objectSummaries.map((summary) => [summary.pathKey, summary]),
+    );
 
-  const arrows: UncertaintyArrowSpec[] = [];
+    const arrows: UncertaintyArrowSpec[] = [];
 
-  for (const annotation of visualConfidenceAnnotations) {
-    const summary = summaryByPathKey.get(annotation.pathKey);
+    for (const annotation of visualConfidenceAnnotations) {
+      const summary = summaryByPathKey.get(annotation.pathKey);
 
-    if (!summary) {
-      continue;
+      if (!summary) {
+        continue;
+      }
+
+      (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+        const level = annotation.confidence[axis];
+
+        if (level === "high") {
+          return;
+        }
+
+        const axisDirection = annotation.directions?.[axis] ?? "both";
+
+        const arrowDirections: ("positive" | "negative")[] =
+          axisDirection === "both" ? ["positive", "negative"] : [axisDirection];
+
+        for (const direction of arrowDirections) {
+          const start = getArrowStart(summary, axis, direction);
+          const length = getArrowLength(level, summary);
+          const end = getArrowEnd(start, axis, direction, length);
+
+          arrows.push({
+            pathKey: annotation.pathKey,
+            axis,
+            level,
+            direction,
+            start,
+            end,
+            color: getArrowColor(level),
+            label: `${axis.toUpperCase()}${direction === "positive" ? "+" : "−"}`,
+          });
+        }
+      });
     }
 
-    (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
-      const level = annotation.confidence[axis];
-
-      if (level === "high") {
-        return;
-      }
-
-      const axisDirection = annotation.directions?.[axis] ?? "both";
-
-      const arrowDirections: ("positive" | "negative")[] =
-        axisDirection === "both"
-          ? ["positive", "negative"]
-          : [axisDirection];
-
-      for (const direction of arrowDirections) {
-        const start = getArrowStart(summary, axis, direction);
-        const length = getArrowLength(level, summary);
-        const end = getArrowEnd(start, axis, direction, length);
-
-        arrows.push({
-          pathKey: annotation.pathKey,
-          axis,
-          level,
-          direction,
-          start,
-          end,
-          color: getArrowColor(level),
-          label: `${axis.toUpperCase()}${direction === "positive" ? "+" : "−"}`,
-        });
-      }
-    });
-  }
-
-  return arrows;
-}, [objectSummaries, visualConfidenceAnnotations]);
+    return arrows;
+  }, [objectSummaries, visualConfidenceAnnotations]);
 
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
@@ -1082,9 +1080,9 @@ const uncertaintyArrows = useMemo(() => {
         />
       ) : null}
 
-{uncertaintyArrows.map((arrow) => (
-  <UncertaintyArrow
-    key={`${arrow.pathKey}:${arrow.axis}:${arrow.direction}`}
+      {uncertaintyArrows.map((arrow) => (
+        <UncertaintyArrow
+          key={`${arrow.pathKey}:${arrow.axis}:${arrow.direction}`}
           start={arrow.start}
           end={arrow.end}
           color={arrow.color}
