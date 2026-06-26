@@ -350,12 +350,10 @@ export default function FuzzyCADHome() {
     [uncertaintyDocument, currentUncertaintySource],
   );
 
-
-
-const confidenceAnnotations = useMemo(
-  () => toFuzzyConfidenceAnnotations(uncertaintyDocumentWithCurrentSource),
-  [uncertaintyDocumentWithCurrentSource],
-);
+  const confidenceAnnotations = useMemo(
+    () => toFuzzyConfidenceAnnotations(uncertaintyDocumentWithCurrentSource),
+    [uncertaintyDocumentWithCurrentSource],
+  );
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
@@ -737,36 +735,36 @@ const confidenceAnnotations = useMemo(
     setActiveTool("select");
   }
 
-function selectUncertaintyCard(annotationId: string | null) {
-  setSelectedUncertaintyId(annotationId);
+  function selectUncertaintyCard(annotationId: string | null) {
+    setSelectedUncertaintyId(annotationId);
 
-  if (!annotationId) {
-    setHeightConfidenceOpen(false);
-    setHeightCandidatePathKeys([]);
-    setActiveTool("select");
-    return;
+    if (!annotationId) {
+      setHeightConfidenceOpen(false);
+      setHeightCandidatePathKeys([]);
+      setActiveTool("select");
+      return;
+    }
+
+    const annotation =
+      uncertaintyDocumentWithCurrentSource.annotations.find(
+        (item) => item.id === annotationId,
+      ) ?? null;
+
+    if (!annotation) {
+      return;
+    }
+
+    if (annotation.type === "size") {
+      setActiveTool("height");
+      setPendingHeightRolePreview(null);
+      setConfirmedHeightPlan(null);
+      setManipulationValue(0);
+      setHeightPreviewOpen(false);
+      setLassoPathKeys([]);
+
+      openHeightConfidenceEditor(annotation.target.pathKeys);
+    }
   }
-
-  const annotation =
-    uncertaintyDocumentWithCurrentSource.annotations.find(
-      (item) => item.id === annotationId,
-    ) ?? null;
-
-  if (!annotation) {
-    return;
-  }
-
-  if (annotation.type === "size") {
-    setActiveTool("height");
-    setPendingHeightRolePreview(null);
-    setConfirmedHeightPlan(null);
-    setManipulationValue(0);
-    setHeightPreviewOpen(false);
-    setLassoPathKeys([]);
-
-    openHeightConfidenceEditor(annotation.target.pathKeys);
-  }
-}
 
   function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
     setActiveTool("height");
@@ -829,16 +827,16 @@ function selectUncertaintyCard(annotationId: string | null) {
     }));
   }
 
-function handleViewerSelectedPathKey(pathKey: string | null) {
-  setHighlightedPathKey(pathKey);
+  function handleViewerSelectedPathKey(pathKey: string | null) {
+    setHighlightedPathKey(pathKey);
 
-  // Direct object selection should leave the current card editing state.
-  setSelectedUncertaintyId(null);
-  setHeightCandidateOpen(false);
-  setHeightCandidatePathKeys([]);
-  setHeightConfidenceOpen(false);
-  setActiveTool("select");
-}
+    // Direct object selection should leave the current card editing state.
+    setSelectedUncertaintyId(null);
+    setHeightCandidateOpen(false);
+    setHeightCandidatePathKeys([]);
+    setHeightConfidenceOpen(false);
+    setActiveTool("select");
+  }
 
   function handleAssemblyChange(assemblyId: string) {
     setSelectedAssemblyId(assemblyId);
@@ -914,15 +912,15 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
           onSelectedPathKey={handleViewerSelectedPathKey}
-onObjectLassoSelection={(pathKeys) => {
-  setLassoPathKeys(pathKeys);
-  setHighlightedPathKey(pathKeys[0] ?? null);
-  setSelectedUncertaintyId(null);
-  setHeightCandidateOpen(false);
-  setHeightCandidatePathKeys([]);
-  setHeightConfidenceOpen(false);
-  setActiveTool("select");
-}}
+          onObjectLassoSelection={(pathKeys) => {
+            setLassoPathKeys(pathKeys);
+            setHighlightedPathKey(pathKeys[0] ?? null);
+            setSelectedUncertaintyId(null);
+            setHeightCandidateOpen(false);
+            setHeightCandidatePathKeys([]);
+            setHeightConfidenceOpen(false);
+            setActiveTool("select");
+          }}
         />
 
         <OperationToolbar
