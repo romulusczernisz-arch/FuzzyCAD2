@@ -35,7 +35,7 @@ function LassoIcon() {
   );
 }
 
-function HeightIcon() {
+function SizeIcon() {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true">
       <path d="M16 5V27" />
@@ -96,16 +96,12 @@ const tools: ToolItem[] = [
     hidden: true,
   },
   {
+    // Internally this is still "height" for now.
+    // UI-wise, it is now the size uncertainty annotation tool.
     id: "height",
-    label: "Height",
-    title: "Mark height uncertainty",
-    icon: <HeightIcon />,
-  },
-  {
-    id: "extend",
-    label: "Extend",
-    title: "Extend linkage length",
-    icon: <ExtendIcon />,
+    label: "Size",
+    title: "Mark size uncertainty",
+    icon: <SizeIcon />,
   },
   {
     id: "angle",
@@ -113,12 +109,7 @@ const tools: ToolItem[] = [
     title: "Adjust support arm angle",
     icon: <AngleIcon />,
   },
-  {
-    id: "move",
-    label: "Move",
-    title: "Move attachment on surface",
-    icon: <MoveIcon />,
-  },
+ 
 ];
 
 export default function OperationToolbar({

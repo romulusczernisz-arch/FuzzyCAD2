@@ -28,6 +28,7 @@ type OperationPreviewPanelProps = {
   suggestedObjects?: string[];
   roleCounts?: RoleCounts;
   confirmLabel?: string;
+  secondaryConfirmLabel?: string;
   cancelLabel?: string;
   onAxisChange?: (axis: OperationAxis) => void;
   onDirectionChange?: (direction: OperationDirection) => void;
@@ -36,6 +37,7 @@ type OperationPreviewPanelProps = {
     confidence: ConfidenceLevel,
   ) => void;
   onConfirm: () => void;
+  onSecondaryConfirm?: () => void;
   onCancel: () => void;
 };
 
@@ -73,11 +75,13 @@ export default function OperationPreviewPanel({
   suggestedObjects,
   roleCounts,
   confirmLabel = "Confirm",
+  secondaryConfirmLabel,
   cancelLabel = "Cancel",
   onAxisChange,
   onDirectionChange,
   onConfidenceChange,
   onConfirm,
+  onSecondaryConfirm,
   onCancel,
 }: OperationPreviewPanelProps) {
   return (
@@ -211,6 +215,17 @@ export default function OperationPreviewPanel({
         <button type="button" className={styles.primaryButton} onClick={onConfirm}>
           {confirmLabel}
         </button>
+
+        {secondaryConfirmLabel && onSecondaryConfirm ? (
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={onSecondaryConfirm}
+          >
+            {secondaryConfirmLabel}
+          </button>
+        ) : null}
+
         <button type="button" className={styles.secondaryButton} onClick={onCancel}>
           {cancelLabel}
         </button>

@@ -346,7 +346,9 @@ export default function FuzzyCADHome() {
   const heightReferencePathKey =
     heightCandidatePathKeys[0] ?? highlightedPathKey ?? null;
 
-      const heightEditorCanRemove = useMemo(() => {
+    
+
+     const heightEditorCanRemove = useMemo(() => {
     const targetPathKeys =
       heightCandidatePathKeys.length > 0
         ? heightCandidatePathKeys
@@ -542,29 +544,37 @@ export default function FuzzyCADHome() {
     }
   }
 
-  function startHeightUncertainty() {
-    setActiveTool("height");
-    setPendingHeightRolePreview(null);
-    setConfirmedHeightPlan(null);
-    setManipulationValue(0);
-    setHeightPreviewOpen(false);
-    setHeightConfidenceOpen(false);
-    setLassoPathKeys([]);
+  
 
-    if (!selectedObjectSummary) {
-      setHeightCandidateOpen(true);
-      setHeightCandidatePathKeys([]);
-      return;
-    }
+function startHeightUncertainty() {
+  setActiveTool("height");
+  setPendingHeightRolePreview(null);
+  setConfirmedHeightPlan(null);
+  setManipulationValue(0);
+  setHeightPreviewOpen(false);
+  setHeightConfidenceOpen(false);
+  setLassoPathKeys([]);
 
-    const candidates = buildHeightCandidatePathKeys(
-      selectedObjectSummary,
-      objectSummaries,
-    );
-
-    setHeightCandidatePathKeys(candidates);
+  if (!selectedObjectSummary) {
     setHeightCandidateOpen(true);
+    setHeightCandidatePathKeys([]);
+    return;
   }
+
+  const candidates = buildHeightCandidatePathKeys(
+    selectedObjectSummary,
+    objectSummaries,
+  );
+
+  setHeightCandidatePathKeys(candidates);
+
+  if (candidates.length <= 1) {
+    openHeightConfidenceEditor(candidates);
+    return;
+  }
+
+  setHeightCandidateOpen(true);
+}
 
     function getExistingConfidenceAnnotation(pathKey: string | null) {
     if (!pathKey) {
@@ -585,31 +595,48 @@ export default function FuzzyCADHome() {
         : [];
   }
 
-  function confirmHeightCandidateGroup() {
-    if (heightCandidatePathKeys.length === 0) {
-      setHeightCandidateOpen(false);
-      setHeightConfidenceOpen(false);
-      return;
-    }
+  function openHeightConfidenceEditor(targetPathKeys: string[]) {
+  const referencePathKey = targetPathKeys[0] ?? null;
+  const existingAnnotation = getExistingConfidenceAnnotation(referencePathKey);
 
-    const referencePathKey = heightCandidatePathKeys[0] ?? highlightedPathKey;
-    const existingAnnotation = getExistingConfidenceAnnotation(referencePathKey);
+  setHeightCandidateOpen(false);
+  setHeightCandidatePathKeys(targetPathKeys);
+  setHeightConfidenceOpen(true);
 
-    setHeightCandidateOpen(false);
-    setHeightConfidenceOpen(true);
-
-    if (existingAnnotation) {
-      setConfidenceDraft({ ...existingAnnotation.confidence });
-      setConfidenceDirectionDraft({
-        ...DEFAULT_HEIGHT_DIRECTIONS,
-        ...(existingAnnotation.directions ?? {}),
-      });
-      return;
-    }
-
-    setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
-    setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
+  if (existingAnnotation) {
+    setConfidenceDraft({ ...existingAnnotation.confidence });
+    setConfidenceDirectionDraft({
+      ...DEFAULT_HEIGHT_DIRECTIONS,
+      ...(existingAnnotation.directions ?? {}),
+    });
+    return;
   }
+
+  setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+  setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
+}
+
+function confirmHeightCandidateGroup() {
+  if (heightCandidatePathKeys.length === 0) {
+    setHeightCandidateOpen(false);
+    setHeightConfidenceOpen(false);
+    return;
+  }
+
+  openHeightConfidenceEditor(heightCandidatePathKeys);
+}
+
+function confirmSelectedOnlyHeightCandidate() {
+  const selectedOnlyPathKey = heightCandidatePathKeys[0] ?? highlightedPathKey;
+
+  if (!selectedOnlyPathKey) {
+    setHeightCandidateOpen(false);
+    setHeightConfidenceOpen(false);
+    return;
+  }
+
+  openHeightConfidenceEditor([selectedOnlyPathKey]);
+}
 
   function cancelHeightCandidateGroup() {
     setHeightCandidateOpen(false);
@@ -780,36 +807,49 @@ export default function FuzzyCADHome() {
         />
 
         {heightCandidateOpen ? (
-          <OperationPreviewPanel
-            operation="height"
-            title={
-              heightCandidatePathKeys.length > 0
-                ? "Related objects found"
-                : "Select one object first"
-            }
-            description={
-              heightCandidatePathKeys.length > 1
-                ? `This object seems related to ${
-                    heightCandidatePathKeys.length - 1 === 1
-                      ? "one other object"
-                      : `${heightCandidatePathKeys.length - 1} other objects`
-                  }. Do you also want to include ${
-                    heightCandidatePathKeys.length - 1 === 1 ? "it" : "them"
-                  } in this uncertainty annotation?`
-                : heightCandidatePathKeys.length === 1
-                  ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
-                  : "Click one object in the viewer, then click Height again."
-            }
-            confirmLabel={
-              heightCandidatePathKeys.length > 1
-                ? "Yes, include them"
-                : "Continue"
-            }
-            cancelLabel="Not now"
-            onConfirm={confirmHeightCandidateGroup}
-            onCancel={cancelHeightCandidateGroup}
-          />
-        ) : null}
+  <OperationPreviewPanel
+    operation="height"
+    title={
+      heightCandidatePathKeys.length > 0
+        ? "Related objects found"
+        : "Select one object first"
+    }
+    description={
+      heightCandidatePathKeys.length > 1
+        ? `FuzzyCAD found ${
+            heightCandidatePathKeys.length - 1 === 1
+              ? "one related object"
+              : `${heightCandidatePathKeys.length - 1} related objects`
+          }. You can annotate only the selected object, or apply the same size uncertainty annotation to the related objects as a group.`
+        : heightCandidatePathKeys.length === 1
+          ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
+          : "Click one object in the viewer, then click Size."
+    }
+    suggestedObjects={
+      heightCandidatePathKeys.length > 1
+        ? heightCandidateSummaries.map(getObjectDisplayName)
+        : undefined
+    }
+    confirmLabel={
+      heightCandidatePathKeys.length > 1 ? "Include related" : "Continue"
+    }
+    secondaryConfirmLabel={
+      heightCandidatePathKeys.length > 1 ? "Selected only" : undefined
+    }
+    cancelLabel="Cancel"
+    onConfirm={
+      heightCandidatePathKeys.length > 1
+        ? confirmHeightCandidateGroup
+        : confirmSelectedOnlyHeightCandidate
+    }
+    onSecondaryConfirm={
+      heightCandidatePathKeys.length > 1
+        ? confirmSelectedOnlyHeightCandidate
+        : undefined
+    }
+    onCancel={cancelHeightCandidateGroup}
+  />
+) : null}
 
         {heightPreviewOpen && pendingHeightRolePreview ? (
           <OperationPreviewPanel
