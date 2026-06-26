@@ -40,8 +40,14 @@ import {
   type ConfidenceAxis,
   type ConfidenceDirection,
   type ConfidenceLevel,
-  type FuzzyConfidenceAnnotation,
 } from "./lib/uncertainty/types";
+import {
+  createEmptyUncertaintyDocument,
+  findSizeAnnotationForPathKey,
+  removeSizeAnnotationsForPathKeys,
+  toFuzzyConfidenceAnnotations,
+  upsertSizeAnnotation,
+} from "./lib/uncertainty/document";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -300,15 +306,45 @@ export default function FuzzyCADHome() {
   const [confidenceDirectionDraft, setConfidenceDirectionDraft] =
     useState<AxisDirectionMap>(DEFAULT_HEIGHT_DIRECTIONS);
 
-  const [confidenceAnnotations, setConfidenceAnnotations] = useState<
-    FuzzyConfidenceAnnotation[]
-  >([]);
+  const [uncertaintyDocument, setUncertaintyDocument] = useState(() =>
+    createEmptyUncertaintyDocument({
+      documentId: params.get("documentId"),
+      workspaceId: params.get("workspaceId"),
+      elementId: params.get("elementId"),
+      assemblyElementId: selectedAssemblyId || null,
+      server: params.get("server") || "https://cad.onshape.com",
+    }),
+  );
+
+  const confidenceAnnotations = useMemo(
+    () => toFuzzyConfidenceAnnotations(uncertaintyDocument),
+    [uncertaintyDocument],
+  );
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
   const elementId = params.get("elementId");
   const server = params.get("server") || "https://cad.onshape.com";
   const oauthStatus = params.get("oauth");
+
+  const currentUncertaintySource = useMemo(
+  () => ({
+    documentId,
+    workspaceId,
+    elementId,
+    assemblyElementId: selectedAssemblyId || null,
+    server,
+  }),
+  [documentId, workspaceId, elementId, selectedAssemblyId, server],
+);
+
+const uncertaintyDocumentWithCurrentSource = useMemo(
+  () => ({
+    ...uncertaintyDocument,
+    source: currentUncertaintySource,
+  }),
+  [uncertaintyDocument, currentUncertaintySource],
+); 
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
@@ -409,7 +445,9 @@ export default function FuzzyCADHome() {
     setHeightConfidenceOpen(false);
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
     setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
-    setConfidenceAnnotations([]);
+setUncertaintyDocument(
+  createEmptyUncertaintyDocument(currentUncertaintySource),
+);
     setGeometryLoadResult(null);
     resetPlacementTree();
 
@@ -576,15 +614,8 @@ function startHeightUncertainty() {
   setHeightCandidateOpen(true);
 }
 
-    function getExistingConfidenceAnnotation(pathKey: string | null) {
-    if (!pathKey) {
-      return null;
-    }
-
-    return (
-      confidenceAnnotations.find((annotation) => annotation.pathKey === pathKey) ??
-      null
-    );
+  function getExistingConfidenceAnnotation(pathKey: string | null) {
+    return findSizeAnnotationForPathKey(uncertaintyDocument, pathKey);
   }
 
   function getCurrentHeightTargetPathKeys() {
@@ -653,20 +684,25 @@ function confirmSelectedOnlyHeightCandidate() {
       return;
     }
 
-    setConfidenceAnnotations((previous) => [
-      ...previous.filter((item) => !targetPathKeys.includes(item.pathKey)),
-      ...targetPathKeys.map((pathKey) => ({
-        pathKey,
-        confidence: { ...confidenceDraft },
-        directions: { ...confidenceDirectionDraft },
-      })),
-    ]);
+setUncertaintyDocument((previous) =>
+  upsertSizeAnnotation(
+    {
+      ...previous,
+      source: currentUncertaintySource,
+    },
+    {
+      pathKeys: targetPathKeys,
+      confidence: confidenceDraft,
+      directions: confidenceDirectionDraft,
+    },
+  ),
+);
 
     setHeightConfidenceOpen(false);
     setActiveTool("select");
   }
 
-    function removeHeightConfidence() {
+  function removeHeightConfidence() {
     const targetPathKeys = getCurrentHeightTargetPathKeys();
 
     if (targetPathKeys.length === 0) {
@@ -674,9 +710,15 @@ function confirmSelectedOnlyHeightCandidate() {
       return;
     }
 
-    setConfidenceAnnotations((previous) =>
-      previous.filter((item) => !targetPathKeys.includes(item.pathKey)),
-    );
+setUncertaintyDocument((previous) =>
+  removeSizeAnnotationsForPathKeys(
+    {
+      ...previous,
+      source: currentUncertaintySource,
+    },
+    targetPathKeys,
+  ),
+);
 
     setHeightConfidenceOpen(false);
     setActiveTool("select");
@@ -907,8 +949,12 @@ function confirmSelectedOnlyHeightCandidate() {
                 ).length,
               },
             },
+{
+  title: "Uncertainty Document",
+  value: uncertaintyDocumentWithCurrentSource,
+},
             {
-              title: "Height Confidence Annotations",
+              title: "Derived Size Visual Annotations",
               value: confidenceAnnotations,
             },
             {
