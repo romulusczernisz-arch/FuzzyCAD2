@@ -96,10 +96,17 @@ const tools: ToolItem[] = [
     hidden: true,
   },
   {
-    id: "extend",
+    id: "height",
     label: "Size",
+    title: "Add size/height uncertainty mark",
+    icon: <SizeIcon />,
+  },
+  {
+    id: "extend",
+    label: "Extend",
     title: "Stretch assembly height",
     icon: <SizeIcon />,
+    hidden: true,
   },
   {
     id: "angle",
