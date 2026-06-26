@@ -610,14 +610,14 @@ export default function FuzzyCADHome() {
   }
 
   function updateConfidenceDirectionDraft(
-  axis: ConfidenceAxis,
-  direction: ConfidenceDirection,
-) {
-  setConfidenceDirectionDraft((previous) => ({
-    ...previous,
-    [axis]: direction,
-  }));
-}
+    axis: ConfidenceAxis,
+    direction: ConfidenceDirection,
+  ) {
+    setConfidenceDirectionDraft((previous) => ({
+      ...previous,
+      [axis]: direction,
+    }));
+  }
 
   function handleAssemblyChange(assemblyId: string) {
     setSelectedAssemblyId(assemblyId);
@@ -675,7 +675,9 @@ export default function FuzzyCADHome() {
               ? {
                   pathKey: heightReferencePathKey,
                   confidence: confidenceDraft,
+                  directions: confidenceDirectionDraft,
                   onConfidenceChange: updateConfidenceDraft,
+                  onDirectionChange: updateConfidenceDirectionDraft,
                   onApply: applyHeightConfidence,
                   onCancel: () => {
                     setHeightConfidenceOpen(false);
