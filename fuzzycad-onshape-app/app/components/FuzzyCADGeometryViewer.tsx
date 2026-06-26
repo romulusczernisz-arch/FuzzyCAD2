@@ -332,6 +332,221 @@ function ConfidenceEditorWidget({
   );
 }
 
+type UncertaintyArrowSpec = {
+  pathKey: string;
+  axis: ConfidenceAxis;
+  level: ConfidenceLevel;
+  start: [number, number, number];
+  end: [number, number, number];
+  color: string;
+  label: string;
+};
+
+function getArrowColor(level: ConfidenceLevel) {
+  return level === "low" ? "#1455ff" : "#9edcff";
+}
+
+function getArrowLength(
+  level: ConfidenceLevel,
+  summary: AxialStretchObjectSummary,
+) {
+  const base = Math.max(summary.crossSectionSize * 2.2, 0.06);
+
+  return level === "low" ? base * 1.45 : base;
+}
+
+function getArrowStart(
+  summary: AxialStretchObjectSummary,
+  axis: ConfidenceAxis,
+): [number, number, number] {
+  const [cx, cy, cz] = summary.aabbCenterWorld;
+  const [sx, sy, sz] = summary.aabbSizeWorld;
+
+  const pad = Math.max(summary.crossSectionSize * 0.6, 0.02);
+
+  if (axis === "x") {
+    return [cx + sx / 2 + pad, cy + pad * 0.5, cz];
+  }
+
+  if (axis === "y") {
+    return [cx + pad * 0.8, cy + sy / 2 + pad, cz];
+  }
+
+  return [cx, cy - pad * 0.5, cz + sz / 2 + pad];
+}
+
+function getArrowEnd(
+  start: [number, number, number],
+  axis: ConfidenceAxis,
+  length: number,
+): [number, number, number] {
+  if (axis === "x") {
+    return [start[0] + length, start[1], start[2]];
+  }
+
+  if (axis === "y") {
+    return [start[0], start[1] + length, start[2]];
+  }
+
+  return [start[0], start[1], start[2] + length];
+}
+
+function UncertaintyArrow({
+  start,
+  end,
+  color,
+  label,
+}: {
+  start: [number, number, number];
+  end: [number, number, number];
+  color: string;
+  label: string;
+}) {
+  const origin = useMemo(
+    () => new THREE.Vector3(start[0], start[1], start[2]),
+    [start],
+  );
+
+  const direction = useMemo(() => {
+    const dir = new THREE.Vector3(
+      end[0] - start[0],
+      end[1] - start[1],
+      end[2] - start[2],
+    );
+
+    return dir.normalize();
+  }, [start, end]);
+
+  const length = useMemo(() => {
+    return new THREE.Vector3(
+      end[0] - start[0],
+      end[1] - start[1],
+      end[2] - start[2],
+    ).length();
+  }, [start, end]);
+
+  const headLength = Math.min(length * 0.32, 0.08);
+  const headWidth = Math.min(headLength * 0.55, 0.04);
+
+  return (
+    <>
+      <arrowHelper
+        args={[direction, origin, length, color, headLength, headWidth]}
+      />
+      <Html position={end} center distanceFactor={0.8} occlude={false}>
+        <div
+          style={{
+            minWidth: 18,
+            height: 18,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.92)",
+            border: `1px solid ${color}`,
+            color,
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: "16px",
+            textAlign: "center",
+            boxShadow: "0 6px 18px rgba(15,23,42,0.18)",
+            userSelect: "none",
+            pointerEvents: "none",
+          }}
+        >
+          {label}
+        </div>
+      </Html>
+    </>
+  );
+}
+
+function UncertaintyLegendOverlay() {
+  return (
+    <Html fullscreen style={{ pointerEvents: "none" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 14,
+          right: 14,
+          width: 230,
+          padding: "12px 12px 10px",
+          borderRadius: 14,
+          background: "rgba(255,255,255,0.9)",
+          border: "1px solid rgba(148,163,184,0.35)",
+          boxShadow: "0 12px 28px rgba(15,23,42,0.18)",
+          backdropFilter: "blur(10px)",
+          fontFamily: "Arial, sans-serif",
+          color: "#172033",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 800,
+            marginBottom: 8,
+            color: "#1e293b",
+          }}
+        >
+          Confidence legend
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            rowGap: 8,
+            fontSize: 11,
+            color: "#334155",
+          }}
+        >
+
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              style={{
+                width: 18,
+                height: 10,
+                borderRadius: 999,
+                background: "rgba(158, 220, 255, 0.65)",
+                border: "1px solid rgba(158, 220, 255, 0.95)",
+              }}
+            />
+            <span>Medium confidence: narrow light-blue shell</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              style={{
+                width: 28,
+                height: 10,
+                borderRadius: 999,
+                background: "rgba(20, 85, 255, 0.72)",
+                border: "1px solid rgba(20, 85, 255, 0.98)",
+              }}
+            />
+            <span>Low confidence: wider dark-blue shell</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              style={{
+                width: 0,
+                height: 0,
+                borderTop: "5px solid transparent",
+                borderBottom: "5px solid transparent",
+                borderLeft: "12px solid #1455ff",
+                marginLeft: 4,
+              }}
+            />
+            <span>Arrow: uncertainty direction</span>
+          </div>
+
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+            No shell = high confidence
+          </div>
+        </div>
+      </div>
+    </Html>
+  );
+}
+
 function Model({
   url,
   placements,
@@ -407,6 +622,23 @@ function Model({
     );
   }, [scene, objectSummaries, confirmedHeightPlan]);
 
+  const visualConfidenceAnnotations = useMemo(() => {
+    const base = confidenceAnnotations ?? [];
+
+    if (!confidenceEditor) {
+      return base;
+    }
+
+    return [
+      ...base.filter((item) => item.pathKey !== confidenceEditor.pathKey),
+      {
+        pathKey: confidenceEditor.pathKey,
+        confidence: confidenceEditor.confidence,
+      },
+    ];
+  }, [confidenceAnnotations, confidenceEditor]);
+
+
   useEffect(() => {
     if (!heightPreviewSession) {
       return;
@@ -456,15 +688,15 @@ function Model({
     applyPathHighlight(scene, activeHighlights);
   }, [scene, highlightedPathKey, selectedPathKeys]);
 
-  useEffect(() => {
-    applyFuzzyConfidence(scene, confidenceAnnotations ?? []);
+   useEffect(() => {
+    applyFuzzyConfidence(scene, visualConfidenceAnnotations);
     invalidate();
 
     return () => {
       applyFuzzyConfidence(scene, []);
       invalidate();
     };
-  }, [scene, confidenceAnnotations, invalidate]);
+  }, [scene, visualConfidenceAnnotations, invalidate]);
 
   // --- Sizing / angle handle setup -------------------------------------
 
@@ -641,6 +873,46 @@ function Model({
     );
   }, [confidenceEditor, objectSummaries]);
 
+    const uncertaintyArrows = useMemo(() => {
+    const summaryByPathKey = new Map(
+      objectSummaries.map((summary) => [summary.pathKey, summary]),
+    );
+
+    const arrows: UncertaintyArrowSpec[] = [];
+
+    for (const annotation of visualConfidenceAnnotations) {
+      const summary = summaryByPathKey.get(annotation.pathKey);
+
+      if (!summary) {
+        continue;
+      }
+
+      (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+        const level = annotation.confidence[axis];
+
+        if (level === "high") {
+          return;
+        }
+
+        const start = getArrowStart(summary, axis);
+        const length = getArrowLength(level, summary);
+        const end = getArrowEnd(start, axis, length);
+
+        arrows.push({
+          pathKey: annotation.pathKey,
+          axis,
+          level,
+          start,
+          end,
+          color: getArrowColor(level),
+          label: axis.toUpperCase(),
+        });
+      });
+    }
+
+    return arrows;
+  }, [objectSummaries, visualConfidenceAnnotations]);
+
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
@@ -733,6 +1005,20 @@ function Model({
           summary={confidenceEditorSummary}
           editor={confidenceEditor}
         />
+      ) : null}
+
+            {uncertaintyArrows.map((arrow) => (
+        <UncertaintyArrow
+          key={`${arrow.pathKey}:${arrow.axis}`}
+          start={arrow.start}
+          end={arrow.end}
+          color={arrow.color}
+          label={arrow.label}
+        />
+      ))}
+
+      {visualConfidenceAnnotations.length > 0 || confidenceEditor ? (
+        <UncertaintyLegendOverlay />
       ) : null}
 
       {handleConfig?.kind === "axial" ||
