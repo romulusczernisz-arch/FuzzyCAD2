@@ -47,16 +47,11 @@ import {
   type ConfidenceLevel,
 } from "./lib/uncertainty/types";
 import {
-  createEmptyUncertaintyDocument,
   findSizeAnnotationForPathKey,
   makeSizeAnnotationId,
-  removeSizeAnnotationsForPathKeys,
-  removeUncertaintyAnnotationById,
-  toFuzzyConfidenceAnnotations,
-  updateUncertaintyAnnotationComment,
-  upsertSizeAnnotation,
   type SizeUncertaintyAnnotation,
 } from "./lib/uncertainty/document";
+import { useUncertaintyDocument } from "./hooks/useUncertaintyDocument";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -77,8 +72,6 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
     )
   );
 }
-
-
 
 export default function FuzzyCADHome() {
   const params = useSearchParams();
@@ -179,19 +172,9 @@ export default function FuzzyCADHome() {
   const [confidenceDirectionDraft, setConfidenceDirectionDraft] =
     useState<AxisDirectionMap>(DEFAULT_HEIGHT_DIRECTIONS);
 
-  const [uncertaintyDocument, setUncertaintyDocument] = useState(() =>
-    createEmptyUncertaintyDocument({
-      documentId: params.get("documentId"),
-      workspaceId: params.get("workspaceId"),
-      elementId: params.get("elementId"),
-      assemblyElementId: selectedAssemblyId || null,
-      server: params.get("server") || "https://cad.onshape.com",
-    }),
-  );
-
-  const [selectedUncertaintyId, setSelectedUncertaintyId] = useState<
-    string | null
-  >(null);
+const [selectedUncertaintyId, setSelectedUncertaintyId] = useState<
+  string | null
+>(null);
 
   const documentId = params.get("documentId");
   const workspaceId = params.get("workspaceId");
@@ -199,29 +182,27 @@ export default function FuzzyCADHome() {
   const server = params.get("server") || "https://cad.onshape.com";
   const oauthStatus = params.get("oauth");
 
-  const currentUncertaintySource = useMemo(
-    () => ({
-      documentId,
-      workspaceId,
-      elementId,
-      assemblyElementId: selectedAssemblyId || null,
-      server,
-    }),
-    [documentId, workspaceId, elementId, selectedAssemblyId, server],
-  );
+const currentUncertaintySource = useMemo(
+  () => ({
+    documentId,
+    workspaceId,
+    elementId,
+    assemblyElementId: selectedAssemblyId || null,
+    server,
+  }),
+  [documentId, workspaceId, elementId, selectedAssemblyId, server],
+);
 
-  const uncertaintyDocumentWithCurrentSource = useMemo(
-    () => ({
-      ...uncertaintyDocument,
-      source: currentUncertaintySource,
-    }),
-    [uncertaintyDocument, currentUncertaintySource],
-  );
-
-  const confidenceAnnotations = useMemo(
-    () => toFuzzyConfidenceAnnotations(uncertaintyDocumentWithCurrentSource),
-    [uncertaintyDocumentWithCurrentSource],
-  );
+const {
+  uncertaintyDocument,
+  uncertaintyDocumentWithCurrentSource,
+  confidenceAnnotations,
+  resetUncertaintyDocument,
+  upsertSizeMark,
+  removeSizeMarks,
+  deleteAnnotation,
+  updateAnnotationComment,
+} = useUncertaintyDocument(currentUncertaintySource);
 
   const assemblyElements = useMemo(() => {
     const data = elementsResult?.data;
@@ -321,9 +302,8 @@ export default function FuzzyCADHome() {
     setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
     setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
     setSelectedUncertaintyId(null);
-    setUncertaintyDocument(
-      createEmptyUncertaintyDocument(currentUncertaintySource),
-    );
+setSelectedUncertaintyId(null);
+resetUncertaintyDocument();
     setGeometryLoadResult(null);
     resetPlacementTree();
 
@@ -473,10 +453,10 @@ export default function FuzzyCADHome() {
       return;
     }
 
-const candidates = buildSizeCandidatePathKeys(
-  selectedObjectSummary,
-  objectSummaries,
-);
+    const candidates = buildSizeCandidatePathKeys(
+      selectedObjectSummary,
+      objectSummaries,
+    );
 
     setHeightCandidatePathKeys(candidates);
 
@@ -561,19 +541,11 @@ const candidates = buildSizeCandidatePathKeys(
       return;
     }
 
-    setUncertaintyDocument((previous) =>
-      upsertSizeAnnotation(
-        {
-          ...previous,
-          source: currentUncertaintySource,
-        },
-        {
-          pathKeys: targetPathKeys,
-          confidence: confidenceDraft,
-          directions: confidenceDirectionDraft,
-        },
-      ),
-    );
+   upsertSizeMark({
+  pathKeys: targetPathKeys,
+  confidence: confidenceDraft,
+  directions: confidenceDirectionDraft,
+});
 
     setSelectedUncertaintyId(makeSizeAnnotationId(targetPathKeys));
     setHeightConfidenceOpen(false);
@@ -588,15 +560,7 @@ const candidates = buildSizeCandidatePathKeys(
       return;
     }
 
-    setUncertaintyDocument((previous) =>
-      removeSizeAnnotationsForPathKeys(
-        {
-          ...previous,
-          source: currentUncertaintySource,
-        },
-        targetPathKeys,
-      ),
-    );
+  removeSizeMarks(targetPathKeys);
 
     setSelectedUncertaintyId(null);
     setHeightConfidenceOpen(false);
@@ -647,15 +611,7 @@ const candidates = buildSizeCandidatePathKeys(
   }
 
   function deleteUncertaintyCard(annotationId: string) {
-    setUncertaintyDocument((previous) =>
-      removeUncertaintyAnnotationById(
-        {
-          ...previous,
-          source: currentUncertaintySource,
-        },
-        annotationId,
-      ),
-    );
+    deleteAnnotation(annotationId);
 
     setSelectedUncertaintyId((previous) =>
       previous === annotationId ? null : previous,
@@ -663,16 +619,7 @@ const candidates = buildSizeCandidatePathKeys(
   }
 
   function updateUncertaintyCardComment(annotationId: string, comment: string) {
-    setUncertaintyDocument((previous) =>
-      updateUncertaintyAnnotationComment(
-        {
-          ...previous,
-          source: currentUncertaintySource,
-        },
-        annotationId,
-        comment,
-      ),
-    );
+    updateAnnotationComment(annotationId, comment);
   }
 
   function updateConfidenceDraft(
