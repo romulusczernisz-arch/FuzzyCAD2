@@ -26,6 +26,9 @@ import {
   fetchOnshapeElements,
   type ApiResult,
   type OnshapeElement,
+  applyOnshapeOccurrenceTransforms,
+  loadFuzzycadProjectState,
+  saveFuzzycadProjectState,
 } from "./lib/onshapeClient";
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
@@ -37,8 +40,6 @@ import OperationPreviewPanel, {
 import { buildCompactAxialStretchContext } from "./lib/operations/compactAxialStretchContext";
 import { inferCompactAxialStretchPlan } from "./lib/operations/inferCompactAxialStretchPlan";
 import { resolveCompactAxialStretchPlan } from "./lib/operations/resolveCompactAxialStretchPlan";
-import { computeOccurrenceUpdates } from "./lib/operations/computeOccurrenceUpdates";
-import { applyOnshapeOccurrenceTransforms } from "./lib/onshapeClient";
 import {
   DEFAULT_HEIGHT_CONFIDENCE,
   DEFAULT_HEIGHT_DIRECTIONS,
@@ -158,8 +159,6 @@ export default function FuzzyCADHome() {
   const [manipulationValue, setManipulationValue] = useState(0);
 
   const [heightPreviewOpen, setHeightPreviewOpen] = useState(false);
-  const [applyStatus, setApplyStatus] = useState<"idle" | "applying" | "success" | "error">("idle");
-  const [applyError, setApplyError] = useState<string | null>(null);
   const [pendingHeightAxis, setPendingHeightAxis] =
     useState<OperationAxis>("y");
   const [pendingHeightDirection, setPendingHeightDirection] =
@@ -205,6 +204,7 @@ export default function FuzzyCADHome() {
     upsertSizeMark,
     removeSizeMarks,
     deleteAnnotation,
+    replaceUncertaintyDocument,
     updateAnnotationComment,
   } = useUncertaintyDocument(currentUncertaintySource);
 
@@ -289,51 +289,48 @@ export default function FuzzyCADHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, workspaceId]);
 
-
   function closeSizeUncertaintyEditor() {
-  setHeightCandidateOpen(false);
-  setHeightCandidatePathKeys([]);
-  setHeightConfidenceOpen(false);
-}
-
-function resetSizeOperationState() {
-  setPendingHeightRolePreview(null);
-  setConfirmedHeightPlan(null);
-  setManipulationValue(0);
-  setHeightPreviewOpen(false);
-  setApplyStatus("idle");
-  setApplyError(null);
-  closeSizeUncertaintyEditor();
-}
-
-function leaveUncertaintyEditingState() {
-  setSelectedUncertaintyId(null);
-  closeSizeUncertaintyEditor();
-  setActiveTool("select");
-}
-
-function resetGeometryState() {
-  setMeshGraph([]);
-  setObjectSummaries([]);
-  setSelectedMeshNode(null);
-  setHighlightedPathKey(null);
-  setLassoPathKeys([]);
-
-  resetSizeOperationState();
-  setActiveTool("select");
-  setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
-  setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
-  setSelectedUncertaintyId(null);
-  resetUncertaintyDocument();
-
-  setGeometryLoadResult(null);
-  resetPlacementTree();
-
-  if (gltfUrl) {
-    URL.revokeObjectURL(gltfUrl);
-    setGltfUrl(null);
+    setHeightCandidateOpen(false);
+    setHeightCandidatePathKeys([]);
+    setHeightConfidenceOpen(false);
   }
-}
+
+  function resetSizeOperationState() {
+    setPendingHeightRolePreview(null);
+    setConfirmedHeightPlan(null);
+    setManipulationValue(0);
+    setHeightPreviewOpen(false);
+    closeSizeUncertaintyEditor();
+  }
+
+  function leaveUncertaintyEditingState() {
+    setSelectedUncertaintyId(null);
+    closeSizeUncertaintyEditor();
+    setActiveTool("select");
+  }
+
+  function resetGeometryState() {
+    setMeshGraph([]);
+    setObjectSummaries([]);
+    setSelectedMeshNode(null);
+    setHighlightedPathKey(null);
+    setLassoPathKeys([]);
+
+    resetSizeOperationState();
+    setActiveTool("select");
+    setConfidenceDraft(DEFAULT_HEIGHT_CONFIDENCE);
+    setConfidenceDirectionDraft(DEFAULT_HEIGHT_DIRECTIONS);
+    setSelectedUncertaintyId(null);
+    resetUncertaintyDocument();
+
+    setGeometryLoadResult(null);
+    resetPlacementTree();
+
+    if (gltfUrl) {
+      URL.revokeObjectURL(gltfUrl);
+      setGltfUrl(null);
+    }
+  }
 
   async function loadAssemblyGeometry() {
     resetGeometryState();
@@ -461,9 +458,9 @@ function resetGeometryState() {
   }
 
   function startHeightUncertainty() {
-setActiveTool("height");
-resetSizeOperationState();
-setLassoPathKeys([]);
+    setActiveTool("height");
+    resetSizeOperationState();
+    setLassoPathKeys([]);
 
     if (!selectedObjectSummary) {
       setHeightCandidateOpen(true);
@@ -544,10 +541,10 @@ setLassoPathKeys([]);
     openHeightConfidenceEditor([selectedOnlyPathKey]);
   }
 
-function cancelHeightCandidateGroup() {
-  closeSizeUncertaintyEditor();
-  setActiveTool("select");
-}
+  function cancelHeightCandidateGroup() {
+    closeSizeUncertaintyEditor();
+    setActiveTool("select");
+  }
 
   function applyHeightConfidence() {
     const targetPathKeys = getCurrentHeightTargetPathKeys();
@@ -586,10 +583,10 @@ function cancelHeightCandidateGroup() {
   function selectUncertaintyCard(annotationId: string | null) {
     setSelectedUncertaintyId(annotationId);
 
-if (!annotationId) {
-  leaveUncertaintyEditingState();
-  return;
-}
+    if (!annotationId) {
+      leaveUncertaintyEditingState();
+      return;
+    }
 
     const annotation =
       uncertaintyDocumentWithCurrentSource.annotations.find(
@@ -601,22 +598,22 @@ if (!annotationId) {
     }
 
     if (annotation.type === "size") {
-setActiveTool("height");
-resetSizeOperationState();
-setLassoPathKeys([]);
+      setActiveTool("height");
+      resetSizeOperationState();
+      setLassoPathKeys([]);
 
-openHeightConfidenceEditor(annotation.target.pathKeys);
+      openHeightConfidenceEditor(annotation.target.pathKeys);
     }
   }
 
-function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
-  setActiveTool("height");
-  resetSizeOperationState();
-  setLassoPathKeys([]);
-  setSelectedUncertaintyId(annotation.id);
+  function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
+    setActiveTool("height");
+    resetSizeOperationState();
+    setLassoPathKeys([]);
+    setSelectedUncertaintyId(annotation.id);
 
-  openHeightConfidenceEditor(annotation.target.pathKeys);
-}
+    openHeightConfidenceEditor(annotation.target.pathKeys);
+  }
 
   function deleteUncertaintyCard(annotationId: string) {
     deleteAnnotation(annotationId);
@@ -630,49 +627,40 @@ function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
     updateAnnotationComment(annotationId, comment);
   }
 
-  async function applyOnshapeChanges() {
-    if (!confirmedHeightPlan || !documentId || !workspaceId || !selectedAssemblyId) {
+  async function saveProjectStateToOnshape() {
+    if (!documentId || !workspaceId) {
+      console.warn("Missing documentId or workspaceId");
       return;
     }
 
-    const occurrences = computeOccurrenceUpdates(
-      confirmedHeightPlan,
-      objectSummaries,
-      manipulationValue,
-      placements,
+    const result = await saveFuzzycadProjectState(
+      {
+        documentId,
+        workspaceId,
+        server,
+      },
+      uncertaintyDocumentWithCurrentSource,
     );
 
-    if (occurrences.length === 0) {
+    console.log("Saved FuzzyCAD project state:", result);
+  }
+
+  async function loadProjectStateFromOnshape() {
+    if (!documentId || !workspaceId) {
+      console.warn("Missing documentId or workspaceId");
       return;
     }
 
-    setApplyStatus("applying");
-    setApplyError(null);
+    const result = await loadFuzzycadProjectState({
+      documentId,
+      workspaceId,
+      server,
+    });
 
-    try {
-      const result = await applyOnshapeOccurrenceTransforms(
-        {
-          documentId,
-          workspaceId,
-          assemblyElementId: selectedAssemblyId,
-          server,
-        },
-        occurrences,
-      );
+    console.log("Loaded FuzzyCAD project state:", result);
 
-      if (result.ok) {
-        setApplyStatus("success");
-      } else {
-        setApplyStatus("error");
-        setApplyError(
-          typeof result.error === "string"
-            ? result.error
-            : `Onshape returned status ${result.status ?? "unknown"}`,
-        );
-      }
-    } catch (err) {
-      setApplyStatus("error");
-      setApplyError(err instanceof Error ? err.message : "Unknown error");
+    if (result.ok && result.state) {
+      replaceUncertaintyDocument(result.state as typeof uncertaintyDocument);
     }
   }
 
@@ -696,10 +684,10 @@ function editSizeUncertaintyCard(annotation: SizeUncertaintyAnnotation) {
     }));
   }
 
-function handleViewerSelectedPathKey(pathKey: string | null) {
-  setHighlightedPathKey(pathKey);
-  leaveUncertaintyEditingState();
-}
+  function handleViewerSelectedPathKey(pathKey: string | null) {
+    setHighlightedPathKey(pathKey);
+    leaveUncertaintyEditingState();
+  }
 
   function handleAssemblyChange(assemblyId: string) {
     setSelectedAssemblyId(assemblyId);
@@ -730,33 +718,11 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
         partTree={partTree}
         highlightedPathKey={highlightedPathKey}
         dev={dev}
-        manipulationValue={confirmedHeightPlan && !heightPreviewOpen ? manipulationValue : undefined}
-        applyStatus={applyStatus}
-        applyError={applyError}
-        hasInferredPlan={
-          !confirmedHeightPlan &&
-          (resolvedAxialStretchPlan?.stretchTargetPathKeys.length ?? 0) > 0
-        }
         onAssemblyChange={handleAssemblyChange}
         onLoadAssembly={loadSelectedAssembly}
         onSelectPathKey={setHighlightedPathKey}
         onToggleDev={() => {
           setDev((value) => !value);
-        }}
-        onApply={confirmedHeightPlan && !heightPreviewOpen ? () => void applyOnshapeChanges() : undefined}
-        onResetApply={resetSizeOperationState}
-        onStartHeightChange={() => {
-          const plan = resolvedAxialStretchPlan;
-          if (plan && plan.stretchTargetPathKeys.length > 0) {
-            setPendingHeightRolePreview({
-              stretchTargetPathKeys: plan.stretchTargetPathKeys,
-              moveWithEndPathKeys: plan.moveWithEndPathKeys,
-              fixedAnchorPathKeys: plan.fixedAnchorPathKeys,
-              excludedPathKeys: plan.excludedPathKeys,
-            });
-            setHeightPreviewOpen(true);
-            setActiveTool("height");
-          }
         }}
       />
 
@@ -797,11 +763,11 @@ function handleViewerSelectedPathKey(pathKey: string | null) {
           onObjectSummaries={setObjectSummaries}
           onSelectedNode={setSelectedMeshNode}
           onSelectedPathKey={handleViewerSelectedPathKey}
-onObjectLassoSelection={(pathKeys) => {
-  setLassoPathKeys(pathKeys);
-  setHighlightedPathKey(pathKeys[0] ?? null);
-  leaveUncertaintyEditingState();
-}}
+          onObjectLassoSelection={(pathKeys) => {
+            setLassoPathKeys(pathKeys);
+            setHighlightedPathKey(pathKeys[0] ?? null);
+            leaveUncertaintyEditingState();
+          }}
         />
 
         <OperationToolbar
@@ -810,29 +776,6 @@ onObjectLassoSelection={(pathKeys) => {
           onToolChange={(tool) => {
             if (tool === "height") {
               startHeightUncertainty();
-              return;
-            }
-
-            if (tool === "extend") {
-              // Show the height stretch role preview from the inferred plan.
-              const plan = resolvedAxialStretchPlan;
-
-              if (
-                plan &&
-                plan.stretchTargetPathKeys.length > 0
-              ) {
-                setPendingHeightRolePreview({
-                  stretchTargetPathKeys: plan.stretchTargetPathKeys,
-                  moveWithEndPathKeys: plan.moveWithEndPathKeys,
-                  fixedAnchorPathKeys: plan.fixedAnchorPathKeys,
-                  excludedPathKeys: plan.excludedPathKeys,
-                });
-                setHeightPreviewOpen(true);
-                setActiveTool("height");
-              } else {
-                setActiveTool("lasso");
-              }
-
               return;
             }
 
@@ -852,6 +795,8 @@ onObjectLassoSelection={(pathKeys) => {
           onEditSizeAnnotation={editSizeUncertaintyCard}
           onDeleteAnnotation={deleteUncertaintyCard}
           onCommentChange={updateUncertaintyCardComment}
+          onSaveToOnshape={() => void saveProjectStateToOnshape()}
+          onLoadFromOnshape={() => void loadProjectStateFromOnshape()}
         />
 
         {heightCandidateOpen ? (
@@ -933,7 +878,6 @@ onObjectLassoSelection={(pathKeys) => {
             }}
           />
         ) : null}
-
       </div>
 
       {dev ? (

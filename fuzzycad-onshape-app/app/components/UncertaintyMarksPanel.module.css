@@ -51,6 +51,24 @@
   font-weight: 800;
 }
 
+.syncActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.syncButton {
+  height: 28px;
+  border-radius: 9px;
+  border: 1px solid rgba(43, 108, 255, 0.45);
+  background: rgba(43, 108, 255, 0.08);
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+}
+
 .emptyState {
   padding: 14px 10px;
   border-radius: 14px;

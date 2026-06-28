@@ -11,6 +11,7 @@ export type ApiResult = {
   status?: number;
   ok?: boolean;
   data?: unknown;
+  state?: unknown;
   graph?: unknown;
   error?: string;
   action?: string;
@@ -135,6 +136,33 @@ export async function applyOnshapeOccurrenceTransforms(
       occurrences,
     }),
   });
+
+  return res.json() as Promise<ApiResult>;
+}
+
+export async function saveFuzzycadProjectState(
+  query: DocumentQuery,
+  state: unknown,
+): Promise<ApiResult> {
+  const res = await fetch("/api/fuzzycad/project-state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentId: query.documentId,
+      workspaceId: query.workspaceId,
+      server: query.server,
+      state,
+    }),
+  });
+
+  return res.json() as Promise<ApiResult>;
+}
+
+export async function loadFuzzycadProjectState(
+  query: DocumentQuery,
+): Promise<ApiResult> {
+  const params = makeDocumentParams(query);
+  const res = await fetch(`/api/fuzzycad/project-state?${params.toString()}`);
 
   return res.json() as Promise<ApiResult>;
 }

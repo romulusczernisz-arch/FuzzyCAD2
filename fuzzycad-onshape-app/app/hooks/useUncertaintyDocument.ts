@@ -90,14 +90,22 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     );
   }
 
-  return {
-    uncertaintyDocument,
-    uncertaintyDocumentWithCurrentSource,
-    confidenceAnnotations,
-    resetUncertaintyDocument,
-    upsertSizeMark,
-    removeSizeMarks,
-    deleteAnnotation,
-    updateAnnotationComment,
-  };
+function replaceUncertaintyDocument(document: FuzzyCADUncertaintyDocument) {
+  setUncertaintyDocument({
+    ...document,
+    source,
+  });
+}
+
+return {
+  uncertaintyDocument,
+  uncertaintyDocumentWithCurrentSource,
+  confidenceAnnotations,
+  resetUncertaintyDocument,
+  replaceUncertaintyDocument,
+  upsertSizeMark,
+  removeSizeMarks,
+  deleteAnnotation,
+  updateAnnotationComment,
+};
 }
