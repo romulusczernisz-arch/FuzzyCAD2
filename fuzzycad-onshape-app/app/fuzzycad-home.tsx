@@ -26,7 +26,6 @@ import {
   fetchOnshapeElements,
   type ApiResult,
   type OnshapeElement,
-  applyOnshapeOccurrenceTransforms,
   loadFuzzycadProjectState,
   saveFuzzycadProjectState,
 } from "./lib/onshapeClient";
@@ -442,20 +441,21 @@ export default function FuzzyCADHome() {
     setRelationshipGraphResult(data);
   }
 
-  async function loadSelectedAssembly() {
-    if (!selectedAssemblyId) {
-      return;
-    }
-
-    setBusy(true);
-
-    try {
-      await buildRelationshipGraph();
-      await loadAssemblyGeometry();
-    } finally {
-      setBusy(false);
-    }
+async function loadSelectedAssembly() {
+  if (!selectedAssemblyId) {
+    return;
   }
+
+  setBusy(true);
+
+  try {
+    await buildRelationshipGraph();
+    await loadAssemblyGeometry();
+    await loadProjectStateFromOnshape();
+  } finally {
+    setBusy(false);
+  }
+}
 
   function startHeightUncertainty() {
     setActiveTool("height");
@@ -796,7 +796,6 @@ export default function FuzzyCADHome() {
           onDeleteAnnotation={deleteUncertaintyCard}
           onCommentChange={updateUncertaintyCardComment}
           onSaveToOnshape={() => void saveProjectStateToOnshape()}
-          onLoadFromOnshape={() => void loadProjectStateFromOnshape()}
         />
 
         {heightCandidateOpen ? (

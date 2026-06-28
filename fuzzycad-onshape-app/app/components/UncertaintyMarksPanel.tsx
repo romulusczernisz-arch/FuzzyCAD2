@@ -14,7 +14,6 @@ type UncertaintyMarksPanelProps = {
   onDeleteAnnotation: (annotationId: string) => void;
   onCommentChange: (annotationId: string, comment: string) => void;
   onSaveToOnshape: () => void;
-  onLoadFromOnshape: () => void;
 };
 
 function getAnnotationTitle(annotation: SizeUncertaintyAnnotation) {
@@ -41,7 +40,6 @@ export default function UncertaintyMarksPanel({
   onDeleteAnnotation,
   onCommentChange,
   onSaveToOnshape,
-  onLoadFromOnshape,
 }: UncertaintyMarksPanelProps) {
   const annotations = document.annotations;
 
@@ -74,14 +72,6 @@ export default function UncertaintyMarksPanel({
             onClick={onSaveToOnshape}
           >
             Save to Onshape
-          </button>
-
-          <button
-            type="button"
-            className={styles.syncButton}
-            onClick={onLoadFromOnshape}
-          >
-            Load from Onshape
           </button>
         </div>
 
