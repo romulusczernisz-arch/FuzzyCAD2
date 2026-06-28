@@ -37,6 +37,13 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     setUncertaintyDocument(createEmptyUncertaintyDocument(source));
   }
 
+  function replaceUncertaintyDocument(document: FuzzyCADUncertaintyDocument) {
+    setUncertaintyDocument({
+      ...document,
+      source,
+    });
+  }
+
   function upsertSizeMark(input: {
     pathKeys: string[];
     confidence: AxisConfidenceMap;
@@ -90,22 +97,15 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     );
   }
 
-function replaceUncertaintyDocument(document: FuzzyCADUncertaintyDocument) {
-  setUncertaintyDocument({
-    ...document,
-    source,
-  });
-}
-
-return {
-  uncertaintyDocument,
-  uncertaintyDocumentWithCurrentSource,
-  confidenceAnnotations,
-  resetUncertaintyDocument,
-  replaceUncertaintyDocument,
-  upsertSizeMark,
-  removeSizeMarks,
-  deleteAnnotation,
-  updateAnnotationComment,
-};
+  return {
+    uncertaintyDocument,
+    uncertaintyDocumentWithCurrentSource,
+    confidenceAnnotations,
+    resetUncertaintyDocument,
+    replaceUncertaintyDocument,
+    upsertSizeMark,
+    removeSizeMarks,
+    deleteAnnotation,
+    updateAnnotationComment,
+  };
 }
