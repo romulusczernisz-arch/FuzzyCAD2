@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  getCachedAssembly,
+} from "../../../lib/server/onshapeAssemblyCache";
+import { shouldForceRefresh } from "../../../lib/server/onshapeApi";
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
@@ -7,6 +11,7 @@ export async function GET(req: NextRequest) {
   const documentId = searchParams.get("documentId");
   const workspaceId = searchParams.get("workspaceId");
   const assemblyElementId = searchParams.get("assemblyElementId");
+  const force = shouldForceRefresh(searchParams);
 
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
@@ -15,7 +20,7 @@ export async function GET(req: NextRequest) {
       {
         error: "Missing documentId, workspaceId, or assemblyElementId",
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -25,36 +30,28 @@ export async function GET(req: NextRequest) {
         error: "Not connected to Onshape yet",
         action: "Click Connect Onshape first",
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
-  const endpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}`;
-
-  const onshapeRes = await fetch(endpoint, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
+  const result = await getCachedAssembly({
+    server,
+    documentId,
+    workspaceId,
+    assemblyElementId,
+    accessToken,
+    route: "/api/onshape/assembly",
+    force,
   });
-
-  const text = await onshapeRes.text();
-
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = text;
-  }
 
   return NextResponse.json(
     {
-      endpoint,
-      status: onshapeRes.status,
-      ok: onshapeRes.ok,
-      data,
+      endpoint: result.endpoint,
+      status: result.status,
+      ok: result.ok,
+      cache: result.cache,
+      data: result.data,
     },
-    { status: onshapeRes.ok ? 200 : onshapeRes.status }
+    { status: result.ok ? 200 : result.status },
   );
 }
