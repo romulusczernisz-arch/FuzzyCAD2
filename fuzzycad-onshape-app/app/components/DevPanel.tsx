@@ -3,7 +3,11 @@
 import styles from "../fuzzycad-home.module.css";
 import type { MeshGraphNode } from "./FuzzyCADGeometryViewer";
 
-type DevAction = () => void | Promise<void>;
+type DevActionOptions = {
+  force?: boolean;
+};
+
+type DevAction = (options?: DevActionOptions) => void | Promise<void>;
 
 type DevGraphStats = {
   matched: number;
@@ -60,58 +64,111 @@ export default function DevPanel({
       <div className={styles.devActions}>
         <a href={connectHref}>Connect Onshape</a>
 
-        <button
-          onClick={() => {
-            void onLoadElements();
-          }}
-        >
-          Load Elements
-        </button>
+<button
+  onClick={() => {
+    void onLoadElements();
+  }}
+>
+  Load Elements
+</button>
 
-        <button
-          onClick={() => {
-            void onLoadRawAssembly();
-          }}
-          disabled={!selectedAssemblyId}
-        >
-          Raw Assembly
-        </button>
+<button
+  onClick={() => {
+    void onLoadElements({ force: true });
+  }}
+>
+  Force Load Elements
+</button>
 
-        <button
-          onClick={() => {
-            void onLoadSummary();
-          }}
-          disabled={!selectedAssemblyId}
-        >
-          Summary
-        </button>
+<button
+  onClick={() => {
+    void onLoadRawAssembly();
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Raw Assembly
+</button>
 
-        <button
-          onClick={() => {
-            void onBuildGraph();
-          }}
-          disabled={!selectedAssemblyId}
-        >
-          Build Graph
-        </button>
+<button
+  onClick={() => {
+    void onLoadRawAssembly({ force: true });
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Force Raw Assembly
+</button>
 
-        <button
-          onClick={() => {
-            void onLoadGeometry();
-          }}
-          disabled={!selectedAssemblyId}
-        >
-          Load Geometry
-        </button>
+<button
+  onClick={() => {
+    void onLoadSummary();
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Summary
+</button>
 
-        <button
-          onClick={() => {
-            void onInspectZip();
-          }}
-          disabled={!selectedAssemblyId}
-        >
-          Inspect ZIP
-        </button>
+<button
+  onClick={() => {
+    void onLoadSummary({ force: true });
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Force Summary
+</button>
+
+<button
+  onClick={() => {
+    void onBuildGraph();
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Build Graph
+</button>
+
+<button
+  onClick={() => {
+    void onBuildGraph({ force: true });
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Force Build Graph
+</button>
+
+<button
+  onClick={() => {
+    void onLoadGeometry();
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Load Geometry
+</button>
+
+<button
+  onClick={() => {
+    void onLoadGeometry({ force: true });
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Force Load Geometry
+</button>
+
+<button
+  onClick={() => {
+    void onInspectZip();
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Inspect ZIP
+</button>
+
+<button
+  onClick={() => {
+    void onInspectZip({ force: true });
+  }}
+  disabled={!selectedAssemblyId}
+>
+  Force Inspect ZIP
+</button>
       </div>
 
       {graphStats ? (

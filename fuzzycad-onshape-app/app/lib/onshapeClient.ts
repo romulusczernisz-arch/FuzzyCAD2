@@ -36,21 +36,36 @@ type AssemblyQuery = DocumentQuery & {
   assemblyElementId: string;
 };
 
+function appendOptionalParams(
+  params: URLSearchParams,
+  query: { force?: boolean },
+) {
+  if (query.force) {
+    params.set("force", "1");
+  }
+
+  return params;
+}
+
 function makeDocumentParams(query: DocumentQuery) {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     documentId: query.documentId,
     workspaceId: query.workspaceId,
     server: query.server,
   });
+
+  return appendOptionalParams(params, query);
 }
 
 function makeAssemblyParams(query: AssemblyQuery) {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     documentId: query.documentId,
     workspaceId: query.workspaceId,
     assemblyElementId: query.assemblyElementId,
     server: query.server,
   });
+
+  return appendOptionalParams(params, query);
 }
 
 export async function fetchOnshapeElements(
@@ -78,15 +93,10 @@ export async function fetchOnshapeAssemblyGltf(query: AssemblyQuery) {
 }
 
 export async function fetchOnshapeAssemblyZipManifest(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
-  const params = new URLSearchParams({
-    documentId: query.documentId,
-    workspaceId: query.workspaceId,
-    assemblyElementId: query.assemblyElementId,
-    server: query.server,
-    debugZip: "1",
-  });
+  const params = makeAssemblyParams(query);
+  params.set("debugZip", "1");
 
   const res = await fetch(`/api/onshape/assembly-gltf?${params.toString()}`);
 

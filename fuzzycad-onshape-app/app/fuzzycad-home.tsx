@@ -62,6 +62,10 @@ const FuzzyCADGeometryViewer = dynamic(
   },
 );
 
+type LoadOptions = {
+  force?: boolean;
+};
+
 function isElementArray(data: unknown): data is OnshapeElement[] {
   return (
     Array.isArray(data) &&
@@ -331,15 +335,16 @@ export default function FuzzyCADHome() {
     }
   }
 
-  async function loadAssemblyGeometry() {
+async function loadAssemblyGeometry(options: LoadOptions = {}) {
     resetGeometryState();
 
-    const res = await fetchOnshapeAssemblyGltf({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+const res = await fetchOnshapeAssemblyGltf({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+  force: options.force,
+});
     const contentType = res.headers.get("content-type") || "";
 
     if (
@@ -375,25 +380,27 @@ export default function FuzzyCADHome() {
     setGeometryLoadResult(data);
   }
 
-  async function inspectAssemblyGeometryZip() {
+async function inspectAssemblyGeometryZip(options: LoadOptions = {}) {
     setGeometryZipManifest(null);
 
-    const data = await fetchOnshapeAssemblyZipManifest({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+const data = await fetchOnshapeAssemblyZipManifest({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+  force: options.force,
+});
 
     setGeometryZipManifest(data);
   }
 
-  async function loadElements() {
-    const data = await fetchOnshapeElements({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      server,
-    });
+async function loadElements(options: LoadOptions = {}) {
+const data = await fetchOnshapeElements({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  server,
+  force: options.force,
+});
 
     setElementsResult(data);
 
@@ -408,35 +415,38 @@ export default function FuzzyCADHome() {
     }
   }
 
-  async function loadAssemblyDefinition() {
+async function loadAssemblyDefinition(options: LoadOptions = {}) {
     const data = await fetchOnshapeAssembly({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
       assemblyElementId: selectedAssemblyId,
       server,
+      force: options.force,
     });
 
     setAssemblyResult(data);
   }
 
-  async function loadAssemblySummary() {
+async function loadAssemblySummary(options: LoadOptions = {}) {
     const data = await fetchFuzzycadAssemblySummary({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
       assemblyElementId: selectedAssemblyId,
       server,
+            force: options.force,
     });
 
     setAssemblySummaryResult(data);
   }
 
-  async function buildRelationshipGraph() {
-    const data = await fetchFuzzycadRelationshipGraph({
-      documentId: documentId || "",
-      workspaceId: workspaceId || "",
-      assemblyElementId: selectedAssemblyId,
-      server,
-    });
+async function buildRelationshipGraph(options: LoadOptions = {}) {
+const data = await fetchFuzzycadRelationshipGraph({
+  documentId: documentId || "",
+  workspaceId: workspaceId || "",
+  assemblyElementId: selectedAssemblyId,
+  server,
+  force: options.force,
+});
 
     setRelationshipGraphResult(data);
   }
@@ -645,17 +655,18 @@ async function loadSelectedAssembly() {
     console.log("Saved FuzzyCAD project state:", result);
   }
 
-  async function loadProjectStateFromOnshape() {
+async function loadProjectStateFromOnshape(options: LoadOptions = {}) {
     if (!documentId || !workspaceId) {
       console.warn("Missing documentId or workspaceId");
       return;
     }
 
-    const result = await loadFuzzycadProjectState({
-      documentId,
-      workspaceId,
-      server,
-    });
+const result = await loadFuzzycadProjectState({
+  documentId,
+  workspaceId,
+  server,
+  force: options.force,
+});
 
     console.log("Loaded FuzzyCAD project state:", result);
 
