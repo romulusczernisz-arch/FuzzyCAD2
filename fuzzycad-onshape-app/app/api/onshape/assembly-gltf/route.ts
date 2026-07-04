@@ -1005,16 +1005,27 @@ if (
 
   let statusData: UnknownRecord = initialData;
 
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const state = getStringField(statusData, ["requestState"]);
+const pollDelaysMs = [
+  2000,
+  2000,
+  3000,
+  3000,
+  4000,
+  4000,
+  5000,
+  5000,
+];
 
-    if (state === "DONE" || state === "FAILED") {
-      break;
-    }
+for (const delayMs of pollDelaysMs) {
+  const state = getStringField(statusData, ["requestState"]);
 
-    await sleep(1000);
-    statusData = await getTranslationStatus(translationHref, accessToken);
+  if (state === "DONE" || state === "FAILED") {
+    break;
   }
+
+  await sleep(delayMs);
+  statusData = await getTranslationStatus(translationHref, accessToken);
+}
 
   const finalState = getStringField(statusData, ["requestState"]);
 

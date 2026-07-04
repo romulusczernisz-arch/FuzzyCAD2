@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type ApiCallRecord = {
   timestamp: string;
@@ -45,41 +45,44 @@ export default function ApiUsagePanel() {
   const [usage, setUsage] = useState<ApiUsage | null>(null);
   const [loading, setLoading] = useState(false);
 
-async function loadUsage(reset = false, showLoading = true) {
-  if (showLoading) {
-    setLoading(true);
-  }
-
-  try {
-    const res = await fetch(
-      `/api/fuzzycad/api-usage${reset ? "?reset=1" : ""}`,
-      {
-        cache: "no-store",
-      },
-    );
-
-    const data = (await res.json()) as ApiUsageResponse;
-    setUsage(data.usage);
-  } finally {
+  const loadUsage = useCallback(async (reset = false, showLoading = true) => {
     if (showLoading) {
-      setLoading(false);
+      setLoading(true);
     }
-  }
-}
 
-useEffect(() => {
-  const loadWithoutSpinner = () => {
-    void loadUsage(false, false);
-  };
+    try {
+      const res = await fetch(
+        `/api/fuzzycad/api-usage${reset ? "?reset=1" : ""}`,
+        {
+          cache: "no-store",
+        },
+      );
 
-  const timeoutId = window.setTimeout(loadWithoutSpinner, 0);
-  const intervalId = window.setInterval(loadWithoutSpinner, 2000);
+      const data = (await res.json()) as ApiUsageResponse;
+      setUsage(data.usage);
+    } finally {
+      if (showLoading) {
+        setLoading(false);
+      }
+    }
+  }, []);
 
-  return () => {
-    window.clearTimeout(timeoutId);
-    window.clearInterval(intervalId);
-  };
-}, []);
+  useEffect(() => {
+    const loadWithoutSpinner = () => {
+      void loadUsage(false, false);
+    };
+
+    const timeoutId = window.setTimeout(loadWithoutSpinner, 0);
+    const intervalId = window.setInterval(loadWithoutSpinner, 2000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.clearInterval(intervalId);
+    };
+  }, [loadUsage]);
+
+  const operationEntries = sortedEntries(usage?.byOperation ?? {});
+  const routeEntries = sortedEntries(usage?.byRoute ?? {});
 
   return (
     <section
@@ -89,15 +92,17 @@ useEffect(() => {
         padding: 12,
         marginBottom: 16,
         background: "#fafafa",
+        maxWidth: "100%",
+        overflow: "hidden",
       }}
     >
       <div
         style={{
           display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          alignItems: "center",
-          marginBottom: 8,
+          flexDirection: "column",
+          gap: 8,
+          alignItems: "flex-start",
+          marginBottom: 12,
         }}
       >
         <div>
@@ -108,7 +113,7 @@ useEffect(() => {
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => {
               void loadUsage();
@@ -132,7 +137,7 @@ useEffect(() => {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
           gap: 12,
           marginBottom: 12,
         }}
@@ -187,7 +192,7 @@ useEffect(() => {
 
         <table style={{ width: "100%", marginTop: 8, fontSize: 12 }}>
           <tbody>
-            {sortedEntries(usage?.byOperation ?? {}).map(([operation, count]) => (
+            {operationEntries.map(([operation, count]) => (
               <tr key={operation}>
                 <td style={{ padding: "4px 0" }}>{operation}</td>
                 <td style={{ padding: "4px 0", textAlign: "right" }}>
@@ -196,7 +201,7 @@ useEffect(() => {
               </tr>
             ))}
 
-            {sortedEntries(usage?.byOperation ?? {}).length === 0 ? (
+            {operationEntries.length === 0 ? (
               <tr>
                 <td style={{ color: "#777" }}>No Onshape API calls recorded.</td>
               </tr>
@@ -212,9 +217,16 @@ useEffect(() => {
 
         <table style={{ width: "100%", marginTop: 8, fontSize: 12 }}>
           <tbody>
-            {sortedEntries(usage?.byRoute ?? {}).map(([route, count]) => (
+            {routeEntries.map(([route, count]) => (
               <tr key={route}>
-                <td style={{ padding: "4px 0" }}>{route}</td>
+                <td
+                  style={{
+                    padding: "4px 0",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {route}
+                </td>
                 <td style={{ padding: "4px 0", textAlign: "right" }}>
                   {count}
                 </td>
@@ -229,34 +241,45 @@ useEffect(() => {
           Recent calls
         </summary>
 
-        <table style={{ width: "100%", marginTop: 8, fontSize: 11 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left" }}>Time</th>
-              <th style={{ textAlign: "left" }}>Operation</th>
-              <th style={{ textAlign: "right" }}>Status</th>
-              <th style={{ textAlign: "right" }}>ms</th>
-              <th style={{ textAlign: "right" }}>Remaining</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(usage?.recentCalls ?? []).slice(0, 20).map((call, index) => (
-              <tr key={`${call.timestamp}-${call.operation}-${index}`}>
-                <td style={{ padding: "4px 0" }}>{formatTime(call.timestamp)}</td>
-                <td style={{ padding: "4px 0" }}>{call.operation}</td>
-                <td style={{ padding: "4px 0", textAlign: "right" }}>
-                  {call.status}
-                </td>
-                <td style={{ padding: "4px 0", textAlign: "right" }}>
-                  {call.durationMs}
-                </td>
-                <td style={{ padding: "4px 0", textAlign: "right" }}>
-                  {call.rateRemaining ?? "—"}
-                </td>
+        <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+          <table
+            style={{
+              width: "100%",
+              minWidth: 620,
+              marginTop: 8,
+              fontSize: 11,
+            }}
+          >
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left" }}>Time</th>
+                <th style={{ textAlign: "left" }}>Operation</th>
+                <th style={{ textAlign: "right" }}>Status</th>
+                <th style={{ textAlign: "right" }}>ms</th>
+                <th style={{ textAlign: "right" }}>Remaining</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(usage?.recentCalls ?? []).slice(0, 20).map((call, index) => (
+                <tr key={`${call.timestamp}-${call.operation}-${index}`}>
+                  <td style={{ padding: "4px 0" }}>
+                    {formatTime(call.timestamp)}
+                  </td>
+                  <td style={{ padding: "4px 0" }}>{call.operation}</td>
+                  <td style={{ padding: "4px 0", textAlign: "right" }}>
+                    {call.status}
+                  </td>
+                  <td style={{ padding: "4px 0", textAlign: "right" }}>
+                    {call.durationMs}
+                  </td>
+                  <td style={{ padding: "4px 0", textAlign: "right" }}>
+                    {call.rateRemaining ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </details>
     </section>
   );
