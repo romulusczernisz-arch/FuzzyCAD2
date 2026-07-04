@@ -197,6 +197,7 @@ function buildGeneratedGeometryPayload(input: {
 
 const VISUALIZATION_LAYER_NAME = "FuzzyCAD_Visualization_Layer";
 
+
 async function reconstructGeneratedGeometryInOnshape(input: {
   server: string;
   documentId: string;
@@ -205,11 +206,6 @@ async function reconstructGeneratedGeometryInOnshape(input: {
   generatedGeometryElementId: string | null;
   projectState: UnknownRecord;
 }) {
-  /**
-   * Step 1:
-   * 重新读取 document elements。
-   * 目的：看这个 document 里面是不是已经有 FuzzyCAD_Visualization_Layer。
-   */
   const elementsResult = await getCachedElements({
     server: input.server,
     documentId: input.documentId,
@@ -229,10 +225,6 @@ async function reconstructGeneratedGeometryInOnshape(input: {
     };
   }
 
-  /**
-   * Step 2:
-   * 如果已经有 FuzzyCAD_Visualization_Layer，就先复用它。
-   */
   const existingLayer = findLatestElementByName(
     elementsResult.data,
     VISUALIZATION_LAYER_NAME,
@@ -249,18 +241,16 @@ async function reconstructGeneratedGeometryInOnshape(input: {
   }
 
   /**
-   * Step 3:
-   * 如果没有，就尝试创建一个新的 Part Studio element。
+   * Important:
+   * Do not use /api/documents/d/{did}/w/{wid}/elements here.
+   * That endpoint returned 405 Method Not Allowed.
    *
-   * 注意：
-   * 这里我们先创建空 Part Studio。
-   * 下一步再把 FeatureScript / bounding boxes / arrows 写进去。
+   * For creating a Part Studio, use the Part Studios endpoint.
    */
-  const createElementEndpoint = `${input.server}/api/documents/d/${input.documentId}/w/${input.workspaceId}/elements`;
+  const createElementEndpoint = `${input.server}/api/partstudios/d/${input.documentId}/w/${input.workspaceId}`;
 
   const createElementBody = {
     name: VISUALIZATION_LAYER_NAME,
-    elementType: "PARTSTUDIO",
   };
 
   const createElementRes = await onshapeFetch(
@@ -289,13 +279,15 @@ async function reconstructGeneratedGeometryInOnshape(input: {
       mode: "failed-to-create-visualization-layer",
       status: createElementRes.status,
       message:
-        "Tried to create FuzzyCAD_Visualization_Layer, but Onshape rejected the request.",
+        "Tried to create FuzzyCAD_Visualization_Layer Part Studio, but Onshape rejected the request.",
       endpoint: createElementEndpoint,
       requestBody: createElementBody,
       data: createElementData,
       generatedGeometryElementId: input.generatedGeometryElementId,
     };
   }
+
+  clearElementsCache();
 
   return {
     ok: true,
