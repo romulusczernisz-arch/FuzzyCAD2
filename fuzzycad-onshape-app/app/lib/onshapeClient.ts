@@ -23,7 +23,7 @@ export type ApiResult = {
   manifest?: unknown;
   mode?: string;
   message?: string;
-annotatedSelectionObjResult?: unknown;
+annotatedSelectionStlResult?: unknown;
 
   generatedGeometryResult?: unknown;
   projectStateResult?: unknown;
@@ -31,14 +31,52 @@ annotatedSelectionObjResult?: unknown;
   projectState?: unknown;
 };
 
+async function parseApiResult(res: Response): Promise<ApiResult> {
+  const text = await res.text();
+
+  if (!text) {
+    return {
+      ok: res.ok,
+      status: res.status,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+
+    if (parsed && typeof parsed === "object") {
+      return {
+        ...(parsed as Record<string, unknown>),
+        ok:
+          "ok" in parsed
+            ? Boolean((parsed as { ok?: unknown }).ok)
+            : res.ok,
+        status: res.status,
+      } as ApiResult;
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      data: parsed,
+    };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      error: text,
+    };
+  }
+}
+
 export async function saveFuzzycadProject(
   query: DocumentQuery,
   projectState: unknown,
   options: {
-    annotatedSelectionObj?: Blob | null;
+    annotatedSelectionStl?: Blob | null;
   } = {},
 ): Promise<ApiResult> {
-  if (options.annotatedSelectionObj) {
+  if (options.annotatedSelectionStl) {
     const formData = new FormData();
 
     formData.append("documentId", query.documentId);
@@ -46,9 +84,9 @@ export async function saveFuzzycadProject(
     formData.append("server", query.server);
     formData.append("projectState", JSON.stringify(projectState));
     formData.append(
-      "annotatedSelectionObj",
-      options.annotatedSelectionObj,
-      "fuzzycad-annotated-selection.obj",
+      "annotatedSelectionStl",
+      options.annotatedSelectionStl,
+      "fuzzycad-annotated-selection.stl",
     );
 
     const res = await fetch("/api/fuzzycad/save-project", {
@@ -56,7 +94,7 @@ export async function saveFuzzycadProject(
       body: formData,
     });
 
-    return res.json() as Promise<ApiResult>;
+    return parseApiResult(res);
   }
 
   const res = await fetch("/api/fuzzycad/save-project", {
@@ -70,7 +108,7 @@ export async function saveFuzzycadProject(
     }),
   });
 
-  return res.json() as Promise<ApiResult>;
+  return parseApiResult(res);
 }
 
 type DocumentQuery = {

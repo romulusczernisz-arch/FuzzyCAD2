@@ -7,7 +7,7 @@ import { onshapeFetch, parseJsonOrText } from "../../../lib/server/onshapeApi";
 
 const PROJECT_STATE_FILENAME = "fuzzycad-project-state.json";
 const GENERATED_GEOMETRY_FILENAME = "fuzzycad-generated-geometry.json";
-const ANNOTATED_SELECTION_OBJ_FILENAME = "fuzzycad-annotated-selection.obj";
+const ANNOTATED_SELECTION_STL_FILENAME = "fuzzycad-annotated-selection.stl";
 const VISUALIZATION_LAYER_NAME = "FuzzyCAD_Visualization_Layer";
 
 type UnknownRecord = Record<string, unknown>;
@@ -31,7 +31,7 @@ type UpsertBlobResult = {
 
 type ParsedSaveProjectRequest = {
   body: SaveProjectRequestBody;
-  annotatedSelectionObj: Blob | null;
+  annotatedSelectionStl: Blob | null;
 };
 
 function getStringFormField(formData: FormData, key: string) {
@@ -54,27 +54,27 @@ async function parseSaveProjectRequest(
       throw new Error("Invalid projectState payload.");
     }
 
-    const objValue = formData.get("annotatedSelectionObj");
-    const annotatedSelectionObj =
-      objValue instanceof Blob && objValue.size > 0 ? objValue : null;
+const stlValue = formData.get("annotatedSelectionStl");
+const annotatedSelectionStl =
+  stlValue instanceof Blob && stlValue.size > 0 ? stlValue : null;
 
-    return {
-      body: {
-        documentId: getStringFormField(formData, "documentId"),
-        workspaceId: getStringFormField(formData, "workspaceId"),
-        server: getStringFormField(formData, "server") || undefined,
-        projectState: parsedProjectState,
-      },
-      annotatedSelectionObj,
-    };
+return {
+  body: {
+    documentId: getStringFormField(formData, "documentId"),
+    workspaceId: getStringFormField(formData, "workspaceId"),
+    server: getStringFormField(formData, "server") || undefined,
+    projectState: parsedProjectState,
+  },
+  annotatedSelectionStl,
+};
   }
 
   const body = (await req.json()) as SaveProjectRequestBody;
 
-  return {
-    body,
-    annotatedSelectionObj: null,
-  };
+return {
+  body,
+  annotatedSelectionStl: null,
+};
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -330,7 +330,7 @@ async function getTranslationStatus(input: {
     },
     {
       route: "/api/fuzzycad/save-project",
-      operation: "get-obj-translation-status",
+operation: "get-stl-translation-status",
     },
   );
 
@@ -341,18 +341,18 @@ async function getTranslationStatus(input: {
   };
 }
 
-async function translateAnnotatedObjIntoVisualizationLayer(input: {
+async function translateAnnotatedStlIntoVisualizationLayer(input: {
   server: string;
   documentId: string;
   workspaceId: string;
   accessToken: string;
-  annotatedSelectionObjElementId: string;
+  annotatedSelectionStlElementId: string;
 }) {
   const endpoint = `${input.server}/api/translations/d/${input.documentId}/w/${input.workspaceId}`;
 
   const requestBody = {
-    elementId: input.annotatedSelectionObjElementId,
-    formatName: "OBJ",
+    elementId: input.annotatedSelectionStlElementId,
+    formatName: "STL",
     storeInDocument: true,
     destinationName: VISUALIZATION_LAYER_NAME,
   };
@@ -370,7 +370,7 @@ async function translateAnnotatedObjIntoVisualizationLayer(input: {
     },
     {
       route: "/api/fuzzycad/save-project",
-      operation: "translate-annotated-obj-into-visualization-layer",
+      operation: "translate-annotated-stl-into-visualization-layer",
     },
   );
 
@@ -379,7 +379,7 @@ async function translateAnnotatedObjIntoVisualizationLayer(input: {
   if (!startRes.ok) {
     return {
       ok: false,
-      mode: "failed-to-start-obj-translation",
+      mode: "failed-to-start-stl-translation",
       status: startRes.status,
       endpoint,
       requestBody,
@@ -400,7 +400,7 @@ async function translateAnnotatedObjIntoVisualizationLayer(input: {
       if (state === "FAILED" || state === "CANCELLED" || state === "ERROR") {
         return {
           ok: false,
-          mode: "obj-translation-failed",
+          mode: "stl-translation-failed",
           status: startRes.status,
           endpoint,
           requestBody,
@@ -419,7 +419,7 @@ async function translateAnnotatedObjIntoVisualizationLayer(input: {
       if (!statusResult.ok) {
         return {
           ok: false,
-          mode: "failed-to-poll-obj-translation",
+          mode: "failed-to-poll-stl-translation",
           status: statusResult.status,
           endpoint,
           requestBody,
@@ -438,8 +438,8 @@ async function translateAnnotatedObjIntoVisualizationLayer(input: {
   return {
     ok: true,
     mode: visualizationElementId
-      ? "obj-translated-to-visualization-layer"
-      : "obj-translation-started-but-result-element-not-found",
+      ? "stl-translated-to-visualization-layer"
+      : "stl-translation-started-but-result-element-not-found",
     status: startRes.status,
     endpoint,
     requestBody,
@@ -504,7 +504,7 @@ function buildAnnotatedSelectionManifest(projectState: UnknownRecord) {
 
 function buildGeneratedGeometryPayload(input: {
   projectState: UnknownRecord;
-  annotatedSelectionObjResult: UpsertBlobResult | null;
+  annotatedSelectionStlResult: UpsertBlobResult | null;
   reconstructionResult: UnknownRecord | null;
 }) {
   const now = new Date().toISOString();
@@ -516,11 +516,9 @@ function buildGeneratedGeometryPayload(input: {
     input.projectState,
   );
 
-  const visualizationLayerElementId =
-    input.reconstructionResult &&
-    typeof input.reconstructionResult.visualizationElementId === "string"
-      ? input.reconstructionResult.visualizationElementId
-      : null;
+const visualizationLayerElementId = getVisualizationElementIdFromResult(
+  input.reconstructionResult,
+);
 
   return {
     schemaVersion: "fuzzycad.generatedGeometry.v1",
@@ -530,17 +528,17 @@ function buildGeneratedGeometryPayload(input: {
     objectMap: input.projectState.objectMap ?? {},
     annotations: input.projectState.annotations ?? [],
 
-    annotatedSelectionObj: input.annotatedSelectionObjResult
-      ? {
-          filename: input.annotatedSelectionObjResult.filename,
-          elementId: input.annotatedSelectionObjResult.elementId,
-          mode: input.annotatedSelectionObjResult.mode,
-          status: input.annotatedSelectionObjResult.status,
-          updatedAt: now,
-          coordinateSpace: "onshape-assembly",
-          ...annotatedSelectionManifest,
-        }
-      : null,
+annotatedSelectionStl: input.annotatedSelectionStlResult
+  ? {
+      filename: input.annotatedSelectionStlResult.filename,
+      elementId: input.annotatedSelectionStlResult.elementId,
+      mode: input.annotatedSelectionStlResult.mode,
+      status: input.annotatedSelectionStlResult.status,
+      updatedAt: now,
+      coordinateSpace: "onshape-assembly",
+      ...annotatedSelectionManifest,
+    }
+  : null,
 
     visualizationLayer: {
       name: VISUALIZATION_LAYER_NAME,
@@ -596,7 +594,7 @@ export async function POST(req: NextRequest) {
     projectState,
   } = parsedRequest.body;
 
-  const { annotatedSelectionObj } = parsedRequest;
+const { annotatedSelectionStl } = parsedRequest;
 
   if (!documentId || !workspaceId || !projectState) {
     return NextResponse.json(
@@ -626,53 +624,53 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const annotatedSelectionObjResult = annotatedSelectionObj
-    ? await upsertBlobContainer({
-        server,
-        documentId,
-        workspaceId,
-        accessToken,
-        filename: ANNOTATED_SELECTION_OBJ_FILENAME,
-        blobData: annotatedSelectionObj,
-        elements: elementsResult.data,
-        route: "/api/fuzzycad/save-project",
-        createOperation: "create-annotated-selection-obj",
-        updateOperation: "update-annotated-selection-obj",
-      })
-    : null;
+const annotatedSelectionStlResult = annotatedSelectionStl
+  ? await upsertBlobContainer({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      filename: ANNOTATED_SELECTION_STL_FILENAME,
+      blobData: annotatedSelectionStl,
+      elements: elementsResult.data,
+      route: "/api/fuzzycad/save-project",
+      createOperation: "create-annotated-selection-stl",
+      updateOperation: "update-annotated-selection-stl",
+    })
+  : null;
 
-  if (annotatedSelectionObjResult && !annotatedSelectionObjResult.ok) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Failed to save FuzzyCAD annotated selection OBJ.",
-        annotatedSelectionObjResult,
-      },
-      { status: annotatedSelectionObjResult.status },
-    );
-  }
+if (annotatedSelectionStlResult && !annotatedSelectionStlResult.ok) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Failed to save FuzzyCAD annotated selection STL.",
+      annotatedSelectionStlResult,
+    },
+    { status: annotatedSelectionStlResult.status },
+  );
+}
 
-  const reconstructionResult = annotatedSelectionObjResult?.elementId
-    ? await translateAnnotatedObjIntoVisualizationLayer({
-        server,
-        documentId,
-        workspaceId,
-        accessToken,
-        annotatedSelectionObjElementId: annotatedSelectionObjResult.elementId,
-      })
-    : {
-        ok: false,
-        mode: "missing-annotated-selection-obj",
-        message: "No annotated selection OBJ was provided.",
-      };
+const reconstructionResult = annotatedSelectionStlResult?.elementId
+  ? await translateAnnotatedStlIntoVisualizationLayer({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      annotatedSelectionStlElementId: annotatedSelectionStlResult.elementId,
+    })
+  : {
+      ok: false,
+      mode: "missing-annotated-selection-stl",
+      message: "No annotated selection STL was provided.",
+    };
 
-  const generatedGeometryPayload = buildGeneratedGeometryPayload({
-    projectState,
-    annotatedSelectionObjResult,
-    reconstructionResult: isRecord(reconstructionResult)
-      ? reconstructionResult
-      : null,
-  });
+const generatedGeometryPayload = buildGeneratedGeometryPayload({
+  projectState,
+  annotatedSelectionStlResult,
+  reconstructionResult: isRecord(reconstructionResult)
+    ? reconstructionResult
+    : null,
+});
 
   const elementsAfterArtifactsResult = await getCachedElements({
     server,
@@ -693,7 +691,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error:
           "Generated artifacts were saved, but failed to refresh elements before saving generated geometry metadata.",
-        annotatedSelectionObjResult,
+        annotatedSelectionStlResult,
         reconstructionResult,
       },
       { status: elementsAfterArtifactsResult.status },
@@ -718,7 +716,7 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         error: "Failed to save FuzzyCAD generated geometry container.",
-        annotatedSelectionObjResult,
+        annotatedSelectionStlResult,
         reconstructionResult,
         generatedGeometryResult,
       },
@@ -732,16 +730,16 @@ export async function POST(req: NextRequest) {
       ...(isRecord(projectState.generatedGeometry)
         ? projectState.generatedGeometry
         : {}),
-      mode: annotatedSelectionObjResult ? "imported-mesh" : "none",
-      containerElementId: generatedGeometryResult.elementId,
-      annotatedSelectionObj: annotatedSelectionObjResult
-        ? {
-            filename: annotatedSelectionObjResult.filename,
-            elementId: annotatedSelectionObjResult.elementId,
-            mode: annotatedSelectionObjResult.mode,
-            status: annotatedSelectionObjResult.status,
-          }
-        : null,
+mode: annotatedSelectionStlResult ? "imported-mesh" : "none",
+containerElementId: generatedGeometryResult.elementId,
+annotatedSelectionStl: annotatedSelectionStlResult
+  ? {
+      filename: annotatedSelectionStlResult.filename,
+      elementId: annotatedSelectionStlResult.elementId,
+      mode: annotatedSelectionStlResult.mode,
+      status: annotatedSelectionStlResult.status,
+    }
+  : null,
       visualizationLayer: isRecord(reconstructionResult)
         ? {
             name: VISUALIZATION_LAYER_NAME,
@@ -782,7 +780,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error:
           "Generated geometry was saved, but failed to refresh elements before saving project state.",
-        annotatedSelectionObjResult,
+        annotatedSelectionStlResult,
         generatedGeometryResult,
         reconstructionResult,
       },
@@ -809,7 +807,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error:
           "Generated geometry was saved, but failed to save FuzzyCAD project state.",
-        annotatedSelectionObjResult,
+        annotatedSelectionStlResult,
         generatedGeometryResult,
         reconstructionResult,
         projectStateResult,
@@ -820,14 +818,14 @@ export async function POST(req: NextRequest) {
 
   clearElementsCache();
 
-  return NextResponse.json({
-    ok: true,
-    status: 200,
-    message: "FuzzyCAD project saved.",
-    annotatedSelectionObjResult,
-    generatedGeometryResult,
-    reconstructionResult,
-    projectStateResult,
-    projectState: projectStateWithGeneratedGeometry,
-  });
+return NextResponse.json({
+  ok: true,
+  status: 200,
+  message: "FuzzyCAD project saved.",
+  annotatedSelectionStlResult,
+  generatedGeometryResult,
+  reconstructionResult,
+  projectStateResult,
+  projectState: projectStateWithGeneratedGeometry,
+});
 }
