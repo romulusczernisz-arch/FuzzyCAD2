@@ -81,6 +81,8 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
   );
 }
 
+
+
 export default function FuzzyCADHome() {
   const params = useSearchParams();
   const allParams = Array.from(params.entries());
@@ -677,6 +679,28 @@ async function saveProjectStateToOnshape() {
   console.log("Saved FuzzyCAD project:", result);
 }
 
+
+function normalizeLoadedUncertaintyDocument(state: unknown) {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+
+  const record = state as {
+    annotations?: unknown;
+  };
+
+  if (!Array.isArray(record.annotations)) {
+    return null;
+  }
+
+  return {
+    version: "0.1" as const,
+    source: currentUncertaintySource,
+    annotations: record.annotations,
+  };
+}
+
+
   async function loadProjectStateFromOnshape(options: LoadOptions = {}) {
     if (!documentId || !workspaceId) {
       console.warn("Missing documentId or workspaceId");
@@ -692,9 +716,13 @@ async function saveProjectStateToOnshape() {
 
     console.log("Loaded FuzzyCAD project state:", result);
 
-    if (result.ok && result.state) {
-      replaceUncertaintyDocument(result.state as typeof uncertaintyDocument);
-    }
+if (result.ok && result.state) {
+  const loadedDocument = normalizeLoadedUncertaintyDocument(result.state);
+
+  if (loadedDocument) {
+    replaceUncertaintyDocument(loadedDocument);
+  }
+}
   }
 
   function updateConfidenceDraft(

@@ -235,33 +235,113 @@ async function upsertJsonBlobContainer(input: {
 
 
 
+function getProjectSource(projectState: UnknownRecord) {
+  return isRecord(projectState.source) ? projectState.source : {};
+}
+
+function getSourceAssemblyElementId(projectState: UnknownRecord) {
+  const source = getProjectSource(projectState);
+  const assemblyElementId = source.assemblyElementId;
+
+  return typeof assemblyElementId === "string" && assemblyElementId.length > 0
+    ? assemblyElementId
+    : null;
+}
+
+function buildAnnotatedSelectionManifest(projectState: UnknownRecord) {
+  const annotations = Array.isArray(projectState.annotations)
+    ? projectState.annotations
+    : [];
+
+  const includedObjects: {
+    annotationId: string;
+    pathKey: string;
+    type: string;
+  }[] = [];
+
+  for (const annotation of annotations) {
+    if (!isRecord(annotation)) continue;
+    if (annotation.type !== "size") continue;
+
+    const annotationId =
+      typeof annotation.id === "string" ? annotation.id : "unknown-annotation";
+
+    const target = isRecord(annotation.target) ? annotation.target : null;
+    const pathKeys = Array.isArray(target?.pathKeys)
+      ? target.pathKeys.filter((item): item is string => typeof item === "string")
+      : [];
+
+    for (const pathKey of pathKeys) {
+      includedObjects.push({
+        annotationId,
+        pathKey,
+        type: "size",
+      });
+    }
+  }
+
+  return {
+    objectCount: includedObjects.length,
+    includedObjects,
+  };
+}
+
 function buildGeneratedGeometryPayload(input: {
   projectState: UnknownRecord;
+  annotatedSelectionGlbResult: UpsertBlobResult | null;
+  reconstructionResult: UnknownRecord | null;
 }) {
   const now = new Date().toISOString();
+  const source = getProjectSource(input.projectState);
+  const selectedAssemblyElementId = getSourceAssemblyElementId(input.projectState);
+  const annotatedSelectionManifest = buildAnnotatedSelectionManifest(
+    input.projectState,
+  );
+
+  const visualizationLayerElementId =
+    input.reconstructionResult &&
+    typeof input.reconstructionResult.visualizationElementId === "string"
+      ? input.reconstructionResult.visualizationElementId
+      : null;
 
   return {
     schemaVersion: "fuzzycad.generatedGeometry.v1",
     updatedAt: now,
 
-    /**
-     * 这里先存 reconstruction input。
-     * 后面 FeatureScript 那边要用的 metadata，就从这里拿。
-     */
-    source: input.projectState.source ?? null,
+    source,
     objectMap: input.projectState.objectMap ?? {},
     annotations: input.projectState.annotations ?? [],
 
-    /**
-     * 这里是 FuzzyCAD 自己生成的 visualization manifest。
-     * 现在可以是 blur-shell / direction-arrow / dashed-line 这些 semantic objects。
-     * 以后再把这些 semantic objects 翻译成 Onshape-native geometry。
-     */
+    annotatedSelectionGlb: input.annotatedSelectionGlbResult
+      ? {
+          filename: input.annotatedSelectionGlbResult.filename,
+          elementId: input.annotatedSelectionGlbResult.elementId,
+          mode: input.annotatedSelectionGlbResult.mode,
+          status: input.annotatedSelectionGlbResult.status,
+          updatedAt: now,
+          ...annotatedSelectionManifest,
+        }
+      : null,
+
+    visualizationLayer: {
+      name: VISUALIZATION_LAYER_NAME,
+      elementId: visualizationLayerElementId,
+      status: visualizationLayerElementId ? "ready" : "missing",
+    },
+
+    assemblyOverlay: selectedAssemblyElementId
+      ? {
+          assemblyElementId: selectedAssemblyElementId,
+          instanceName: "FuzzyCAD_Generated_Overlay",
+          status: "pending-insertion",
+        }
+      : null,
+
     generatedGeometry:
       isRecord(input.projectState.generatedGeometry)
         ? input.projectState.generatedGeometry
         : {
-            mode: "none",
+            mode: "blob-mesh",
             containerElementId: null,
             manifest: {
               visualObjects: [],
@@ -269,7 +349,6 @@ function buildGeneratedGeometryPayload(input: {
           },
   };
 }
-
 const VISUALIZATION_LAYER_NAME = "FuzzyCAD_Visualization_Layer";
 
 
@@ -444,138 +523,159 @@ export async function POST(req: NextRequest) {
    *
    * 第二次 Save 会 update existing，不会新增一堆重复 GLB。
    */
-  const annotatedSelectionGlbResult = annotatedSelectionGlb
-    ? await upsertBlobContainer({
-        server,
-        documentId,
-        workspaceId,
-        accessToken,
-        filename: ANNOTATED_SELECTION_GLB_FILENAME,
-        blobData: annotatedSelectionGlb,
-        elements: elementsResult.data,
-        route: "/api/fuzzycad/save-project",
-        createOperation: "create-annotated-selection-glb",
-        updateOperation: "update-annotated-selection-glb",
-      })
-    : null;
+/**
+ * 1. 如果前端传了 annotated selection GLB，
+ * 先保存 / 更新稳定文件 fuzzycad-annotated-selection.glb。
+ */
+const annotatedSelectionGlbResult = annotatedSelectionGlb
+  ? await upsertBlobContainer({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      filename: ANNOTATED_SELECTION_GLB_FILENAME,
+      blobData: annotatedSelectionGlb,
+      elements: elementsResult.data,
+      route: "/api/fuzzycad/save-project",
+      createOperation: "create-annotated-selection-glb",
+      updateOperation: "update-annotated-selection-glb",
+    })
+  : null;
 
-  if (annotatedSelectionGlbResult && !annotatedSelectionGlbResult.ok) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Failed to save FuzzyCAD annotated selection GLB.",
-        annotatedSelectionGlbResult,
-      },
-      { status: annotatedSelectionGlbResult.status },
-    );
-  }
+if (annotatedSelectionGlbResult && !annotatedSelectionGlbResult.ok) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Failed to save FuzzyCAD annotated selection GLB.",
+      annotatedSelectionGlbResult,
+    },
+    { status: annotatedSelectionGlbResult.status },
+  );
+}
+
+/**
+ * 2. 创建 / 复用 FuzzyCAD_Visualization_Layer。
+ * 现在还不 import GLB，只先保证 layer 存在并拿到 elementId。
+ */
+const reconstructionResult = await reconstructGeneratedGeometryInOnshape({
+  server,
+  documentId,
+  workspaceId,
+  accessToken,
+  generatedGeometryElementId: null,
+  projectState,
+});
+
+/**
+ * 3. 生成 generated-geometry metadata。
+ */
+const generatedGeometryPayload = buildGeneratedGeometryPayload({
+  projectState,
+  annotatedSelectionGlbResult,
+  reconstructionResult: isRecord(reconstructionResult)
+    ? reconstructionResult
+    : null,
+});
+
+/**
+ * 因为前面可能新建了 GLB 和 Part Studio，
+ * 所以重新拉一次 elements。
+ */
+const elementsAfterArtifactsResult = await getCachedElements({
+  server,
+  documentId,
+  workspaceId,
+  accessToken,
+  route: "/api/fuzzycad/save-project",
+  force: true,
+});
+
+if (
+  !elementsAfterArtifactsResult.ok ||
+  !Array.isArray(elementsAfterArtifactsResult.data)
+) {
+  return NextResponse.json(
+    {
+      ...elementsAfterArtifactsResult,
+      ok: false,
+      error:
+        "Generated artifacts were saved, but failed to refresh elements before saving generated geometry metadata.",
+      annotatedSelectionGlbResult,
+      reconstructionResult,
+    },
+    { status: elementsAfterArtifactsResult.status },
+  );
+}
+
+/**
+ * 4. 保存 fuzzycad-generated-geometry.json。
+ */
+const generatedGeometryResult = await upsertJsonBlobContainer({
+  server,
+  documentId,
+  workspaceId,
+  accessToken,
+  filename: GENERATED_GEOMETRY_FILENAME,
+  jsonData: generatedGeometryPayload,
+  elements: elementsAfterArtifactsResult.data,
+  route: "/api/fuzzycad/save-project",
+  createOperation: "create-generated-geometry-container",
+  updateOperation: "update-generated-geometry-container",
+});
+
+if (!generatedGeometryResult.ok) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Failed to save FuzzyCAD generated geometry container.",
+      annotatedSelectionGlbResult,
+      reconstructionResult,
+      generatedGeometryResult,
+    },
+    { status: generatedGeometryResult.status },
+  );
+}
 
   /**
-   * 2. 保存 generated geometry metadata。
-   * 这里还是 fuzzycad-generated-geometry.json。
+   * 4. 把 generated geometry 信息写回 project state。
    */
-  const generatedGeometryPayload = {
-    ...buildGeneratedGeometryPayload({
-      projectState,
-    }),
+const projectStateWithGeneratedGeometry = {
+  ...projectState,
+  generatedGeometry: {
+    ...(isRecord(projectState.generatedGeometry)
+      ? projectState.generatedGeometry
+      : {}),
+    mode: annotatedSelectionGlbResult ? "blob-mesh" : "none",
+    containerElementId: generatedGeometryResult.elementId,
     annotatedSelectionGlb: annotatedSelectionGlbResult
       ? {
           filename: annotatedSelectionGlbResult.filename,
           elementId: annotatedSelectionGlbResult.elementId,
           mode: annotatedSelectionGlbResult.mode,
           status: annotatedSelectionGlbResult.status,
-          updatedAt: new Date().toISOString(),
         }
       : null,
-  };
-
-  /**
-   * 因为刚刚可能新建了 fuzzycad-annotated-selection.glb，
-   * 所以这里重新拉一次 elements，避免 generated geometry JSON 用旧列表。
-   */
-  const elementsAfterGlbResult = await getCachedElements({
-    server,
-    documentId,
-    workspaceId,
-    accessToken,
-    route: "/api/fuzzycad/save-project",
-    force: true,
-  });
-
-  if (!elementsAfterGlbResult.ok || !Array.isArray(elementsAfterGlbResult.data)) {
-    return NextResponse.json(
-      {
-        ...elementsAfterGlbResult,
-        ok: false,
-        error:
-          "Annotated selection GLB was saved, but failed to refresh elements before saving generated geometry metadata.",
-        annotatedSelectionGlbResult,
-      },
-      { status: elementsAfterGlbResult.status },
-    );
-  }
-
-  const generatedGeometryResult = await upsertJsonBlobContainer({
-    server,
-    documentId,
-    workspaceId,
-    accessToken,
-    filename: GENERATED_GEOMETRY_FILENAME,
-    jsonData: generatedGeometryPayload,
-    elements: elementsAfterGlbResult.data,
-    route: "/api/fuzzycad/save-project",
-    createOperation: "create-generated-geometry-container",
-    updateOperation: "update-generated-geometry-container",
-  });
-
-  if (!generatedGeometryResult.ok) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Failed to save FuzzyCAD generated geometry container.",
-        annotatedSelectionGlbResult,
-        generatedGeometryResult,
-      },
-      { status: generatedGeometryResult.status },
-    );
-  }
-
-  /**
-   * 3. 创建 / 复用 FuzzyCAD_Visualization_Layer。
-   * 现在还不把 GLB import 进去，只先保证 layer 存在。
-   */
-  const reconstructionResult = await reconstructGeneratedGeometryInOnshape({
-    server,
-    documentId,
-    workspaceId,
-    accessToken,
-    generatedGeometryElementId: generatedGeometryResult.elementId,
-    projectState,
-  });
-
-  /**
-   * 4. 把 generated geometry 信息写回 project state。
-   */
-  const projectStateWithGeneratedGeometry = {
-    ...projectState,
-    generatedGeometry: {
-      ...(isRecord(projectState.generatedGeometry)
-        ? projectState.generatedGeometry
-        : {}),
-      mode: annotatedSelectionGlbResult ? "blob-mesh" : "none",
-      containerElementId: generatedGeometryResult.elementId,
-      annotatedSelectionGlb: annotatedSelectionGlbResult
-        ? {
-            filename: annotatedSelectionGlbResult.filename,
-            elementId: annotatedSelectionGlbResult.elementId,
-            mode: annotatedSelectionGlbResult.mode,
-            status: annotatedSelectionGlbResult.status,
-          }
-        : null,
-      lastGeneratedAt: new Date().toISOString(),
-      reconstruction: reconstructionResult,
-    },
-  };
+    visualizationLayer: isRecord(reconstructionResult)
+      ? {
+          name: VISUALIZATION_LAYER_NAME,
+          elementId:
+            typeof reconstructionResult.visualizationElementId === "string"
+              ? reconstructionResult.visualizationElementId
+              : null,
+          mode: reconstructionResult.mode,
+        }
+      : null,
+    assemblyOverlay: getSourceAssemblyElementId(projectState)
+      ? {
+          assemblyElementId: getSourceAssemblyElementId(projectState),
+          instanceName: "FuzzyCAD_Generated_Overlay",
+          status: "pending-insertion",
+        }
+      : null,
+    lastGeneratedAt: new Date().toISOString(),
+    reconstruction: reconstructionResult,
+  },
+};
 
   /**
    * 5. 保存 project state JSON。
@@ -632,14 +732,14 @@ export async function POST(req: NextRequest) {
 
   clearElementsCache();
 
-  return NextResponse.json({
-    ok: true,
-    status: 200,
-    message: "FuzzyCAD project saved.",
-    annotatedSelectionGlbResult,
-    generatedGeometryResult,
-    reconstructionResult,
-    projectStateResult,
-    projectState: projectStateWithGeneratedGeometry,
-  });
+return NextResponse.json({
+  ok: true,
+  status: 200,
+  message: "FuzzyCAD project saved.",
+  annotatedSelectionGlbResult,
+  generatedGeometryResult,
+  reconstructionResult,
+  projectStateResult,
+  projectState: projectStateWithGeneratedGeometry,
+});
 }
