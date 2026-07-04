@@ -1,7 +1,10 @@
 import * as THREE from "three";
-import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { applyPlacements, type PartPlacement } from "../../components/viewer/placement";
+import {
+  applyPlacements,
+  type PartPlacement,
+} from "../../components/viewer/placement";
 import { prepareRenderableMeshes } from "../../components/viewer/materials";
 import type { FuzzyCADUncertaintyAnnotation } from "../uncertainty/document";
 
@@ -61,20 +64,6 @@ function findTopLevelAnnotatedObjects(
   return objects;
 }
 
-function replaceWithPlainMaterial(object: THREE.Object3D) {
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-
-    child.geometry = child.geometry.clone();
-    child.material = new THREE.MeshStandardMaterial({
-      color: 0xb8beca,
-      roughness: 0.85,
-      metalness: 0,
-      side: THREE.DoubleSide,
-    });
-  });
-}
-
 function cloneObjectInWorldSpace(object: THREE.Object3D) {
   object.updateWorldMatrix(true, true);
 
@@ -89,40 +78,31 @@ function cloneObjectInWorldSpace(object: THREE.Object3D) {
     sourcePathKey: object.userData?.fuzzyPathKey ?? null,
   };
 
-  replaceWithPlainMaterial(clone);
+  clone.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+
+    child.geometry = child.geometry.clone();
+    child.material = new THREE.MeshStandardMaterial({
+      color: 0xb8beca,
+      roughness: 0.85,
+      metalness: 0,
+      side: THREE.DoubleSide,
+    });
+  });
 
   return clone;
 }
 
-function exportSceneToGlb(root: THREE.Object3D) {
-  const exporter = new GLTFExporter();
+function exportSceneToObj(root: THREE.Object3D) {
+  const exporter = new OBJExporter();
+  const objText = exporter.parse(root);
 
-  return new Promise<Blob>((resolve, reject) => {
-    exporter.parse(
-      root,
-      (result) => {
-        if (!(result instanceof ArrayBuffer)) {
-          reject(new Error("Expected binary GLB ArrayBuffer."));
-          return;
-        }
-
-        resolve(
-          new Blob([result], {
-            type: "model/gltf-binary",
-          }),
-        );
-      },
-      reject,
-      {
-        binary: true,
-        onlyVisible: true,
-        includeCustomExtensions: false,
-      },
-    );
+  return new Blob([objText], {
+    type: "text/plain",
   });
 }
 
-export async function exportAnnotatedSelectionGlb(input: {
+export async function exportAnnotatedSelectionObj(input: {
   gltfUrl: string;
   placements: PartPlacement[];
   annotations: FuzzyCADUncertaintyAnnotation[];
@@ -137,19 +117,20 @@ export async function exportAnnotatedSelectionGlb(input: {
   const gltf = await loader.loadAsync(input.gltfUrl);
   const scene = gltf.scene.clone(true);
 
-prepareRenderableMeshes(scene);
-applyPlacements(scene, input.placements ?? []);
+  prepareRenderableMeshes(scene);
+  applyPlacements(scene, input.placements ?? []);
 
-/**
- * Important:
- * This GLB is generated for return-to-Onshape, not for Three.js display.
- *
- * FuzzyCADGeometryViewer applies scene.rotation.x = -Math.PI / 2
- * only as a viewer/display correction. Do NOT apply that correction here.
- *
- * Exported generated geometry should stay in Onshape assembly coordinates.
- */
-scene.updateMatrixWorld(true);
+  /**
+   * Important:
+   * Do NOT apply the Three.js viewer rotation here.
+   *
+   * FuzzyCADGeometryViewer uses scene.rotation.x = -Math.PI / 2
+   * only for browser display.
+   *
+   * This OBJ is meant to go back into Onshape, so it should remain in
+   * source assembly coordinate space.
+   */
+  scene.updateMatrixWorld(true);
 
   const targetObjects = findTopLevelAnnotatedObjects(scene, annotatedPathKeys);
 
@@ -164,5 +145,7 @@ scene.updateMatrixWorld(true);
     exportRoot.add(cloneObjectInWorldSpace(object));
   }
 
-  return exportSceneToGlb(exportRoot);
+  exportRoot.updateMatrixWorld(true);
+
+  return exportSceneToObj(exportRoot);
 }

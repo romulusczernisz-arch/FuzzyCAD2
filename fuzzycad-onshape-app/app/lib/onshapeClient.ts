@@ -23,7 +23,7 @@ export type ApiResult = {
   manifest?: unknown;
   mode?: string;
   message?: string;
-  annotatedSelectionGlbResult?: unknown;
+annotatedSelectionObjResult?: unknown;
 
   generatedGeometryResult?: unknown;
   projectStateResult?: unknown;
@@ -35,10 +35,10 @@ export async function saveFuzzycadProject(
   query: DocumentQuery,
   projectState: unknown,
   options: {
-    annotatedSelectionGlb?: Blob | null;
+    annotatedSelectionObj?: Blob | null;
   } = {},
 ): Promise<ApiResult> {
-  if (options.annotatedSelectionGlb) {
+  if (options.annotatedSelectionObj) {
     const formData = new FormData();
 
     formData.append("documentId", query.documentId);
@@ -46,9 +46,9 @@ export async function saveFuzzycadProject(
     formData.append("server", query.server);
     formData.append("projectState", JSON.stringify(projectState));
     formData.append(
-      "annotatedSelectionGlb",
-      options.annotatedSelectionGlb,
-      "fuzzycad-annotated-selection.glb",
+      "annotatedSelectionObj",
+      options.annotatedSelectionObj,
+      "fuzzycad-annotated-selection.obj",
     );
 
     const res = await fetch("/api/fuzzycad/save-project", {
