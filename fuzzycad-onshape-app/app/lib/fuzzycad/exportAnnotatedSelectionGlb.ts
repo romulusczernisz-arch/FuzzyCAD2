@@ -137,15 +137,19 @@ export async function exportAnnotatedSelectionGlb(input: {
   const gltf = await loader.loadAsync(input.gltfUrl);
   const scene = gltf.scene.clone(true);
 
-  prepareRenderableMeshes(scene);
-  applyPlacements(scene, input.placements ?? []);
+prepareRenderableMeshes(scene);
+applyPlacements(scene, input.placements ?? []);
 
-  /**
-   * Keep this consistent with FuzzyCADGeometryViewer.
-   * If imported geometry is rotated in Onshape later, this is the first place to test.
-   */
-  scene.rotation.x = -Math.PI / 2;
-  scene.updateMatrixWorld(true);
+/**
+ * Important:
+ * This GLB is generated for return-to-Onshape, not for Three.js display.
+ *
+ * FuzzyCADGeometryViewer applies scene.rotation.x = -Math.PI / 2
+ * only as a viewer/display correction. Do NOT apply that correction here.
+ *
+ * Exported generated geometry should stay in Onshape assembly coordinates.
+ */
+scene.updateMatrixWorld(true);
 
   const targetObjects = findTopLevelAnnotatedObjects(scene, annotatedPathKeys);
 
