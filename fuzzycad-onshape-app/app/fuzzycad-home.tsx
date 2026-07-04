@@ -55,6 +55,7 @@ import {
 } from "./lib/uncertainty/document";
 import { useUncertaintyDocument } from "./hooks/useUncertaintyDocument";
 import { buildFuzzyCADProjectState } from "./lib/fuzzycad/projectState";
+import { exportAnnotatedSelectionGlb } from "./lib/fuzzycad/exportAnnotatedSelectionGlb";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -650,6 +651,17 @@ async function saveProjectStateToOnshape() {
     objectSummaries,
   });
 
+  const annotatedSelectionGlb =
+    gltfUrl && placements
+      ? await exportAnnotatedSelectionGlb({
+          gltfUrl,
+          placements,
+          annotations: uncertaintyDocumentWithCurrentSource.annotations,
+        })
+      : null;
+
+  console.log("Annotated selection GLB:", annotatedSelectionGlb);
+
   const result = await saveFuzzycadProject(
     {
       documentId,
@@ -657,6 +669,9 @@ async function saveProjectStateToOnshape() {
       server,
     },
     projectState,
+    {
+      annotatedSelectionGlb,
+    },
   );
 
   console.log("Saved FuzzyCAD project:", result);
