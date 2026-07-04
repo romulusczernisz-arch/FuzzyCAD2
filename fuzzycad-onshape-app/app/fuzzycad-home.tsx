@@ -677,30 +677,6 @@ async function saveProjectStateToOnshape() {
   );
 
   console.log("Saved FuzzyCAD project:", result);
-
-  const glbElementId =
-  result.annotatedSelectionGlbResult &&
-  typeof result.annotatedSelectionGlbResult === "object" &&
-  "elementId" in result.annotatedSelectionGlbResult
-    ? String(result.annotatedSelectionGlbResult.elementId)
-    : null;
-
-if (glbElementId) {
-  const importRes = await fetch("/api/fuzzycad/import-annotated-glb", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      documentId,
-      workspaceId,
-      server,
-      annotatedSelectionGlbElementId: glbElementId,
-      destinationName: "FuzzyCAD_Visualization_Layer",
-    }),
-  });
-
-  const importData = await importRes.json();
-  console.log("Import annotated GLB probe:", importData);
-}
 }
 
 
