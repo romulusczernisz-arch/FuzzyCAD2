@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  getCachedElements,
+} from "../../../lib/server/onshapeElementsCache";
+import { shouldForceRefresh } from "../../../lib/server/onshapeApi";
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
@@ -6,13 +10,14 @@ export async function GET(req: NextRequest) {
   const server = searchParams.get("server") || "https://cad.onshape.com";
   const documentId = searchParams.get("documentId");
   const workspaceId = searchParams.get("workspaceId");
+  const force = shouldForceRefresh(searchParams);
 
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
   if (!documentId || !workspaceId) {
     return NextResponse.json(
       { error: "Missing documentId or workspaceId" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -22,36 +27,27 @@ export async function GET(req: NextRequest) {
         error: "Not connected to Onshape yet",
         action: "Click Connect Onshape first",
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
-  const endpoint = `${server}/api/documents/d/${documentId}/w/${workspaceId}/elements`;
-
-  const onshapeRes = await fetch(endpoint, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
+  const result = await getCachedElements({
+    server,
+    documentId,
+    workspaceId,
+    accessToken,
+    route: "/api/onshape/elements",
+    force,
   });
-
-  const text = await onshapeRes.text();
-
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = text;
-  }
 
   return NextResponse.json(
     {
-      endpoint,
-      status: onshapeRes.status,
-      ok: onshapeRes.ok,
-      data,
+      endpoint: result.endpoint,
+      status: result.status,
+      ok: result.ok,
+      cache: result.cache,
+      data: result.data,
     },
-    { status: onshapeRes.ok ? 200 : onshapeRes.status }
+    { status: result.ok ? 200 : result.status },
   );
 }
