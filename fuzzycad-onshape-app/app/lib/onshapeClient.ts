@@ -29,6 +29,7 @@ type DocumentQuery = {
   documentId: string;
   workspaceId: string;
   server: string;
+  force?: boolean;
 };
 
 type AssemblyQuery = DocumentQuery & {
