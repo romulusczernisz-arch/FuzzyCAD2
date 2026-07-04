@@ -1,4 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  clearElementsCache,
+  getCachedElements,
+} from "../../../lib/server/onshapeElementsCache";
+import {
+  onshapeFetch,
+  parseJsonOrText,
+  shouldForceRefresh,
+} from "../../../lib/server/onshapeApi";
 
 const STATE_FILENAME = "fuzzycad-project-state.json";
 
@@ -18,44 +27,13 @@ function getElementId(element: UnknownRecord) {
   return typeof id === "string" ? id : null;
 }
 
-function parseJson(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-async function getElements(input: {
-  server: string;
-  documentId: string;
-  workspaceId: string;
-  accessToken: string;
-}) {
-  const endpoint = `${input.server}/api/documents/d/${input.documentId}/w/${input.workspaceId}/elements`;
-
-  const res = await fetch(endpoint, {
-    headers: {
-      Authorization: `Bearer ${input.accessToken}`,
-      Accept: "application/json",
-    },
-  });
-
-  const text = await res.text();
-  const data = parseJson(text);
-
-  if (!res.ok || !Array.isArray(data)) {
-    return { ok: false, status: res.status, endpoint, data };
-  }
-
-  return { ok: true, status: res.status, endpoint, data };
-}
-
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
   const server = searchParams.get("server") || "https://cad.onshape.com";
   const documentId = searchParams.get("documentId");
   const workspaceId = searchParams.get("workspaceId");
+  const force = shouldForceRefresh(searchParams);
+
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
   if (!documentId || !workspaceId) {
@@ -72,15 +50,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const elementsResult = await getElements({
+  const elementsResult = await getCachedElements({
     server,
     documentId,
     workspaceId,
     accessToken,
+    route: "/api/fuzzycad/project-state",
+    force,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
-    return NextResponse.json(elementsResult, { status: elementsResult.status });
+    return NextResponse.json(
+      {
+        ...elementsResult,
+        ok: false,
+      },
+      { status: elementsResult.status },
+    );
   }
 
   const stateElements = elementsResult.data
@@ -92,28 +78,39 @@ export async function GET(req: NextRequest) {
 
   if (!elementId) {
     return NextResponse.json(
-      { error: "No FuzzyCAD project state found" },
+      {
+        error: "No FuzzyCAD project state found",
+        elementsCache: elementsResult.cache,
+      },
       { status: 404 },
     );
   }
 
   const blobEndpoint = `${server}/api/blobelements/d/${documentId}/w/${workspaceId}/e/${elementId}`;
 
-  const blobRes = await fetch(blobEndpoint, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json,text/plain,*/*",
+  const blobRes = await onshapeFetch(
+    blobEndpoint,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json,text/plain,*/*",
+      },
     },
-  });
+    {
+      route: "/api/fuzzycad/project-state",
+      operation: "get-project-state-blob",
+    },
+  );
 
-  const text = await blobRes.text();
-  const state = parseJson(text);
+  const state = await parseJsonOrText(blobRes);
 
   return NextResponse.json(
     {
       ok: blobRes.ok,
       status: blobRes.status,
       elementId,
+      elementsCache: elementsResult.cache,
+      blobEndpoint,
       state,
     },
     { status: blobRes.ok ? 200 : blobRes.status },
@@ -157,17 +154,27 @@ export async function PUT(req: NextRequest) {
 
   const endpoint = `${server}/api/blobelements/d/${documentId}/w/${workspaceId}`;
 
-  const onshapeRes = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
+  const onshapeRes = await onshapeFetch(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      body: formData,
     },
-    body: formData,
-  });
+    {
+      route: "/api/fuzzycad/project-state",
+      operation: "save-project-state-blob",
+    },
+  );
 
-  const text = await onshapeRes.text();
-  const data = parseJson(text);
+  const data = await parseJsonOrText(onshapeRes);
+
+  if (onshapeRes.ok) {
+    clearElementsCache();
+  }
 
   return NextResponse.json(
     {
