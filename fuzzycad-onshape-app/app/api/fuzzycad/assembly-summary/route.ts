@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  getCachedAssembly,
+} from "../../../lib/server/onshapeAssemblyCache";
+import { shouldForceRefresh } from "../../../lib/server/onshapeApi";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -19,6 +23,7 @@ function asArray(value: unknown): unknown[] {
 
 function getRootAssembly(data: unknown): UnknownRecord {
   if (!isRecord(data)) return {};
+
   const rootAssembly = data.rootAssembly;
   return isRecord(rootAssembly) ? rootAssembly : {};
 }
@@ -100,6 +105,7 @@ export async function GET(req: NextRequest) {
   const documentId = searchParams.get("documentId");
   const workspaceId = searchParams.get("workspaceId");
   const assemblyElementId = searchParams.get("assemblyElementId");
+  const force = shouldForceRefresh(searchParams);
 
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
@@ -108,7 +114,7 @@ export async function GET(req: NextRequest) {
       {
         error: "Missing documentId, workspaceId, or assemblyElementId",
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -118,45 +124,40 @@ export async function GET(req: NextRequest) {
         error: "Not connected to Onshape yet",
         action: "Click Connect Onshape first",
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
-  const endpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}`;
-
-  const onshapeRes = await fetch(endpoint, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
+  const assemblyResult = await getCachedAssembly({
+    server,
+    documentId,
+    workspaceId,
+    assemblyElementId,
+    accessToken,
+    route: "/api/fuzzycad/assembly-summary",
+    force,
   });
 
-  const text = await onshapeRes.text();
-
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = text;
-  }
-
-  if (!onshapeRes.ok) {
+  if (!assemblyResult.ok) {
     return NextResponse.json(
       {
-        endpoint,
-        status: onshapeRes.status,
+        endpoint: assemblyResult.endpoint,
+        status: assemblyResult.status,
         ok: false,
-        data,
+        cache: assemblyResult.cache,
+        data: assemblyResult.data,
       },
-      { status: onshapeRes.status }
+      { status: assemblyResult.status },
     );
   }
 
-  const rootAssembly = getRootAssembly(data);
+  const rootAssembly = getRootAssembly(assemblyResult.data);
 
-  const summary = {
-    endpoint,
+  return NextResponse.json({
+    endpoint: assemblyResult.endpoint,
+    status: 200,
+    ok: true,
+    cache: assemblyResult.cache,
     counts: {
       occurrences: getCount(rootAssembly, "occurrences"),
       instances: getCount(rootAssembly, "instances"),
@@ -167,7 +168,5 @@ export async function GET(req: NextRequest) {
     occurrencesPreview: summarizeOccurrences(rootAssembly),
     instancesPreview: summarizeInstances(rootAssembly),
     featuresPreview: summarizeFeatures(rootAssembly),
-  };
-
-  return NextResponse.json(summary);
+  });
 }
