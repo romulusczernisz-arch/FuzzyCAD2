@@ -1,6 +1,7 @@
 "use client";
 
 import styles from "../fuzzycad-home.module.css";
+import ApiUsagePanel from "./ApiUsagePanel";
 import type { MeshGraphNode } from "./FuzzyCADGeometryViewer";
 
 type DevActionOptions = {
@@ -58,117 +59,117 @@ export default function DevPanel({
       <button onClick={onClose} className={styles.devCloseButton}>
         Close
       </button>
-
+      <ApiUsagePanel />
       <h2>Actions</h2>
 
       <div className={styles.devActions}>
         <a href={connectHref}>Connect Onshape</a>
 
-<button
-  onClick={() => {
-    void onLoadElements();
-  }}
->
-  Load Elements
-</button>
+        <button
+          onClick={() => {
+            void onLoadElements();
+          }}
+        >
+          Load Elements
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadElements({ force: true });
-  }}
->
-  Force Load Elements
-</button>
+        <button
+          onClick={() => {
+            void onLoadElements({ force: true });
+          }}
+        >
+          Force Load Elements
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadRawAssembly();
-  }}
-  disabled={!selectedAssemblyId}
->
-  Raw Assembly
-</button>
+        <button
+          onClick={() => {
+            void onLoadRawAssembly();
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Raw Assembly
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadRawAssembly({ force: true });
-  }}
-  disabled={!selectedAssemblyId}
->
-  Force Raw Assembly
-</button>
+        <button
+          onClick={() => {
+            void onLoadRawAssembly({ force: true });
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Force Raw Assembly
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadSummary();
-  }}
-  disabled={!selectedAssemblyId}
->
-  Summary
-</button>
+        <button
+          onClick={() => {
+            void onLoadSummary();
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Summary
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadSummary({ force: true });
-  }}
-  disabled={!selectedAssemblyId}
->
-  Force Summary
-</button>
+        <button
+          onClick={() => {
+            void onLoadSummary({ force: true });
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Force Summary
+        </button>
 
-<button
-  onClick={() => {
-    void onBuildGraph();
-  }}
-  disabled={!selectedAssemblyId}
->
-  Build Graph
-</button>
+        <button
+          onClick={() => {
+            void onBuildGraph();
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Build Graph
+        </button>
 
-<button
-  onClick={() => {
-    void onBuildGraph({ force: true });
-  }}
-  disabled={!selectedAssemblyId}
->
-  Force Build Graph
-</button>
+        <button
+          onClick={() => {
+            void onBuildGraph({ force: true });
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Force Build Graph
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadGeometry();
-  }}
-  disabled={!selectedAssemblyId}
->
-  Load Geometry
-</button>
+        <button
+          onClick={() => {
+            void onLoadGeometry();
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Load Geometry
+        </button>
 
-<button
-  onClick={() => {
-    void onLoadGeometry({ force: true });
-  }}
-  disabled={!selectedAssemblyId}
->
-  Force Load Geometry
-</button>
+        <button
+          onClick={() => {
+            void onLoadGeometry({ force: true });
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Force Load Geometry
+        </button>
 
-<button
-  onClick={() => {
-    void onInspectZip();
-  }}
-  disabled={!selectedAssemblyId}
->
-  Inspect ZIP
-</button>
+        <button
+          onClick={() => {
+            void onInspectZip();
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Inspect ZIP
+        </button>
 
-<button
-  onClick={() => {
-    void onInspectZip({ force: true });
-  }}
-  disabled={!selectedAssemblyId}
->
-  Force Inspect ZIP
-</button>
+        <button
+          onClick={() => {
+            void onInspectZip({ force: true });
+          }}
+          disabled={!selectedAssemblyId}
+        >
+          Force Inspect ZIP
+        </button>
       </div>
 
       {graphStats ? (
@@ -203,7 +204,7 @@ export default function DevPanel({
               {JSON.stringify(value, null, 2)}
             </pre>
           </details>
-        ) : null
+        ) : null,
       )}
 
       <details className={styles.debugDetails}>

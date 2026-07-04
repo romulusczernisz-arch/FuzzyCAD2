@@ -3,6 +3,32 @@ type OnshapeFetchContext = {
   operation: string;
 };
 
+type OnshapeApiCallRecord = {
+  timestamp: string;
+  route: string;
+  operation: string;
+  status: number;
+  ok: boolean;
+  endpoint: string;
+  durationMs: number;
+  rateRemaining: string | null;
+  retryAfter: string | null;
+};
+
+type OnshapeApiUsageSnapshot = {
+  totalCalls: number;
+  byRoute: Record<string, number>;
+  byOperation: Record<string, number>;
+  recentCalls: OnshapeApiCallRecord[];
+};
+
+const MAX_RECENT_CALLS = 200;
+
+let totalCalls = 0;
+const byRoute: Record<string, number> = {};
+const byOperation: Record<string, number> = {};
+const recentCalls: OnshapeApiCallRecord[] = [];
+
 function getHeader(res: Response, names: string[]) {
   for (const name of names) {
     const value = res.headers.get(name);
@@ -15,6 +41,22 @@ function getHeader(res: Response, names: string[]) {
   return null;
 }
 
+function incrementCounter(counter: Record<string, number>, key: string) {
+  counter[key] = (counter[key] ?? 0) + 1;
+}
+
+function recordOnshapeApiCall(record: OnshapeApiCallRecord) {
+  totalCalls += 1;
+  incrementCounter(byRoute, record.route);
+  incrementCounter(byOperation, record.operation);
+
+  recentCalls.unshift(record);
+
+  if (recentCalls.length > MAX_RECENT_CALLS) {
+    recentCalls.pop();
+  }
+}
+
 export async function onshapeFetch(
   endpoint: string,
   init: RequestInit,
@@ -23,7 +65,8 @@ export async function onshapeFetch(
   const startedAt = Date.now();
   const res = await fetch(endpoint, init);
 
-  console.log("[FuzzyCAD Onshape API]", {
+  const record: OnshapeApiCallRecord = {
+    timestamp: new Date().toISOString(),
     route: context.route,
     operation: context.operation,
     status: res.status,
@@ -37,7 +80,11 @@ export async function onshapeFetch(
       "x-ratelimit-remaining",
     ]),
     retryAfter: getHeader(res, ["Retry-After", "retry-after"]),
-  });
+  };
+
+  recordOnshapeApiCall(record);
+
+  console.log("[FuzzyCAD Onshape API]", record);
 
   return res;
 }
@@ -57,4 +104,27 @@ export function shouldForceRefresh(searchParams: URLSearchParams) {
     searchParams.get("force") === "1" ||
     searchParams.get("refresh") === "1"
   );
+}
+
+export function getOnshapeApiUsage(): OnshapeApiUsageSnapshot {
+  return {
+    totalCalls,
+    byRoute: { ...byRoute },
+    byOperation: { ...byOperation },
+    recentCalls: [...recentCalls],
+  };
+}
+
+export function resetOnshapeApiUsage() {
+  totalCalls = 0;
+
+  for (const key of Object.keys(byRoute)) {
+    delete byRoute[key];
+  }
+
+  for (const key of Object.keys(byOperation)) {
+    delete byOperation[key];
+  }
+
+  recentCalls.length = 0;
 }
