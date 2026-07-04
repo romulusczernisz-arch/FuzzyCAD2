@@ -27,7 +27,7 @@ import {
   type ApiResult,
   type OnshapeElement,
   loadFuzzycadProjectState,
-  saveFuzzycadProjectState,
+  saveFuzzycadProject,
 } from "./lib/onshapeClient";
 import type { OperationTool } from "./lib/operations/types";
 import OperationToolbar from "./components/OperationToolbar";
@@ -54,6 +54,7 @@ import {
   type SizeUncertaintyAnnotation,
 } from "./lib/uncertainty/document";
 import { useUncertaintyDocument } from "./hooks/useUncertaintyDocument";
+import { buildFuzzyCADProjectState } from "./lib/fuzzycad/projectState";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -335,16 +336,16 @@ export default function FuzzyCADHome() {
     }
   }
 
-async function loadAssemblyGeometry(options: LoadOptions = {}) {
+  async function loadAssemblyGeometry(options: LoadOptions = {}) {
     resetGeometryState();
 
-const res = await fetchOnshapeAssemblyGltf({
-  documentId: documentId || "",
-  workspaceId: workspaceId || "",
-  assemblyElementId: selectedAssemblyId,
-  server,
-  force: options.force,
-});
+    const res = await fetchOnshapeAssemblyGltf({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+      force: options.force,
+    });
     const contentType = res.headers.get("content-type") || "";
 
     if (
@@ -380,27 +381,27 @@ const res = await fetchOnshapeAssemblyGltf({
     setGeometryLoadResult(data);
   }
 
-async function inspectAssemblyGeometryZip(options: LoadOptions = {}) {
+  async function inspectAssemblyGeometryZip(options: LoadOptions = {}) {
     setGeometryZipManifest(null);
 
-const data = await fetchOnshapeAssemblyZipManifest({
-  documentId: documentId || "",
-  workspaceId: workspaceId || "",
-  assemblyElementId: selectedAssemblyId,
-  server,
-  force: options.force,
-});
+    const data = await fetchOnshapeAssemblyZipManifest({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+      force: options.force,
+    });
 
     setGeometryZipManifest(data);
   }
 
-async function loadElements(options: LoadOptions = {}) {
-const data = await fetchOnshapeElements({
-  documentId: documentId || "",
-  workspaceId: workspaceId || "",
-  server,
-  force: options.force,
-});
+  async function loadElements(options: LoadOptions = {}) {
+    const data = await fetchOnshapeElements({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      server,
+      force: options.force,
+    });
 
     setElementsResult(data);
 
@@ -415,7 +416,7 @@ const data = await fetchOnshapeElements({
     }
   }
 
-async function loadAssemblyDefinition(options: LoadOptions = {}) {
+  async function loadAssemblyDefinition(options: LoadOptions = {}) {
     const data = await fetchOnshapeAssembly({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
@@ -427,45 +428,45 @@ async function loadAssemblyDefinition(options: LoadOptions = {}) {
     setAssemblyResult(data);
   }
 
-async function loadAssemblySummary(options: LoadOptions = {}) {
+  async function loadAssemblySummary(options: LoadOptions = {}) {
     const data = await fetchFuzzycadAssemblySummary({
       documentId: documentId || "",
       workspaceId: workspaceId || "",
       assemblyElementId: selectedAssemblyId,
       server,
-            force: options.force,
+      force: options.force,
     });
 
     setAssemblySummaryResult(data);
   }
 
-async function buildRelationshipGraph(options: LoadOptions = {}) {
-const data = await fetchFuzzycadRelationshipGraph({
-  documentId: documentId || "",
-  workspaceId: workspaceId || "",
-  assemblyElementId: selectedAssemblyId,
-  server,
-  force: options.force,
-});
+  async function buildRelationshipGraph(options: LoadOptions = {}) {
+    const data = await fetchFuzzycadRelationshipGraph({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+      force: options.force,
+    });
 
     setRelationshipGraphResult(data);
   }
 
-async function loadSelectedAssembly() {
-  if (!selectedAssemblyId) {
-    return;
-  }
+  async function loadSelectedAssembly() {
+    if (!selectedAssemblyId) {
+      return;
+    }
 
-  setBusy(true);
+    setBusy(true);
 
-  try {
-    await buildRelationshipGraph();
-    await loadAssemblyGeometry();
-    await loadProjectStateFromOnshape();
-  } finally {
-    setBusy(false);
+    try {
+      await buildRelationshipGraph();
+      await loadAssemblyGeometry();
+      await loadProjectStateFromOnshape();
+    } finally {
+      setBusy(false);
+    }
   }
-}
 
   function startHeightUncertainty() {
     setActiveTool("height");
@@ -637,36 +638,42 @@ async function loadSelectedAssembly() {
     updateAnnotationComment(annotationId, comment);
   }
 
-  async function saveProjectStateToOnshape() {
-    if (!documentId || !workspaceId) {
-      console.warn("Missing documentId or workspaceId");
-      return;
-    }
-
-    const result = await saveFuzzycadProjectState(
-      {
-        documentId,
-        workspaceId,
-        server,
-      },
-      uncertaintyDocumentWithCurrentSource,
-    );
-
-    console.log("Saved FuzzyCAD project state:", result);
+async function saveProjectStateToOnshape() {
+  if (!documentId || !workspaceId) {
+    console.warn("Missing documentId or workspaceId");
+    return;
   }
 
-async function loadProjectStateFromOnshape(options: LoadOptions = {}) {
+  const projectState = buildFuzzyCADProjectState({
+    source: currentUncertaintySource,
+    annotations: uncertaintyDocumentWithCurrentSource.annotations,
+    objectSummaries,
+  });
+
+  const result = await saveFuzzycadProject(
+    {
+      documentId,
+      workspaceId,
+      server,
+    },
+    projectState,
+  );
+
+  console.log("Saved FuzzyCAD project:", result);
+}
+
+  async function loadProjectStateFromOnshape(options: LoadOptions = {}) {
     if (!documentId || !workspaceId) {
       console.warn("Missing documentId or workspaceId");
       return;
     }
 
-const result = await loadFuzzycadProjectState({
-  documentId,
-  workspaceId,
-  server,
-  force: options.force,
-});
+    const result = await loadFuzzycadProjectState({
+      documentId,
+      workspaceId,
+      server,
+      force: options.force,
+    });
 
     console.log("Loaded FuzzyCAD project state:", result);
 

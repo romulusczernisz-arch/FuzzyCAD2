@@ -23,7 +23,30 @@ export type ApiResult = {
   manifest?: unknown;
   mode?: string;
   message?: string;
+
+  generatedGeometryResult?: unknown;
+  projectStateResult?: unknown;
+  reconstructionResult?: unknown;
+  projectState?: unknown;
 };
+
+export async function saveFuzzycadProject(
+  query: DocumentQuery,
+  projectState: unknown,
+): Promise<ApiResult> {
+  const res = await fetch("/api/fuzzycad/save-project", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentId: query.documentId,
+      workspaceId: query.workspaceId,
+      server: query.server,
+      projectState,
+    }),
+  });
+
+  return res.json() as Promise<ApiResult>;
+}
 
 type DocumentQuery = {
   documentId: string;
@@ -69,7 +92,7 @@ function makeAssemblyParams(query: AssemblyQuery) {
 }
 
 export async function fetchOnshapeElements(
-  query: DocumentQuery
+  query: DocumentQuery,
 ): Promise<ApiResult> {
   const params = makeDocumentParams(query);
   const res = await fetch(`/api/onshape/elements?${params.toString()}`);
@@ -78,7 +101,7 @@ export async function fetchOnshapeElements(
 }
 
 export async function fetchOnshapeAssembly(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(`/api/onshape/assembly?${params.toString()}`);
@@ -104,22 +127,22 @@ export async function fetchOnshapeAssemblyZipManifest(
 }
 
 export async function fetchFuzzycadAssemblySummary(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(
-    `/api/fuzzycad/assembly-summary?${params.toString()}`
+    `/api/fuzzycad/assembly-summary?${params.toString()}`,
   );
 
   return res.json() as Promise<ApiResult>;
 }
 
 export async function fetchFuzzycadRelationshipGraph(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(
-    `/api/fuzzycad/relationship-graph?${params.toString()}`
+    `/api/fuzzycad/relationship-graph?${params.toString()}`,
   );
 
   return res.json() as Promise<ApiResult>;
@@ -134,7 +157,7 @@ export type OccurrenceUpdate = {
 
 export async function applyOnshapeOccurrenceTransforms(
   query: AssemblyQuery,
-  occurrences: OccurrenceUpdate[]
+  occurrences: OccurrenceUpdate[],
 ): Promise<ApiResult> {
   const res = await fetch("/api/onshape/assembly-transforms", {
     method: "POST",
