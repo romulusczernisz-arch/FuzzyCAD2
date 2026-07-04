@@ -195,15 +195,8 @@ function buildGeneratedGeometryPayload(input: {
   };
 }
 
-/**
- * 这个函数现在先占位。
- *
- * 以后 Romulus 的 FeatureScript 探索完成后，
- * 你真正要改的是这个函数里面的内容。
- *
- * 目标：
- * metadata / manifest -> Onshape Part Studio or FeatureScript visualization layer
- */
+const VISUALIZATION_LAYER_NAME = "FuzzyCAD_Visualization_Layer";
+
 async function reconstructGeneratedGeometryInOnshape(input: {
   server: string;
   documentId: string;
@@ -212,11 +205,107 @@ async function reconstructGeneratedGeometryInOnshape(input: {
   generatedGeometryElementId: string | null;
   projectState: UnknownRecord;
 }) {
+  /**
+   * Step 1:
+   * 重新读取 document elements。
+   * 目的：看这个 document 里面是不是已经有 FuzzyCAD_Visualization_Layer。
+   */
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/fuzzycad/save-project",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements",
+      message: "Could not read Onshape elements before reconstruction.",
+      details: elementsResult,
+      generatedGeometryElementId: input.generatedGeometryElementId,
+    };
+  }
+
+  /**
+   * Step 2:
+   * 如果已经有 FuzzyCAD_Visualization_Layer，就先复用它。
+   */
+  const existingLayer = findLatestElementByName(
+    elementsResult.data,
+    VISUALIZATION_LAYER_NAME,
+  );
+
+  if (existingLayer) {
+    return {
+      ok: true,
+      mode: "reused-existing-visualization-layer",
+      message: "Found existing FuzzyCAD visualization layer.",
+      visualizationElementId: existingLayer.id,
+      generatedGeometryElementId: input.generatedGeometryElementId,
+    };
+  }
+
+  /**
+   * Step 3:
+   * 如果没有，就尝试创建一个新的 Part Studio element。
+   *
+   * 注意：
+   * 这里我们先创建空 Part Studio。
+   * 下一步再把 FeatureScript / bounding boxes / arrows 写进去。
+   */
+  const createElementEndpoint = `${input.server}/api/documents/d/${input.documentId}/w/${input.workspaceId}/elements`;
+
+  const createElementBody = {
+    name: VISUALIZATION_LAYER_NAME,
+    elementType: "PARTSTUDIO",
+  };
+
+  const createElementRes = await onshapeFetch(
+    createElementEndpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(createElementBody),
+    },
+    {
+      route: "/api/fuzzycad/save-project",
+      operation: "create-fuzzycad-visualization-partstudio",
+    },
+  );
+
+  const createElementData = await parseJsonOrText(createElementRes);
+  const visualizationElementId = getElementIdFromResponse(createElementData);
+
+  if (!createElementRes.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-create-visualization-layer",
+      status: createElementRes.status,
+      message:
+        "Tried to create FuzzyCAD_Visualization_Layer, but Onshape rejected the request.",
+      endpoint: createElementEndpoint,
+      requestBody: createElementBody,
+      data: createElementData,
+      generatedGeometryElementId: input.generatedGeometryElementId,
+    };
+  }
+
   return {
     ok: true,
-    mode: "not-implemented-yet",
+    mode: "created-visualization-layer",
+    status: createElementRes.status,
     message:
-      "Generated geometry container was saved. Native Onshape reconstruction is reserved for the FeatureScript implementation.",
+      "Created FuzzyCAD_Visualization_Layer. Next step is adding FeatureScript-generated boxes/arrows.",
+    visualizationElementId,
+    endpoint: createElementEndpoint,
+    data: createElementData,
     generatedGeometryElementId: input.generatedGeometryElementId,
   };
 }
