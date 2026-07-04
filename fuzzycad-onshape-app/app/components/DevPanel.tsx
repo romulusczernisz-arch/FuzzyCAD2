@@ -54,13 +54,48 @@ export default function DevPanel({
   onLoadGeometry,
   onInspectZip,
 }: DevPanelProps) {
-  return (
-    <div className={styles.devOverlay}>
-      <button onClick={onClose} className={styles.devCloseButton}>
-        Close
+return (
+  <div className={styles.devOverlay}>
+    <div
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 20,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "10px 0",
+        marginBottom: 12,
+        background: "white",
+        borderBottom: "1px solid #e5e5e5",
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 700 }}>Debug Panel</div>
+        <div style={{ fontSize: 12, color: "#666" }}>
+          Cached buttons reuse server-side data. Force buttons call Onshape again.
+        </div>
+      </div>
+
+      <button
+        onClick={onClose}
+        style={{
+          padding: "8px 12px",
+          border: "1px solid #ccc",
+          borderRadius: 6,
+          background: "white",
+          cursor: "pointer",
+          fontWeight: 700,
+        }}
+      >
+        Back to FuzzyCAD
       </button>
-      <ApiUsagePanel />
-      <h2>Actions</h2>
+    </div>
+
+    <ApiUsagePanel />
+
+    <h2>Actions</h2>
 
       <div className={styles.devActions}>
         <a href={connectHref}>Connect Onshape</a>
