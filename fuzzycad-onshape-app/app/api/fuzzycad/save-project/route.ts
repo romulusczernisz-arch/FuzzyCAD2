@@ -288,21 +288,48 @@ function getFirstStringFromArrayField(data: unknown, key: string) {
   return typeof first === "string" ? first : null;
 }
 
-function getTranslatedElementId(data: unknown) {
+function getTranslatedElementId(data: unknown, sourceElementId?: string | null) {
   if (!isRecord(data)) return null;
 
-  const directElementId =
+  /**
+   * Important:
+   * Prefer result fields first.
+   *
+   * For upload/translation responses, top-level elementId can point to a Blob
+   * element, not a generated Part Studio. If we use that as visualizationElementId,
+   * /api/parts/... will fail with "Element type BLOB is not a part studio."
+   */
+  const arrayCandidate =
+    getFirstStringFromArrayField(data, "resultElementIds") ??
+    getFirstStringFromArrayField(data, "createdElementIds") ??
+    getFirstStringFromArrayField(data, "elementIds");
+
+  if (arrayCandidate && arrayCandidate !== sourceElementId) {
+    return arrayCandidate;
+  }
+
+  const directCandidate =
     getStringFromRecord(data, "resultElementId") ??
+    getStringFromRecord(data, "createdElementId") ??
+    getStringFromRecord(data, "newElementId") ??
+    getStringFromRecord(data, "translatedElementId");
+
+  if (directCandidate && directCandidate !== sourceElementId) {
+    return directCandidate;
+  }
+
+  /**
+   * Last resort only. This is often a Blob element id.
+   */
+  const fallbackElementId =
     getStringFromRecord(data, "elementId") ??
     getStringFromRecord(data, "elementIdOrMicroversionId");
 
-  if (directElementId) return directElementId;
+  if (fallbackElementId && fallbackElementId !== sourceElementId) {
+    return fallbackElementId;
+  }
 
-  return (
-    getFirstStringFromArrayField(data, "resultElementIds") ??
-    getFirstStringFromArrayField(data, "elementIds") ??
-    getFirstStringFromArrayField(data, "createdElementIds")
-  );
+  return null;
 }
 
 function getVisualizationElementIdFromResult(value: unknown) {
@@ -844,7 +871,10 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
     }
   }
 
-  const visualizationElementId = getTranslatedElementId(translationData);
+ const visualizationElementId = getTranslatedElementId(
+  translationData,
+  input.annotatedSelectionStlElementId,
+);
 
   return {
     ok: true,
@@ -860,6 +890,102 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
     data: translationData,
   };
 }
+
+function getElementTypeLabel(element: UnknownRecord) {
+  return (
+    getStringFromRecord(element, "elementType") ??
+    getStringFromRecord(element, "type") ??
+    getStringFromRecord(element, "dataType")
+  );
+}
+
+function isBlobLikeElement(element: UnknownRecord) {
+  const typeLabel = getElementTypeLabel(element);
+
+  return typeLabel ? typeLabel.toLowerCase().includes("blob") : false;
+}
+
+function findElementById(elements: unknown, elementId: string) {
+  if (!Array.isArray(elements)) {
+    return null;
+  }
+
+  return (
+    elements
+      .filter(isRecord)
+      .find((element) => getElementId(element) === elementId) ?? null
+  );
+}
+
+async function validateVisualizationLayerElement(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  visualizationElementId: string | null;
+}) {
+  if (!input.visualizationElementId) {
+    return {
+      ok: false,
+      mode: "missing-visualization-element-id",
+      visualizationElementId: null,
+    };
+  }
+
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/fuzzycad/save-project",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-validate-visualization-element",
+      visualizationElementId: input.visualizationElementId,
+      elementsResult,
+    };
+  }
+
+  const element = findElementById(
+    elementsResult.data,
+    input.visualizationElementId,
+  );
+
+  if (!element) {
+    return {
+      ok: false,
+      mode: "visualization-element-not-found",
+      visualizationElementId: input.visualizationElementId,
+      elementsPreview: elementsResult.data.filter(isRecord).slice(-10),
+    };
+  }
+
+  if (isBlobLikeElement(element)) {
+    return {
+      ok: false,
+      mode: "visualization-element-is-blob-not-partstudio",
+      visualizationElementId: input.visualizationElementId,
+      element,
+      message:
+        "STL translation produced a Blob element, not a Part Studio / Part. This cannot be inserted through the parts endpoint.",
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "visualization-element-is-insertable-candidate",
+    visualizationElementId: input.visualizationElementId,
+    element,
+  };
+}
+
+
+
+
 
 function getProjectSource(projectState: UnknownRecord) {
   return isRecord(projectState.source) ? projectState.source : {};
@@ -1085,19 +1211,35 @@ const reconstructionResult = annotatedSelectionStl
       message: "No annotated selection STL was provided.",
     };
 
-  const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
-  const visualizationElementId =
-    getVisualizationElementIdFromResult(reconstructionResult);
+const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
+const visualizationElementId =
+  getVisualizationElementIdFromResult(reconstructionResult);
 
-  const assemblyOverlayResult =
-    await ensureVisualizationLayerInSelectedAssembly({
+const visualizationLayerValidation =
+  await validateVisualizationLayerElement({
+    server,
+    documentId,
+    workspaceId,
+    accessToken,
+    visualizationElementId,
+  });
+
+const assemblyOverlayResult = visualizationLayerValidation.ok
+  ? await ensureVisualizationLayerInSelectedAssembly({
       server,
       documentId,
       workspaceId,
       accessToken,
       selectedAssemblyElementId,
       visualizationElementId,
-    });
+    })
+  : {
+      ok: false,
+      mode: "visualization-layer-not-insertable",
+      selectedAssemblyElementId,
+      visualizationElementId,
+      validation: visualizationLayerValidation,
+    };
 
   const generatedGeometryPayload = buildGeneratedGeometryPayload({
     projectState,
@@ -1200,8 +1342,10 @@ const reconstructionResult = annotatedSelectionStl
             result: assemblyOverlayResult,
           }
         : null,
-      lastGeneratedAt: new Date().toISOString(),
-      reconstruction: reconstructionResult,
+lastGeneratedAt: new Date().toISOString(),
+reconstruction: reconstructionResult,
+visualizationLayerValidation,
+assemblyOverlayResult,
     },
   };
 
@@ -1265,15 +1409,16 @@ const reconstructionResult = annotatedSelectionStl
   clearElementsCache();
   clearAssemblyCache();
 
-  return NextResponse.json({
-    ok: true,
-    status: 200,
-    message: "FuzzyCAD project saved.",
-    annotatedSelectionStlResult,
-    generatedGeometryResult,
-    reconstructionResult,
-    assemblyOverlayResult,
-    projectStateResult,
-    projectState: projectStateWithGeneratedGeometry,
-  });
+ return NextResponse.json({
+  ok: true,
+  status: 200,
+  message: "FuzzyCAD project saved.",
+  annotatedSelectionStlResult,
+  generatedGeometryResult,
+  reconstructionResult,
+  visualizationLayerValidation,
+  assemblyOverlayResult,
+  projectStateResult,
+  projectState: projectStateWithGeneratedGeometry,
+});
 }
