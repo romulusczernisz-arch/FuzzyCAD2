@@ -621,35 +621,6 @@ function findExistingOverlayInstances(input: {
     });
 }
 
-function findExistingOverlayInstance(input: {
-  assemblyData: unknown;
-  visualizationElementId: string;
-}) {
-  const instances = getAssemblyInstances(input.assemblyData);
-
-  const matched =
-    instances.find((instance) => {
-      const name = getInstanceName(instance);
-      const elementId = getStringFromRecord(instance, "elementId");
-
-      return (
-        name === ASSEMBLY_OVERLAY_INSTANCE_NAME ||
-        elementId === input.visualizationElementId
-      );
-    }) ?? null;
-
-  if (!matched) {
-    return null;
-  }
-
-  return {
-    id: getInstanceId(matched),
-    name: getInstanceName(matched),
-    elementId: getStringFromRecord(matched, "elementId"),
-    instance: matched,
-  };
-}
-
 async function insertVisualizationLayerInstances(input: {
   server: string;
   documentId: string;
@@ -774,6 +745,133 @@ async function insertVisualizationLayerInstances(input: {
     partIds: input.partIds,
     insertedCount: inserted.length,
     inserted,
+  };
+}
+
+function collectFuzzyCadImportedVisualizationElementIds(elements: unknown) {
+  const ids = new Set<string>();
+
+  if (!Array.isArray(elements)) {
+    return ids;
+  }
+
+  for (const element of elements.filter(isRecord)) {
+    const id = getElementId(element);
+    const name = getElementName(element);
+    const typeLabel = getElementTypeLabel(element);
+
+    const isImportedVisualizationLayer =
+      name.startsWith("fuzzycad-annotated-selection") ||
+      name.startsWith(VISUALIZATION_LAYER_NAME);
+
+    const isPartStudio =
+      typeof typeLabel === "string" &&
+      typeLabel.toLowerCase().includes("partstudio");
+
+    if (id && isImportedVisualizationLayer && isPartStudio) {
+      ids.add(id);
+    }
+  }
+
+  return ids;
+}
+
+async function findExistingFuzzyCadOverlayBeforeImport(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  selectedAssemblyElementId: string | null;
+  projectState: UnknownRecord;
+}) {
+  if (!input.selectedAssemblyElementId) {
+    return {
+      ok: false,
+      mode: "missing-selected-assembly",
+      existingOverlays: [],
+      knownVisualizationElementIds: [] as string[],
+    };
+  }
+
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/fuzzycad/save-project",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements-before-overlay-preflight",
+      elementsResult,
+      existingOverlays: [],
+      knownVisualizationElementIds: [] as string[],
+    };
+  }
+
+  const assemblyResult = await getAssemblyDefinitionForOverlay({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    assemblyElementId: input.selectedAssemblyElementId,
+    accessToken: input.accessToken,
+  });
+
+  if (!assemblyResult.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-read-assembly-before-overlay-preflight",
+      assemblyResult,
+      existingOverlays: [],
+      knownVisualizationElementIds: [] as string[],
+    };
+  }
+
+  const previousVisualizationElementIds =
+    collectPreviousVisualizationElementIds(input.projectState);
+
+  const importedVisualizationElementIds =
+    collectFuzzyCadImportedVisualizationElementIds(elementsResult.data);
+
+  const knownVisualizationElementIds = new Set<string>([
+    ...previousVisualizationElementIds,
+    ...importedVisualizationElementIds,
+  ]);
+
+  const existingOverlays = getAssemblyInstances(assemblyResult.data)
+    .map((instance) => {
+      const id = getInstanceId(instance);
+      const name = getInstanceName(instance);
+      const elementId = getStringFromRecord(instance, "elementId");
+      const partId = getStringFromRecord(instance, "partId");
+
+      return {
+        id,
+        name,
+        elementId,
+        partId,
+        instance,
+      };
+    })
+    .filter((instance) => {
+      return (
+        instance.elementId !== null &&
+        knownVisualizationElementIds.has(instance.elementId)
+      );
+    });
+
+  return {
+    ok: existingOverlays.length > 0,
+    mode:
+      existingOverlays.length > 0
+        ? "found-existing-fuzzycad-overlay-before-import"
+        : "no-existing-fuzzycad-overlay-before-import",
+    assemblyElementId: input.selectedAssemblyElementId,
+    existingOverlays,
+    knownVisualizationElementIds: Array.from(knownVisualizationElementIds),
   };
 }
 
@@ -1442,51 +1540,86 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const reconstructionResult = annotatedSelectionStl
-    ? await translateAnnotatedStlIntoVisualizationLayer({
-        server,
-        documentId,
-        workspaceId,
-        accessToken,
-        annotatedSelectionStl,
-        annotatedSelectionStlElementId:
-          annotatedSelectionStlResult?.elementId ?? null,
-      })
-    : {
-        ok: false,
-        mode: "missing-annotated-selection-stl",
-        message: "No annotated selection STL was provided.",
-      };
-
   const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
+
+  const existingOverlayPreflight =
+    await findExistingFuzzyCadOverlayBeforeImport({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      selectedAssemblyElementId,
+      projectState,
+    });
+
+  const reconstructionResult = existingOverlayPreflight.ok
+    ? {
+        ok: true,
+        mode: "skipped-stl-import-existing-overlay-found",
+        message:
+          "Selected assembly already contains a FuzzyCAD overlay, so STL import was skipped to avoid duplicate Part Studios and duplicate assembly instances.",
+        existingOverlayPreflight,
+      }
+    : annotatedSelectionStl
+      ? await translateAnnotatedStlIntoVisualizationLayer({
+          server,
+          documentId,
+          workspaceId,
+          accessToken,
+          annotatedSelectionStl,
+          annotatedSelectionStlElementId:
+            annotatedSelectionStlResult?.elementId ?? null,
+        })
+      : {
+          ok: false,
+          mode: "missing-annotated-selection-stl",
+          message: "No annotated selection STL was provided.",
+        };
+
   const visualizationElementId =
     getVisualizationElementIdFromResult(reconstructionResult);
 
-  const visualizationLayerValidation = await validateVisualizationLayerElement({
-    server,
-    documentId,
-    workspaceId,
-    accessToken,
-    visualizationElementId,
-  });
-
-  const assemblyOverlayResult = visualizationLayerValidation.ok
-    ? await ensureVisualizationLayerInSelectedAssembly({
+  const visualizationLayerValidation = existingOverlayPreflight.ok
+    ? {
+        ok: true,
+        mode: "skipped-validation-existing-overlay-found",
+        visualizationElementId: null,
+        existingOverlayPreflight,
+      }
+    : await validateVisualizationLayerElement({
         server,
         documentId,
         workspaceId,
         accessToken,
-        selectedAssemblyElementId,
         visualizationElementId,
-        projectState,
-      })
-    : {
-        ok: false,
-        mode: "visualization-layer-not-insertable",
+      });
+
+  const assemblyOverlayResult = existingOverlayPreflight.ok
+    ? {
+        ok: true,
+        mode: "reused-existing-assembly-overlay",
+        message:
+          "Selected assembly already contains FuzzyCAD overlay instances. Skipped insertion.",
         selectedAssemblyElementId,
-        visualizationElementId,
-        validation: visualizationLayerValidation,
-      };
+        existingOverlayPreflight,
+      }
+    : visualizationLayerValidation.ok
+      ? await ensureVisualizationLayerInSelectedAssembly({
+          server,
+          documentId,
+          workspaceId,
+          accessToken,
+          selectedAssemblyElementId,
+          visualizationElementId,
+          projectState,
+        })
+      : {
+          ok: false,
+          mode: "visualization-layer-not-insertable",
+          selectedAssemblyElementId,
+          visualizationElementId,
+          validation: visualizationLayerValidation,
+        };
 
   const generatedGeometryPayload = buildGeneratedGeometryPayload({
     projectState,
@@ -1662,6 +1795,7 @@ export async function POST(req: NextRequest) {
     message: "FuzzyCAD project saved.",
     annotatedSelectionStlResult,
     generatedGeometryResult,
+    existingOverlayPreflight,
     reconstructionResult,
     visualizationLayerValidation,
     assemblyOverlayResult,
