@@ -90,6 +90,26 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+const OUTER_OUTLINE_VERTEX_SHADER = /* glsl */ `
+  uniform float uOutlineWidth;
+
+  void main() {
+    vec3 expandedPosition = position + normal * uOutlineWidth;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(expandedPosition, 1.0);
+  }
+`;
+
+const OUTER_OUTLINE_FRAGMENT_SHADER = /* glsl */ `
+  precision highp float;
+
+  uniform vec3 uOutlineColor;
+  uniform float uOutlineOpacity;
+
+  void main() {
+    gl_FragColor = vec4(uOutlineColor, uOutlineOpacity);
+  }
+`;
+
 function getMeshMaterials(mesh: THREE.Mesh) {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 }
@@ -180,6 +200,34 @@ function createLineOverlayMaterial() {
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
+  });
+
+  material.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return material;
+}
+
+function getGeometryOutlineWidth(geometry: THREE.BufferGeometry) {
+  geometry.computeBoundingSphere();
+
+  const radius = geometry.boundingSphere?.radius ?? 1;
+
+  return Math.max(radius * 0.012, 0.001);
+}
+
+function createOuterOutlineMaterial(outlineWidth: number) {
+  const material = new THREE.ShaderMaterial({
+    vertexShader: OUTER_OUTLINE_VERTEX_SHADER,
+    fragmentShader: OUTER_OUTLINE_FRAGMENT_SHADER,
+    uniforms: {
+      uOutlineWidth: { value: outlineWidth },
+      uOutlineColor: { value: new THREE.Color(0x111827) },
+      uOutlineOpacity: { value: 0.88 },
+    },
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    side: THREE.BackSide,
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
@@ -311,13 +359,33 @@ function createSelectedObjectLineOverlay(object: THREE.Object3D) {
 
     child.updateWorldMatrix(true, false);
 
+    const childToObjectMatrix = objectWorldInverse
+      .clone()
+      .multiply(child.matrixWorld);
+
+    // 1) 外边框 outline shell
+    const outlineGeometry = sourceGeometry.clone();
+    const outlineWidth = getGeometryOutlineWidth(outlineGeometry);
+    const outlineMaterial = createOuterOutlineMaterial(outlineWidth);
+
+    const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
+
+    outlineMesh.matrixAutoUpdate = false;
+    outlineMesh.matrix.copy(childToObjectMatrix);
+    outlineMesh.renderOrder = 1550;
+    outlineMesh.frustumCulled = false;
+    outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
+    overlayGroup.add(outlineMesh);
+
+    // 2) 内部 line overlay
     const overlayGeometry = sourceGeometry.clone();
     const overlayMaterial = createLineOverlayMaterial();
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
 
     overlayMesh.matrixAutoUpdate = false;
-    overlayMesh.matrix.copy(objectWorldInverse.clone().multiply(child.matrixWorld));
+    overlayMesh.matrix.copy(childToObjectMatrix);
     overlayMesh.renderOrder = 1600;
     overlayMesh.frustumCulled = false;
     overlayMesh.userData[FUZZY_VISUAL_CHILD] = true;
