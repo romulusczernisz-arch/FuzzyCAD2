@@ -537,6 +537,220 @@ function getUncertainAxisOffsets({
   return offsets;
 }
 
+function addSketchSegment({
+  positions,
+  object,
+  startWorld,
+  endWorld,
+  jitterAmount,
+  seed,
+}: {
+  positions: number[];
+  object: THREE.Object3D;
+  startWorld: THREE.Vector3;
+  endWorld: THREE.Vector3;
+  jitterAmount: number;
+  seed: number;
+}) {
+  const points = makeDraftStrokePoints({
+    start: startWorld,
+    end: endWorld,
+    jitterAmount,
+    seed,
+  });
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = object.worldToLocal(points[index].clone());
+    const b = object.worldToLocal(points[index + 1].clone());
+
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+}
+
+function makeDraftStrokePoints({
+  start,
+  end,
+  jitterAmount,
+  seed,
+  segments = 8,
+}: {
+  start: THREE.Vector3;
+  end: THREE.Vector3;
+  jitterAmount: number;
+  seed: number;
+  segments?: number;
+}) {
+  const points: THREE.Vector3[] = [];
+  const tangent = end.clone().sub(start);
+
+  if (tangent.lengthSq() < 1e-12) {
+    return points;
+  }
+
+  tangent.normalize();
+
+  const helper =
+    Math.abs(tangent.y) < 0.85
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+
+  const normalA = new THREE.Vector3().crossVectors(tangent, helper).normalize();
+  const normalB = new THREE.Vector3().crossVectors(tangent, normalA).normalize();
+
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const base = start.clone().lerp(end, t);
+
+    const n0 = seededNoise(seed + index * 17.11);
+    const n1 = seededNoise(seed + index * 29.73);
+
+    const endFade = index === 0 || index === segments ? 0.25 : 1.0;
+
+    const jitter = normalA
+      .clone()
+      .multiplyScalar((n0 - 0.5) * jitterAmount * endFade)
+      .add(
+        normalB
+          .clone()
+          .multiplyScalar((n1 - 0.5) * jitterAmount * endFade),
+      );
+
+    points.push(base.add(jitter));
+  }
+
+  return points;
+}
+
+function createAbstractObjectSketchStrokeLayer({
+  object,
+  centerWorld,
+  sizeWorld,
+  offsetWorld,
+  level,
+  jitterAmount,
+  seed,
+}: {
+  object: THREE.Object3D;
+  centerWorld: THREE.Vector3;
+  sizeWorld: THREE.Vector3;
+  offsetWorld: THREE.Vector3;
+  level: UncertaintyVisualLevel;
+  jitterAmount: number;
+  seed: number;
+}) {
+  const halfX = Math.max(sizeWorld.x * 0.5, 0.01);
+  const halfY = Math.max(sizeWorld.y * 0.5, 0.01);
+  const halfZ = Math.max(sizeWorld.z * 0.5, 0.01);
+
+  const longestAxis =
+    sizeWorld.y >= sizeWorld.x && sizeWorld.y >= sizeWorld.z
+      ? "y"
+      : sizeWorld.x >= sizeWorld.z
+        ? "x"
+        : "z";
+
+  const positions: number[] = [];
+
+  if (longestAxis === "y") {
+    const railOffsets = [
+      new THREE.Vector3(halfX, 0, halfZ),
+      new THREE.Vector3(-halfX, 0, halfZ),
+      new THREE.Vector3(halfX, 0, -halfZ),
+      new THREE.Vector3(-halfX, 0, -halfZ),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, -halfY, 0)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, halfY, 0)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  } else if (longestAxis === "x") {
+    const railOffsets = [
+      new THREE.Vector3(0, halfY, halfZ),
+      new THREE.Vector3(0, -halfY, halfZ),
+      new THREE.Vector3(0, halfY, -halfZ),
+      new THREE.Vector3(0, -halfY, -halfZ),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(-halfX, 0, 0)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(halfX, 0, 0)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  } else {
+    const railOffsets = [
+      new THREE.Vector3(halfX, halfY, 0),
+      new THREE.Vector3(-halfX, halfY, 0),
+      new THREE.Vector3(halfX, -halfY, 0),
+      new THREE.Vector3(-halfX, -halfY, 0),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, 0, -halfZ)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, 0, halfZ)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+
+  const material = new THREE.LineBasicMaterial({
+    color: level === "low" ? 0x0f172a : 0x475569,
+    transparent: true,
+    opacity: level === "low" ? 0.76 : 0.52,
+    depthTest: false,
+    depthWrite: false,
+  });
+
+  const line = new THREE.LineSegments(geometry, material);
+
+  line.computeLineDistances();
+  line.renderOrder = level === "low" ? 1300 : 1200;
+  line.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return line;
+}
+
 function createObjectLineArtRepresentation({
   object,
   confidence,
@@ -549,63 +763,66 @@ function createObjectLineArtRepresentation({
   axisFrame: ConfidenceAxisFrame;
 }) {
   const level = getObjectVisualLevel(confidence);
-  const group = new THREE.Group();
+  const objectSize = getObjectWorldSize(object);
+  const axes = getFrameAxes(axisFrame);
 
+  const box = new THREE.Box3().setFromObject(object);
+  const centerWorld = new THREE.Vector3();
+  const sizeWorld = new THREE.Vector3();
+
+  box.getCenter(centerWorld);
+  box.getSize(sizeWorld);
+
+  const group = new THREE.Group();
   group.userData[FUZZY_VISUAL_CHILD] = true;
 
-  const baseLayer = createObjectEdgeLayer({
-    object,
-    level,
-    jitterAmount: level === "low" ? 0.0025 : 0,
-    opacity: level === "low" ? 0.64 : 0.5,
-    renderOrder: level === "low" ? 1200 : 1100,
-    variant: "base",
-    seed: 17,
-  });
+  const activeAxes = (["x", "y", "z"] as ConfidenceAxis[]).filter(
+    (axis) => confidence[axis] !== "high",
+  );
 
-  if (baseLayer) {
-    group.add(baseLayer);
+  for (const axis of activeAxes) {
+    const axisLevel = confidence[axis];
+    const visualLevel: UncertaintyVisualLevel =
+      axisLevel === "low" ? "low" : "medium";
+
+    const signs = getDirectionSigns(directions[axis]);
+    const lineCount = axisLevel === "low" ? 3 : 1;
+
+    for (const sign of signs) {
+      for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+        const layerRatio = (lineIndex + 1) / lineCount;
+        const offsetAmount =
+          objectSize *
+          (axisLevel === "low" ? 0.045 : 0.022) *
+          layerRatio;
+
+        const jitterAmount =
+          objectSize *
+          (axisLevel === "low" ? 0.006 : 0.0025) *
+          (1 + layerRatio);
+
+        const axisVector = axes[axis].clone().normalize();
+        const offsetWorld = axisVector.multiplyScalar(sign * offsetAmount);
+
+        const sketch = createAbstractObjectSketchStrokeLayer({
+          object,
+          centerWorld,
+          sizeWorld,
+          offsetWorld,
+          level: visualLevel,
+          jitterAmount,
+          seed:
+            axis.charCodeAt(0) * 1000 +
+            sign * 100 +
+            lineIndex * 31,
+        });
+
+        if (sketch) {
+          group.add(sketch);
+        }
+      }
+    }
   }
-
-  const offsets = getUncertainAxisOffsets({
-    object,
-    confidence,
-    directions,
-    axisFrame,
-    level,
-  });
-
-  offsets.forEach((offset, index) => {
-    const axisVisualLevel: UncertaintyVisualLevel =
-      offset.axisLevel === "low" ? "low" : "medium";
-
-    const sketchLayer = createObjectEdgeLayer({
-      object,
-      level: axisVisualLevel,
-      jitterAmount: axisVisualLevel === "low" ? 0.008 : 0.0035,
-      opacity:
-        axisVisualLevel === "low"
-          ? 0.82 - offset.layerIndex * 0.14
-          : 0.58,
-      renderOrder: 1250 + index,
-      variant: "sketch",
-      seed: 1000 + index * 37 + offset.axis.charCodeAt(0),
-    });
-
-    if (!sketchLayer) {
-      return;
-    }
-
-    sketchLayer.position.copy(offset.localOffset);
-
-    if (axisVisualLevel === "low") {
-      const sign = index % 2 === 0 ? 1 : -1;
-      sketchLayer.rotation.x += 0.004 * sign * (offset.layerIndex + 1);
-      sketchLayer.rotation.y -= 0.003 * sign * (offset.layerIndex + 1);
-    }
-
-    group.add(sketchLayer);
-  });
 
   if (group.children.length === 0) {
     return null;
