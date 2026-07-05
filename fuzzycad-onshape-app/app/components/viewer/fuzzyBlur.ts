@@ -499,6 +499,33 @@ function addSketchSegment({
   }
 }
 
+function makeFramePoint({
+  measure,
+  railAxisName,
+  uAxisName,
+  vAxisName,
+  rail,
+  u,
+  v,
+  offsetWorld,
+}: {
+  measure: FrameMeasure;
+  railAxisName: ConfidenceAxis;
+  uAxisName: ConfidenceAxis;
+  vAxisName: ConfidenceAxis;
+  rail: number;
+  u: number;
+  v: number;
+  offsetWorld: THREE.Vector3;
+}) {
+  return measure.centerWorld
+    .clone()
+    .add(offsetWorld)
+    .add(measure.axes[railAxisName].clone().multiplyScalar(rail))
+    .add(measure.axes[uAxisName].clone().multiplyScalar(u))
+    .add(measure.axes[vAxisName].clone().multiplyScalar(v));
+}
+
 function createAbstractObjectSketchStrokeLayer({
   object,
   measure,
@@ -517,10 +544,6 @@ function createAbstractObjectSketchStrokeLayer({
   const railAxisName = getLongestFrameAxis(measure);
   const [uAxisName, vAxisName] = getOtherFrameAxes(railAxisName);
 
-  const railAxis = measure.axes[railAxisName];
-  const uAxis = measure.axes[uAxisName];
-  const vAxis = measure.axes[vAxisName];
-
   const railMin = measure.extents[railAxisName].min;
   const railMax = measure.extents[railAxisName].max;
 
@@ -529,40 +552,151 @@ function createAbstractObjectSketchStrokeLayer({
   const vMin = measure.extents[vAxisName].min;
   const vMax = measure.extents[vAxisName].max;
 
-  const padding = measure.objectSize * (level === "low" ? 0.012 : 0.006);
+  const padding = measure.objectSize * (level === "low" ? 0.018 : 0.009);
 
-  const railOffsets = [
-    { u: uMin - padding, v: vMin - padding },
-    { u: uMax + padding, v: vMin - padding },
-    { u: uMax + padding, v: vMax + padding },
-    { u: uMin - padding, v: vMax + padding },
-  ];
+  const u0 = uMin - padding;
+  const u1 = uMax + padding;
+  const v0 = vMin - padding;
+  const v1 = vMax + padding;
 
   const positions: number[] = [];
 
-  railOffsets.forEach((railOffset, index) => {
-    const startWorld = measure.centerWorld
-      .clone()
-      .add(offsetWorld)
-      .add(railAxis.clone().multiplyScalar(railMin))
-      .add(uAxis.clone().multiplyScalar(railOffset.u))
-      .add(vAxis.clone().multiplyScalar(railOffset.v));
+  const cornersAt = (rail: number) => [
+    makeFramePoint({
+      measure,
+      railAxisName,
+      uAxisName,
+      vAxisName,
+      rail,
+      u: u0,
+      v: v0,
+      offsetWorld,
+    }),
+    makeFramePoint({
+      measure,
+      railAxisName,
+      uAxisName,
+      vAxisName,
+      rail,
+      u: u1,
+      v: v0,
+      offsetWorld,
+    }),
+    makeFramePoint({
+      measure,
+      railAxisName,
+      uAxisName,
+      vAxisName,
+      rail,
+      u: u1,
+      v: v1,
+      offsetWorld,
+    }),
+    makeFramePoint({
+      measure,
+      railAxisName,
+      uAxisName,
+      vAxisName,
+      rail,
+      u: u0,
+      v: v1,
+      offsetWorld,
+    }),
+  ];
 
-    const endWorld = measure.centerWorld
-      .clone()
-      .add(offsetWorld)
-      .add(railAxis.clone().multiplyScalar(railMax))
-      .add(uAxis.clone().multiplyScalar(railOffset.u))
-      .add(vAxis.clone().multiplyScalar(railOffset.v));
+  const startCap = cornersAt(railMin);
+  const endCap = cornersAt(railMax);
+
+  // 1) Long sketch rails.
+  for (let index = 0; index < 4; index += 1) {
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: startCap[index],
+      endWorld: endCap[index],
+      jitterAmount,
+      seed: seed + index * 17,
+    });
+  }
+
+  // 2) Cap outlines. This fixes the missing “盖子”.
+  for (let index = 0; index < 4; index += 1) {
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: startCap[index],
+      endWorld: startCap[(index + 1) % 4],
+      jitterAmount: jitterAmount * 0.75,
+      seed: seed + 100 + index * 19,
+    });
 
     addSketchSegment({
       positions,
       object,
-      startWorld,
-      endWorld,
-      jitterAmount,
-      seed: seed + index * 13,
+      startWorld: endCap[index],
+      endWorld: endCap[(index + 1) % 4],
+      jitterAmount: jitterAmount * 0.75,
+      seed: seed + 200 + index * 23,
     });
+  }
+
+  // 3) Loose hatch fill on two side faces.
+  // This makes it feel more like the d3.sketchy reference instead of only rails.
+  const hatchCount = level === "low" ? 18 : 8;
+  const hatchSpan = level === "low" ? 0.18 : 0.24;
+
+  [v0, v1].forEach((v, faceIndex) => {
+    for (let index = -2; index < hatchCount + 2; index += 1) {
+      const t0 = index / hatchCount;
+      const t1 = t0 + hatchSpan;
+
+      if (t1 < 0 || t0 > 1) {
+        continue;
+      }
+
+      const railA = THREE.MathUtils.lerp(
+        railMin,
+        railMax,
+        THREE.MathUtils.clamp(t0, 0, 1),
+      );
+
+      const railB = THREE.MathUtils.lerp(
+        railMin,
+        railMax,
+        THREE.MathUtils.clamp(t1, 0, 1),
+      );
+
+      const startWorld = makeFramePoint({
+        measure,
+        railAxisName,
+        uAxisName,
+        vAxisName,
+        rail: railA,
+        u: u0,
+        v,
+        offsetWorld,
+      });
+
+      const endWorld = makeFramePoint({
+        measure,
+        railAxisName,
+        uAxisName,
+        vAxisName,
+        rail: railB,
+        u: u1,
+        v,
+        offsetWorld,
+      });
+
+      addSketchSegment({
+        positions,
+        object,
+        startWorld,
+        endWorld,
+        jitterAmount: jitterAmount * (level === "low" ? 0.9 : 0.55),
+        seed: seed + 300 + faceIndex * 100 + index * 11,
+      });
+    }
   });
 
   const geometry = new THREE.BufferGeometry();
@@ -572,7 +706,7 @@ function createAbstractObjectSketchStrokeLayer({
   const material = new THREE.LineBasicMaterial({
     color: level === "low" ? 0x0f172a : 0x475569,
     transparent: true,
-    opacity: level === "low" ? 0.76 : 0.52,
+    opacity: level === "low" ? 0.68 : 0.44,
     depthTest: false,
     depthWrite: false,
   });
