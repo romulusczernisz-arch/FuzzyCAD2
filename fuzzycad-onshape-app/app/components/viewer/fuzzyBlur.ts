@@ -387,8 +387,6 @@ function measureObjectInFrame(
   };
 }
 
-
-
 function getOtherFrameAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
   if (axis === "x") {
     return ["y", "z"];
@@ -485,7 +483,184 @@ function addSketchSegment({
   }
 }
 
-function addCrossHatchOnSleeve({
+// Liang–Barsky:把参数直线 p + t·dir 裁剪到 2D 矩形内。
+// 返回可见区间 [t0, t1]，完全在矩形外时返回 null。
+function clipLineToRect(
+  px: number,
+  py: number,
+  dx: number,
+  dy: number,
+  xMin: number,
+  xMax: number,
+  yMin: number,
+  yMax: number,
+): [number, number] | null {
+  let t0 = -Infinity;
+  let t1 = Infinity;
+
+  const clips: Array<[number, number]> = [
+    [-dx, px - xMin],
+    [dx, xMax - px],
+    [-dy, py - yMin],
+    [dy, yMax - py],
+  ];
+
+  for (const [p, q] of clips) {
+    if (Math.abs(p) < 1e-12) {
+      if (q < 0) {
+        return null;
+      }
+      continue;
+    }
+
+    const r = q / p;
+
+    if (p < 0) {
+      t0 = Math.max(t0, r);
+    } else {
+      t1 = Math.min(t1, r);
+    }
+  }
+
+  return t0 < t1 ? [t0, t1] : null;
+}
+
+// 在 sleeve 的某个侧面上画一族手绘感的平行斜线（排线）。
+// 面用 2D 参数化：d = 沿 uncertainty axis 的坐标，w = 面上另一个自由轴。
+// 手绘感来自：间距轻微不均、每笔角度微偏、笔画两端随机缩进、加上 stroke jitter。
+// 所有笔画都被裁剪在（已内收的）面矩形内，不会戳出体块。
+function addHatchOnFace({
+  positions,
+  object,
+  measure,
+  uncertaintyAxis,
+  uAxisName,
+  vAxisName,
+  d0,
+  d1,
+  w0,
+  w1,
+  wIsU,
+  fixedValue,
+  spacing,
+  jitterAmount,
+  seed,
+}: {
+  positions: number[];
+  object: THREE.Object3D;
+  measure: FrameMeasure;
+  uncertaintyAxis: ConfidenceAxis;
+  uAxisName: ConfidenceAxis;
+  vAxisName: ConfidenceAxis;
+  d0: number;
+  d1: number;
+  w0: number;
+  w1: number;
+  wIsU: boolean;
+  fixedValue: number;
+  spacing: number;
+  jitterAmount: number;
+  seed: number;
+}) {
+  // 面内边距：保证 stroke jitter 之后笔画仍在面矩形内。
+  const margin = jitterAmount * 1.5;
+  const dMin = Math.min(d0, d1) + margin;
+  const dMax = Math.max(d0, d1) - margin;
+  const wMin = Math.min(w0, w1) + margin;
+  const wMax = Math.max(w0, w1) - margin;
+
+  if (dMax <= dMin || wMax <= wMin) {
+    return;
+  }
+
+  const toWorld = (d: number, w: number) =>
+    makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension: d,
+      u: wIsU ? w : fixedValue,
+      v: wIsU ? fixedValue : w,
+    });
+
+  // 45° 排线（相对 (d, w) 参数平面）。
+  // d 是 uncertainty axis，所以每条排线都带一个沿不确定方向的分量，
+  // 多层 sleeve 叠加时方向感会进一步加强。
+  const baseAngle = Math.PI / 4;
+
+  // 排线族的法线方向，用来给每条线分配偏移量。
+  const nx = -Math.sin(baseAngle);
+  const ny = Math.cos(baseAngle);
+
+  // 面矩形四角在法线上的投影范围 → 决定需要多少条排线。
+  let cMin = Infinity;
+  let cMax = -Infinity;
+
+  const cornersForRange: Array<[number, number]> = [
+    [dMin, wMin],
+    [dMax, wMin],
+    [dMax, wMax],
+    [dMin, wMax],
+  ];
+
+  for (const [d, w] of cornersForRange) {
+    const c = d * nx + w * ny;
+    cMin = Math.min(cMin, c);
+    cMax = Math.max(cMax, c);
+  }
+
+  // 排线数量由投影范围 ÷ spacing 自然决定：
+  // extension 很短时只有一两条短线，密度和 body 连续，不会突变。
+  const count = Math.max(1, Math.floor((cMax - cMin) / spacing));
+
+  for (let index = 0; index <= count; index += 1) {
+    // 间距轻微不均 → 手绘感。
+    const wobble = (seededNoise(seed + index * 7.3) - 0.5) * spacing * 0.35;
+    const c = cMin + (index / count) * (cMax - cMin) + wobble;
+
+    // 每笔角度轻微偏转（约 ±3°）。
+    const angle = baseAngle + (seededNoise(seed + index * 13.7) - 0.5) * 0.1;
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+
+    // 该排线上的一个基准点（沿法线偏移 c）。
+    const px = c * nx;
+    const py = c * ny;
+
+    const clip = clipLineToRect(px, py, dx, dy, dMin, dMax, wMin, wMax);
+
+    if (!clip) {
+      continue;
+    }
+
+    let [t0, t1] = clip;
+
+    // 笔画两端随机缩进，不顶死边框，更像手绘。
+    const strokeLength = t1 - t0;
+
+    t0 += strokeLength * seededNoise(seed + index * 21.1) * 0.08;
+    t1 -= strokeLength * seededNoise(seed + index * 33.9) * 0.08;
+
+    if (t1 - t0 < spacing * 0.2) {
+      continue;
+    }
+
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: toWorld(px + t0 * dx, py + t0 * dy),
+      endWorld: toWorld(px + t1 * dx, py + t1 * dy),
+      jitterAmount: jitterAmount * 0.6,
+      seed: seed + index * 17,
+    });
+  }
+}
+
+// 在 sleeve 的四个侧面上铺手绘排线。
+// 传入的 u0/u1/v0/v1 应当是已经向内收过 jitter 余量的截面范围
+//（见 createAbstractObjectSketchStrokeLayer），这里不再额外内收面平面。
+function addSketchHatch({
   positions,
   object,
   measure,
@@ -518,53 +693,37 @@ function addCrossHatchOnSleeve({
   jitterAmount: number;
   seed: number;
 }) {
-  const dimensionLength = Math.abs(toDimension - fromDimension);
   const crossSize = Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0), 0.01);
 
-  // 用真实 spacing 控制密度，body 和 extension 共享同一个 spacing 逻辑。
-  const spacing =
-    crossSize * (level === "low" ? 0.55 : 0.85);
+  // 排线间距：low 更密（更"没把握"→ 调子更重），medium 更疏。
+  const spacing = crossSize * (level === "low" ? 0.14 : 0.22);
 
-  const hatchCount = Math.max(3, Math.ceil(dimensionLength / spacing));
+  const faces = [
+    { wIsU: true, w0: u0, w1: u1, fixedValue: v0 },
+    { wIsU: true, w0: u0, w1: u1, fixedValue: v1 },
+    { wIsU: false, w0: v0, w1: v1, fixedValue: u0 },
+    { wIsU: false, w0: v0, w1: v1, fixedValue: u1 },
+  ];
 
-  for (let index = 0; index <= hatchCount; index += 1) {
-    const t = hatchCount === 0 ? 0 : index / hatchCount;
-
-    const dimension = THREE.MathUtils.lerp(fromDimension, toDimension, t);
-
-    // 关键：hatch 不沿 dimensionAxis 画，只在 u/v 截面方向画短斜线。
-    // 这样它不会顺着腿的长边变成一堆长平行线。
-    const drift = ((index % 3) - 1) * crossSize * 0.08;
-
-    const startWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension,
-      u: u0 + drift,
-      v: v0,
-    });
-
-    const endWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension,
-      u: u1 + drift,
-      v: v1,
-    });
-
-    addSketchSegment({
+  faces.forEach((face, faceIndex) => {
+    addHatchOnFace({
       positions,
       object,
-      startWorld,
-      endWorld,
-      jitterAmount: jitterAmount * (level === "low" ? 0.75 : 0.42),
-      seed: seed + index * 17,
+      measure,
+      uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      d0: fromDimension,
+      d1: toDimension,
+      w0: face.w0,
+      w1: face.w1,
+      wIsU: face.wIsU,
+      fixedValue: face.fixedValue,
+      spacing,
+      jitterAmount,
+      seed: seed + faceIndex * 1000,
     });
-  }
+  });
 }
 
 function makeFramePoint({
@@ -618,11 +777,17 @@ function createAbstractObjectSketchStrokeLayer({
   const originalBoundary = sign > 0 ? originalMax : originalMin;
   const uncertainBoundary = originalBoundary + sign * extensionAmount;
 
-  // 不加 padding，保证 hatch sleeve 的粗细和原 geo 一样。
-  const u0 = measure.extents[uAxisName].min;
-  const u1 = measure.extents[uAxisName].max;
-  const v0 = measure.extents[vAxisName].min;
-  const v1 = measure.extents[vAxisName].max;
+  // 截面整体向内收一个 jitter 余量：
+  // rails / connector / cap / hatch 抖动之后仍留在体块的截面范围之内。
+  const inset = jitterAmount;
+  const u0 = measure.extents[uAxisName].min + inset;
+  const u1 = measure.extents[uAxisName].max - inset;
+  const v0 = measure.extents[vAxisName].min + inset;
+  const v1 = measure.extents[vAxisName].max - inset;
+
+  if (u1 <= u0 || v1 <= v0) {
+    return null;
+  }
 
   const positions: number[] = [];
 
@@ -682,9 +847,9 @@ function createAbstractObjectSketchStrokeLayer({
     });
   }
 
-  // 2) Original body hatch.
-  // hatch 横切 selected dimension，不沿长边方向跑。
-  addCrossHatchOnSleeve({
+  // 2) Original body 排线。
+  // 画在 sleeve 的四个侧面上（面内 45° 斜线），不是穿过体内的对角线。
+  addSketchHatch({
     positions,
     object,
     measure,
@@ -726,9 +891,9 @@ function createAbstractObjectSketchStrokeLayer({
     });
   }
 
-  // 5) Extension hatch.
-  // 和 body 使用同一种 spacing 逻辑，所以密度不会突然变。
-  addCrossHatchOnSleeve({
+  // 5) Extension 排线。
+  // 排线数量由长度 ÷ spacing 自然决定，密度和 body 连续。
+  addSketchHatch({
     positions,
     object,
     measure,
@@ -745,6 +910,10 @@ function createAbstractObjectSketchStrokeLayer({
     jitterAmount,
     seed: seed + 900,
   });
+
+  if (positions.length === 0) {
+    return null;
+  }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -836,7 +1005,9 @@ function createObjectLineArtRepresentation({
             lineIndex * 31,
         });
 
-        group.add(sketch);
+        if (sketch) {
+          group.add(sketch);
+        }
       }
     }
   }
