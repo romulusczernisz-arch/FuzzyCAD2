@@ -33,16 +33,6 @@ const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
 
 type UncertaintyVisualLevel = "medium" | "low";
 
-type HatchLayerSpec = {
-  axis: ConfidenceAxis;
-  level: UncertaintyVisualLevel;
-  direction: ConfidenceDirection;
-  layerIndex: number;
-  layerCount: number;
-  axisWorld: THREE.Vector3;
-  hatchDirectionWorld: THREE.Vector3;
-};
-
 function confidenceToStrength(level: ConfidenceLevel) {
   if (level === "low") {
     return 1.0;
@@ -67,9 +57,7 @@ function hasUncertainty(confidence: AxisConfidenceMap) {
   return getMaxUncertainty(confidence) > 0;
 }
 
-function getObjectVisualLevel(
-  confidence: AxisConfidenceMap,
-): UncertaintyVisualLevel {
+function getObjectVisualLevel(confidence: AxisConfidenceMap): UncertaintyVisualLevel {
   return getMaxUncertainty(confidence) >= 1 ? "low" : "medium";
 }
 
@@ -97,9 +85,8 @@ function makeDraftSurfaceMaterial(
     color: getMaterialColor(sourceMaterial),
     map: source.map ?? null,
     transparent: true,
-    opacity: level === "low" ? 0.22 : 0.55,
+    opacity: level === "low" ? 0.26 : 0.52,
     depthWrite: false,
-    depthTest: true,
     side: THREE.DoubleSide,
     roughness: 1,
     metalness: 0,
@@ -134,7 +121,7 @@ function applyDraftSurface(object: THREE.Object3D, level: UncertaintyVisualLevel
       ? draftMaterials
       : draftMaterials[0];
 
-    child.renderOrder = level === "low" ? 850 : 820;
+    child.renderOrder = level === "low" ? 900 : 850;
   });
 }
 
@@ -264,24 +251,6 @@ function findTopLevelObjectsByPathKeys(
   return objects;
 }
 
-function collectSourceMeshes(object: THREE.Object3D) {
-  const meshes: THREE.Mesh[] = [];
-
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) {
-      return;
-    }
-
-    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
-      return;
-    }
-
-    meshes.push(child);
-  });
-
-  return meshes;
-}
-
 function getFrameAxes(axisFrame: ConfidenceAxisFrame) {
   return {
     x: new THREE.Vector3(...axisFrame.x).normalize(),
@@ -290,64 +259,21 @@ function getFrameAxes(axisFrame: ConfidenceAxisFrame) {
   };
 }
 
-function getOtherFrameAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
-  if (axis === "x") {
-    return ["y", "z"];
-  }
-
-  if (axis === "y") {
-    return ["x", "z"];
-  }
-
-  return ["x", "y"];
-}
-
-function directionToMode(direction: ConfidenceDirection) {
+function getDirectionSigns(direction: ConfidenceDirection) {
   if (direction === "positive") {
-    return 1.0;
+    return [1];
   }
 
   if (direction === "negative") {
-    return -1.0;
+    return [-1];
   }
 
-  return 0.0;
+  return [-1, 1];
 }
 
-function getHatchColor(level: UncertaintyVisualLevel) {
-  if (level === "low") {
-    return new THREE.Color(0x0f172a);
-  }
-
-  return new THREE.Color(0x334155);
-}
-
-function getHatchLayerCount(level: ConfidenceLevel) {
-  if (level === "low") {
-    return 2;
-  }
-
-  if (level === "medium") {
-    return 1;
-  }
-
-  return 0;
-}
-
-function getHatchOpacity(level: UncertaintyVisualLevel, layerIndex: number) {
-  if (level === "low") {
-    return Math.max(0.26, 0.42 - layerIndex * 0.08);
-  }
-
-  return 0.24;
-}
-
-function getHatchLineWidth(level: UncertaintyVisualLevel) {
-  return level === "low" ? 0.055 : 0.035;
-}
-
-function getHatchSoftness(level: UncertaintyVisualLevel) {
-  return level === "low" ? 0.055 : 0.045;
+function seededNoise(seed: number) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 function getObjectWorldSize(object: THREE.Object3D) {
@@ -359,237 +285,475 @@ function getObjectWorldSize(object: THREE.Object3D) {
   return Math.max(size.x, size.y, size.z, 0.01);
 }
 
-function makeHatchDirection({
-  axis,
-  axisFrame,
-  layerIndex,
-}: {
-  axis: ConfidenceAxis;
-  axisFrame: ConfidenceAxisFrame;
-  layerIndex: number;
-}) {
-  const axes = getFrameAxes(axisFrame);
-  const [uAxisName, vAxisName] = getOtherFrameAxes(axis);
+function getGeometryRadius(geometry: THREE.BufferGeometry) {
+  geometry.computeBoundingSphere();
 
-  const uAxis = axes[uAxisName];
-  const vAxis = axes[vAxisName];
-
-  if (layerIndex % 2 === 0) {
-    return uAxis.clone().multiplyScalar(0.92).add(vAxis.clone().multiplyScalar(0.38)).normalize();
-  }
-
-  return uAxis.clone().multiplyScalar(0.68).add(vAxis.clone().multiplyScalar(-0.74)).normalize();
+  return Math.max(geometry.boundingSphere?.radius ?? 0.05, 0.01);
 }
 
-function buildHatchLayerSpecs({
-  confidence,
-  directions,
-  axisFrame,
-}: {
-  confidence: AxisConfidenceMap;
-  directions: AxisDirectionMap;
-  axisFrame: ConfidenceAxisFrame;
+function worldVectorToObjectLocal(
+  object: THREE.Object3D,
+  vectorWorld: THREE.Vector3,
+) {
+  const inverseWorld = object.matrixWorld.clone().invert();
+
+  return vectorWorld
+    .clone()
+    .normalize()
+    .transformDirection(inverseWorld)
+    .normalize();
+}
+
+function createJitteredEdgeGeometry(input: {
+  source: THREE.BufferGeometry;
+  jitterAmount: number;
+  seed: number;
 }) {
-  const axes = getFrameAxes(axisFrame);
-  const specs: HatchLayerSpec[] = [];
+  const position = input.source.getAttribute("position");
 
-  (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
-    const confidenceLevel = confidence[axis];
-    const layerCount = getHatchLayerCount(confidenceLevel);
+  if (!position || input.jitterAmount <= 0) {
+    return input.source.clone();
+  }
 
-    if (layerCount === 0) {
+  const points: number[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+
+  for (let index = 0; index < position.count; index += 2) {
+    a.fromBufferAttribute(position, index);
+    b.fromBufferAttribute(position, index + 1);
+
+    const tangent = b.clone().sub(a);
+
+    if (tangent.lengthSq() < 1e-12) {
+      continue;
+    }
+
+    tangent.normalize();
+
+    const helper =
+      Math.abs(tangent.y) < 0.85
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+
+    const normalA = new THREE.Vector3()
+      .crossVectors(tangent, helper)
+      .normalize();
+
+    const normalB = new THREE.Vector3()
+      .crossVectors(tangent, normalA)
+      .normalize();
+
+    const n0 = seededNoise(input.seed + index * 13.17);
+    const n1 = seededNoise(input.seed + index * 17.31);
+    const n2 = seededNoise(input.seed + index * 23.47);
+    const n3 = seededNoise(input.seed + index * 29.91);
+
+    const jitterStart = normalA
+      .clone()
+      .multiplyScalar((n0 - 0.5) * input.jitterAmount)
+      .add(normalB.clone().multiplyScalar((n1 - 0.5) * input.jitterAmount));
+
+    const jitterEnd = normalA
+      .clone()
+      .multiplyScalar((n2 - 0.5) * input.jitterAmount)
+      .add(normalB.clone().multiplyScalar((n3 - 0.5) * input.jitterAmount));
+
+    const aa = a.clone().add(jitterStart);
+    const bb = b.clone().add(jitterEnd);
+
+    points.push(aa.x, aa.y, aa.z, bb.x, bb.y, bb.z);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+
+  return geometry;
+}
+
+function makeLineMaterial(input: {
+  level: UncertaintyVisualLevel;
+  opacity: number;
+  variant: "base" | "sketch";
+}) {
+  return new THREE.LineBasicMaterial({
+    color:
+      input.variant === "base"
+        ? input.level === "low"
+          ? 0x111827
+          : 0x334155
+        : input.level === "low"
+          ? 0x0f172a
+          : 0x475569,
+    transparent: true,
+    opacity: input.opacity,
+    depthTest: false,
+    depthWrite: false,
+  });
+}
+
+function getChildMatrixRelativeToObject(
+  object: THREE.Object3D,
+  child: THREE.Object3D,
+) {
+  return new THREE.Matrix4().multiplyMatrices(
+    object.matrixWorld.clone().invert(),
+    child.matrixWorld,
+  );
+}
+
+function createObjectEdgeLayer({
+  object,
+  level,
+  jitterAmount,
+  opacity,
+  renderOrder,
+  variant,
+  seed,
+}: {
+  object: THREE.Object3D;
+  level: UncertaintyVisualLevel;
+  jitterAmount: number;
+  opacity: number;
+  renderOrder: number;
+  variant: "base" | "sketch";
+  seed: number;
+}) {
+  const group = new THREE.Group();
+
+  group.userData[FUZZY_VISUAL_CHILD] = true;
+
+  object.updateWorldMatrix(true, true);
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
       return;
     }
 
-    const visualLevel: UncertaintyVisualLevel =
-      confidenceLevel === "low" ? "low" : "medium";
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
 
-    for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
-      specs.push({
-        axis,
-        level: visualLevel,
-        direction: directions[axis],
-        layerIndex,
-        layerCount,
-        axisWorld: axes[axis],
-        hatchDirectionWorld: makeHatchDirection({
+    const edgeGeometry = new THREE.EdgesGeometry(
+      child.geometry,
+      level === "low" ? 58 : 70,
+    );
+
+    const radius = getGeometryRadius(child.geometry);
+    const sketchGeometry = createJitteredEdgeGeometry({
+      source: edgeGeometry,
+      jitterAmount: radius * jitterAmount,
+      seed: seed + child.id * 9.13,
+    });
+
+    edgeGeometry.dispose();
+
+    const material = makeLineMaterial({
+      level,
+      opacity,
+      variant,
+    });
+
+    const line = new THREE.LineSegments(sketchGeometry, material);
+
+    line.matrix.copy(getChildMatrixRelativeToObject(object, child));
+    line.matrixAutoUpdate = false;
+    line.renderOrder = renderOrder;
+    line.userData[FUZZY_VISUAL_CHILD] = true;
+
+    group.add(line);
+  });
+
+  if (group.children.length === 0) {
+    return null;
+  }
+
+  return group;
+}
+
+function getUncertainAxisOffsets({
+  object,
+  confidence,
+  directions,
+  axisFrame,
+  level,
+}: {
+  object: THREE.Object3D;
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+  axisFrame: ConfidenceAxisFrame;
+  level: UncertaintyVisualLevel;
+}) {
+  const axes = getFrameAxes(axisFrame);
+  const objectSize = getObjectWorldSize(object);
+  const offsets: {
+    axis: ConfidenceAxis;
+    axisLevel: ConfidenceLevel;
+    localOffset: THREE.Vector3;
+    layerIndex: number;
+    layerCount: number;
+  }[] = [];
+
+  (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+    const axisLevel = confidence[axis];
+
+    if (axisLevel === "high") {
+      return;
+    }
+
+    const signs = getDirectionSigns(directions[axis]);
+    const perSideLayerCount = axisLevel === "low" ? 2 : 1;
+    const baseAmount =
+      objectSize * (axisLevel === "low" ? 0.012 : 0.006);
+
+    for (const sign of signs) {
+      for (let layerIndex = 0; layerIndex < perSideLayerCount; layerIndex += 1) {
+        const amount = baseAmount * (layerIndex + 1);
+        const worldOffset = axes[axis].clone().multiplyScalar(sign * amount);
+        const localOffset = worldVectorToObjectLocal(object, worldOffset)
+          .multiplyScalar(worldOffset.length());
+
+        offsets.push({
           axis,
-          axisFrame,
+          axisLevel,
+          localOffset,
           layerIndex,
-        }),
-      });
+          layerCount: perSideLayerCount,
+        });
+      }
     }
   });
 
-  return specs;
+  if (offsets.length === 0 && level === "low") {
+    offsets.push({
+      axis: "x",
+      axisLevel: "low",
+      localOffset: new THREE.Vector3(objectSize * 0.01, 0, 0),
+      layerIndex: 0,
+      layerCount: 1,
+    });
+  }
+
+  return offsets;
 }
 
-function makeHatchMaterial({
-  objectCenterWorld,
-  objectSize,
-  spec,
+function addSketchSegment({
+  positions,
+  object,
+  startWorld,
+  endWorld,
+  jitterAmount,
+  seed,
 }: {
-  objectCenterWorld: THREE.Vector3;
-  objectSize: number;
-  spec: HatchLayerSpec;
+  positions: number[];
+  object: THREE.Object3D;
+  startWorld: THREE.Vector3;
+  endWorld: THREE.Vector3;
+  jitterAmount: number;
+  seed: number;
 }) {
-  const opacity = getHatchOpacity(spec.level, spec.layerIndex);
-  const frequencyBase = spec.level === "low" ? 42 : 24;
-  const frequency = frequencyBase / Math.max(objectSize, 0.01);
-
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    uniforms: {
-      uObjectCenterWorld: {
-        value: objectCenterWorld.clone(),
-      },
-      uAxisWorld: {
-        value: spec.axisWorld.clone().normalize(),
-      },
-      uHatchDirectionWorld: {
-        value: spec.hatchDirectionWorld.clone().normalize(),
-      },
-      uDirectionMode: {
-        value: directionToMode(spec.direction),
-      },
-      uFrequency: {
-        value: frequency,
-      },
-      uLineWidth: {
-        value: getHatchLineWidth(spec.level),
-      },
-      uSoftness: {
-        value: getHatchSoftness(spec.level),
-      },
-      uOpacity: {
-        value: opacity,
-      },
-      uColor: {
-        value: getHatchColor(spec.level),
-      },
-      uLayerOffset: {
-        value: spec.layerIndex * 0.37 + spec.axis.charCodeAt(0) * 0.013,
-      },
-      uNoiseStrength: {
-        value: spec.level === "low" ? 0.08 : 0.025,
-      },
-    },
-    vertexShader: `
-      varying vec3 vWorldPosition;
-      varying float vDirectionAllowed;
-
-      uniform vec3 uObjectCenterWorld;
-      uniform vec3 uAxisWorld;
-      uniform float uDirectionMode;
-
-      void main() {
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-
-        vWorldPosition = worldPosition.xyz;
-
-        float axisCoordinate = dot(vWorldPosition - uObjectCenterWorld, uAxisWorld);
-        float directionAllowed = 1.0;
-
-        if (uDirectionMode > 0.5) {
-          directionAllowed = axisCoordinate >= 0.0 ? 1.0 : 0.0;
-        } else if (uDirectionMode < -0.5) {
-          directionAllowed = axisCoordinate <= 0.0 ? 1.0 : 0.0;
-        }
-
-        vDirectionAllowed = directionAllowed;
-
-        gl_Position = projectionMatrix * viewMatrix * worldPosition;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vWorldPosition;
-      varying float vDirectionAllowed;
-
-      uniform vec3 uHatchDirectionWorld;
-      uniform float uFrequency;
-      uniform float uLineWidth;
-      uniform float uSoftness;
-      uniform float uOpacity;
-      uniform vec3 uColor;
-      uniform float uLayerOffset;
-      uniform float uNoiseStrength;
-
-      float hash(float n) {
-        return fract(sin(n) * 43758.5453123);
-      }
-
-      void main() {
-        if (vDirectionAllowed < 0.5) {
-          discard;
-        }
-
-        float coordinate = dot(vWorldPosition, uHatchDirectionWorld) * uFrequency;
-        float cell = floor(coordinate);
-        float local = fract(coordinate + uLayerOffset);
-
-        float n1 = hash(cell * 17.13 + uLayerOffset * 11.7);
-        float n2 = hash(cell * 31.71 + uLayerOffset * 23.3);
-
-        float wobble = (n1 - 0.5) * uNoiseStrength;
-        float widthVariation = mix(0.82, 1.18, n2);
-
-        float distanceToCenter = abs(local - 0.5 + wobble);
-        float lineMask =
-          1.0 - smoothstep(
-            uLineWidth * widthVariation,
-            uLineWidth * widthVariation + uSoftness,
-            distanceToCenter
-          );
-
-        float alpha = lineMask * uOpacity;
-
-        if (alpha < 0.012) {
-          discard;
-        }
-
-        gl_FragColor = vec4(uColor, alpha);
-      }
-    `,
+  const points = makeDraftStrokePoints({
+    start: startWorld,
+    end: endWorld,
+    jitterAmount,
+    seed,
   });
 
-  material.userData[FUZZY_ACTIVE_MATERIAL] = true;
+  
 
-  return material;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = object.worldToLocal(points[index].clone());
+    const b = object.worldToLocal(points[index + 1].clone());
+
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
 }
 
-function createHatchOverlayMesh({
-  sourceMesh,
-  objectCenterWorld,
-  objectSize,
-  spec,
+function makeDraftStrokePoints({
+  start,
+  end,
+  jitterAmount,
+  seed,
+  segments = 8,
 }: {
-  sourceMesh: THREE.Mesh;
-  objectCenterWorld: THREE.Vector3;
-  objectSize: number;
-  spec: HatchLayerSpec;
+  start: THREE.Vector3;
+  end: THREE.Vector3;
+  jitterAmount: number;
+  seed: number;
+  segments?: number;
 }) {
-  const overlayGeometry = sourceMesh.geometry.clone();
+  const points: THREE.Vector3[] = [];
+  const tangent = end.clone().sub(start);
 
-  const overlay = new THREE.Mesh(
-    overlayGeometry,
-    makeHatchMaterial({
-      objectCenterWorld,
-      objectSize,
-      spec,
-    }),
-  );
+  if (tangent.lengthSq() < 1e-12) {
+    return points;
+  }
 
-  overlay.renderOrder = spec.level === "low" ? 1250 + spec.layerIndex : 1150;
-  overlay.frustumCulled = false;
-  overlay.userData[FUZZY_VISUAL_CHILD] = true;
+  tangent.normalize();
 
-  return overlay;
+  const helper =
+    Math.abs(tangent.y) < 0.85
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+
+  const normalA = new THREE.Vector3().crossVectors(tangent, helper).normalize();
+  const normalB = new THREE.Vector3().crossVectors(tangent, normalA).normalize();
+
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const base = start.clone().lerp(end, t);
+
+    const n0 = seededNoise(seed + index * 17.11);
+    const n1 = seededNoise(seed + index * 29.73);
+
+    const endFade = index === 0 || index === segments ? 0.25 : 1.0;
+
+    const jitter = normalA
+      .clone()
+      .multiplyScalar((n0 - 0.5) * jitterAmount * endFade)
+      .add(
+        normalB
+          .clone()
+          .multiplyScalar((n1 - 0.5) * jitterAmount * endFade),
+      );
+
+    points.push(base.add(jitter));
+  }
+
+  return points;
 }
 
-function addHatchOverlayToObject({
+function createAbstractObjectSketchStrokeLayer({
+  object,
+  centerWorld,
+  sizeWorld,
+  offsetWorld,
+  level,
+  jitterAmount,
+  seed,
+}: {
+  object: THREE.Object3D;
+  centerWorld: THREE.Vector3;
+  sizeWorld: THREE.Vector3;
+  offsetWorld: THREE.Vector3;
+  level: UncertaintyVisualLevel;
+  jitterAmount: number;
+  seed: number;
+}) {
+  const halfX = Math.max(sizeWorld.x * 0.5, 0.01);
+  const halfY = Math.max(sizeWorld.y * 0.5, 0.01);
+  const halfZ = Math.max(sizeWorld.z * 0.5, 0.01);
+
+  const longestAxis =
+    sizeWorld.y >= sizeWorld.x && sizeWorld.y >= sizeWorld.z
+      ? "y"
+      : sizeWorld.x >= sizeWorld.z
+        ? "x"
+        : "z";
+
+  const positions: number[] = [];
+
+  if (longestAxis === "y") {
+    const railOffsets = [
+      new THREE.Vector3(halfX, 0, halfZ),
+      new THREE.Vector3(-halfX, 0, halfZ),
+      new THREE.Vector3(halfX, 0, -halfZ),
+      new THREE.Vector3(-halfX, 0, -halfZ),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, -halfY, 0)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, halfY, 0)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  } else if (longestAxis === "x") {
+    const railOffsets = [
+      new THREE.Vector3(0, halfY, halfZ),
+      new THREE.Vector3(0, -halfY, halfZ),
+      new THREE.Vector3(0, halfY, -halfZ),
+      new THREE.Vector3(0, -halfY, -halfZ),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(-halfX, 0, 0)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(halfX, 0, 0)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  } else {
+    const railOffsets = [
+      new THREE.Vector3(halfX, halfY, 0),
+      new THREE.Vector3(-halfX, halfY, 0),
+      new THREE.Vector3(halfX, -halfY, 0),
+      new THREE.Vector3(-halfX, -halfY, 0),
+    ];
+
+    railOffsets.forEach((railOffset, index) => {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, 0, -halfZ)),
+        endWorld: centerWorld
+          .clone()
+          .add(offsetWorld)
+          .add(railOffset)
+          .add(new THREE.Vector3(0, 0, halfZ)),
+        jitterAmount,
+        seed: seed + index * 13,
+      });
+    });
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+
+  const material = new THREE.LineBasicMaterial({
+    color: level === "low" ? 0x0f172a : 0x475569,
+    transparent: true,
+    opacity: level === "low" ? 0.76 : 0.52,
+    depthTest: false,
+    depthWrite: false,
+  });
+
+  const line = new THREE.LineSegments(geometry, material);
+
+  line.computeLineDistances();
+  line.renderOrder = level === "low" ? 1300 : 1200;
+  line.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return line;
+}
+
+function createObjectLineArtRepresentation({
   object,
   confidence,
   directions,
@@ -600,37 +764,76 @@ function addHatchOverlayToObject({
   directions: AxisDirectionMap;
   axisFrame: ConfidenceAxisFrame;
 }) {
-  const meshes = collectSourceMeshes(object);
-
-  if (meshes.length === 0) {
-    return;
-  }
-
-  const objectBox = new THREE.Box3().setFromObject(object);
-  const objectCenterWorld = new THREE.Vector3();
-
-  objectBox.getCenter(objectCenterWorld);
-
+  const level = getObjectVisualLevel(confidence);
   const objectSize = getObjectWorldSize(object);
+  const axes = getFrameAxes(axisFrame);
 
-  const layerSpecs = buildHatchLayerSpecs({
-    confidence,
-    directions,
-    axisFrame,
-  });
+  const box = new THREE.Box3().setFromObject(object);
+  const centerWorld = new THREE.Vector3();
+  const sizeWorld = new THREE.Vector3();
 
-  for (const sourceMesh of meshes) {
-    for (const spec of layerSpecs) {
-      const overlay = createHatchOverlayMesh({
-        sourceMesh,
-        objectCenterWorld,
-        objectSize,
-        spec,
-      });
+  box.getCenter(centerWorld);
+  box.getSize(sizeWorld);
 
-      sourceMesh.add(overlay);
+  const group = new THREE.Group();
+  group.userData[FUZZY_VISUAL_CHILD] = true;
+
+  const activeAxes = (["x", "y", "z"] as ConfidenceAxis[]).filter(
+    (axis) => confidence[axis] !== "high",
+  );
+
+  for (const axis of activeAxes) {
+    const axisLevel = confidence[axis];
+    const visualLevel: UncertaintyVisualLevel =
+      axisLevel === "low" ? "low" : "medium";
+
+    const signs = getDirectionSigns(directions[axis]);
+    const lineCount = axisLevel === "low" ? 3 : 1;
+
+    for (const sign of signs) {
+      for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+        const layerRatio = (lineIndex + 1) / lineCount;
+        const offsetAmount =
+          objectSize *
+          (axisLevel === "low" ? 0.045 : 0.022) *
+          layerRatio;
+
+        const jitterAmount =
+          objectSize *
+          (axisLevel === "low" ? 0.006 : 0.0025) *
+          (1 + layerRatio);
+
+        const axisVector = axes[axis].clone().normalize();
+        const offsetWorld = axisVector.multiplyScalar(sign * offsetAmount);
+
+        const sketch = createAbstractObjectSketchStrokeLayer({
+          object,
+          centerWorld,
+          sizeWorld,
+          offsetWorld,
+          level: visualLevel,
+          jitterAmount,
+          seed:
+            axis.charCodeAt(0) * 1000 +
+            sign * 100 +
+            lineIndex * 31,
+        });
+
+        if (sketch) {
+          group.add(sketch);
+        }
+      }
     }
   }
+
+  if (group.children.length === 0) {
+    return null;
+  }
+
+  return {
+    group,
+    level,
+  };
 }
 
 function applyUncertaintyToObject({
@@ -650,18 +853,22 @@ function applyUncertaintyToObject({
 
   object.updateWorldMatrix(true, true);
 
-  const visualLevel = getObjectVisualLevel(confidence);
-
-  if (visualLevel === "low") {
-    applyDraftSurface(object, visualLevel);
-  }
-
-  addHatchOverlayToObject({
+  const representation = createObjectLineArtRepresentation({
     object,
     confidence,
     directions,
     axisFrame,
   });
+
+  if (!representation) {
+    return;
+  }
+
+  if (representation.level === "low") {
+    applyDraftSurface(object, "low");
+  }
+
+  object.add(representation.group);
 }
 
 export function applyFuzzyConfidence(
