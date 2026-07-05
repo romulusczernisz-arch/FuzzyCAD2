@@ -3,12 +3,14 @@ import {
   clearElementsCache,
   getCachedElements,
 } from "../../../lib/server/onshapeElementsCache";
+import { clearAssemblyCache } from "../../../lib/server/onshapeAssemblyCache";
 import { onshapeFetch, parseJsonOrText } from "../../../lib/server/onshapeApi";
 
 const PROJECT_STATE_FILENAME = "fuzzycad-project-state.json";
 const GENERATED_GEOMETRY_FILENAME = "fuzzycad-generated-geometry.json";
 const ANNOTATED_SELECTION_STL_FILENAME = "fuzzycad-annotated-selection.stl";
 const VISUALIZATION_LAYER_NAME = "FuzzyCAD_Visualization_Layer";
+const ASSEMBLY_OVERLAY_INSTANCE_NAME = "FuzzyCAD_Generated_Overlay";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -54,27 +56,27 @@ async function parseSaveProjectRequest(
       throw new Error("Invalid projectState payload.");
     }
 
-const stlValue = formData.get("annotatedSelectionStl");
-const annotatedSelectionStl =
-  stlValue instanceof Blob && stlValue.size > 0 ? stlValue : null;
+    const stlValue = formData.get("annotatedSelectionStl");
+    const annotatedSelectionStl =
+      stlValue instanceof Blob && stlValue.size > 0 ? stlValue : null;
 
-return {
-  body: {
-    documentId: getStringFormField(formData, "documentId"),
-    workspaceId: getStringFormField(formData, "workspaceId"),
-    server: getStringFormField(formData, "server") || undefined,
-    projectState: parsedProjectState,
-  },
-  annotatedSelectionStl,
-};
+    return {
+      body: {
+        documentId: getStringFormField(formData, "documentId"),
+        workspaceId: getStringFormField(formData, "workspaceId"),
+        server: getStringFormField(formData, "server") || undefined,
+        projectState: parsedProjectState,
+      },
+      annotatedSelectionStl,
+    };
   }
 
   const body = (await req.json()) as SaveProjectRequestBody;
 
-return {
-  body,
-  annotatedSelectionStl: null,
-};
+  return {
+    body,
+    annotatedSelectionStl: null,
+  };
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -315,6 +317,401 @@ function getVisualizationElementIdFromResult(value: unknown) {
     : null;
 }
 
+function isOkResult(value: unknown) {
+  return isRecord(value) && value.ok === true;
+}
+
+function getModeFromResult(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return getStringFromRecord(value, "mode");
+}
+
+function getArrayFromRecord(record: UnknownRecord, key: string) {
+  const value = record[key];
+
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function getPartsFromPartsResponse(data: unknown) {
+  if (Array.isArray(data)) {
+    return data.filter(isRecord);
+  }
+
+  if (!isRecord(data)) {
+    return [];
+  }
+
+  const directParts = getArrayFromRecord(data, "parts");
+  if (directParts.length > 0) return directParts;
+
+  const items = getArrayFromRecord(data, "items");
+  if (items.length > 0) return items;
+
+  const dataItems = getArrayFromRecord(data, "data");
+  if (dataItems.length > 0) return dataItems;
+
+  return [];
+}
+
+function getPartIdFromPartRecord(part: UnknownRecord) {
+  return (
+    getStringFromRecord(part, "partId") ??
+    getStringFromRecord(part, "id") ??
+    getStringFromRecord(part, "partIdOrMicroversionId")
+  );
+}
+
+async function getFirstPartIdFromVisualizationLayer(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  visualizationElementId: string;
+  accessToken: string;
+}) {
+  const endpoint = `${input.server}/api/parts/d/${input.documentId}/w/${input.workspaceId}/e/${input.visualizationElementId}`;
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+      },
+    },
+    {
+      route: "/api/fuzzycad/save-project",
+      operation: "get-visualization-layer-parts",
+    },
+  );
+
+  const data = await parseJsonOrText(res);
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-read-visualization-layer-parts",
+      status: res.status,
+      endpoint,
+
+      data,
+      partId: null,
+    };
+  }
+
+  const parts = getPartsFromPartsResponse(data);
+  const firstPart = parts[0] ?? null;
+  const partId = firstPart ? getPartIdFromPartRecord(firstPart) : null;
+
+  if (!partId) {
+    return {
+      ok: false,
+      mode: "visualization-layer-has-no-readable-part-id",
+      status: res.status,
+      endpoint,
+      data,
+      partsPreview: parts.slice(0, 5),
+      partId: null,
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "found-visualization-layer-part",
+    status: res.status,
+    endpoint,
+    data,
+    partsPreview: parts.slice(0, 5),
+    partId,
+  };
+}
+
+async function getAssemblyDefinitionForOverlay(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  accessToken: string;
+}) {
+  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}`;
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+      },
+    },
+    {
+      route: "/api/fuzzycad/save-project",
+      operation: "get-selected-assembly-before-overlay-insert",
+    },
+  );
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    endpoint,
+    data: await parseJsonOrText(res),
+  };
+}
+
+function getAssemblyInstances(data: unknown) {
+  if (!isRecord(data)) {
+    return [];
+  }
+
+  const rootAssembly = isRecord(data.rootAssembly) ? data.rootAssembly : data;
+
+  return getArrayFromRecord(rootAssembly, "instances");
+}
+
+function getInstanceId(instance: UnknownRecord) {
+  return (
+    getStringFromRecord(instance, "id") ??
+    getStringFromRecord(instance, "instanceId") ??
+    getStringFromRecord(instance, "nodeId")
+  );
+}
+
+function getInstanceName(instance: UnknownRecord) {
+  return (
+    getStringFromRecord(instance, "name") ??
+    getStringFromRecord(instance, "instanceName")
+  );
+}
+
+function findExistingOverlayInstance(input: {
+  assemblyData: unknown;
+  visualizationElementId: string;
+}) {
+  const instances = getAssemblyInstances(input.assemblyData);
+
+  const matched =
+    instances.find((instance) => {
+      const name = getInstanceName(instance);
+      const elementId = getStringFromRecord(instance, "elementId");
+
+      return (
+        name === ASSEMBLY_OVERLAY_INSTANCE_NAME ||
+        elementId === input.visualizationElementId
+      );
+    }) ?? null;
+
+  if (!matched) {
+    return null;
+  }
+
+  return {
+    id: getInstanceId(matched),
+    name: getInstanceName(matched),
+    elementId: getStringFromRecord(matched, "elementId"),
+    instance: matched,
+  };
+}
+
+async function insertVisualizationLayerInstance(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  visualizationElementId: string;
+  partId: string;
+  accessToken: string;
+}) {
+  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/instances`;
+
+  /**
+   * Onshape instance insertion payloads can be picky depending on whether
+   * the source is a part, mesh import, or whole part studio.
+   *
+   * Try name/instanceName/no-name variants. The first accepted request wins.
+   * If all fail, the response includes every attempt for debugging.
+   */
+  const candidateBodies = [
+    {
+      documentId: input.documentId,
+      elementId: input.visualizationElementId,
+      partId: input.partId,
+      isAssembly: false,
+      configuration: "default",
+      name: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+    },
+    {
+      documentId: input.documentId,
+      elementId: input.visualizationElementId,
+      partId: input.partId,
+      isAssembly: false,
+      configuration: "default",
+      instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+    },
+    {
+      documentId: input.documentId,
+      elementId: input.visualizationElementId,
+      partId: input.partId,
+      isAssembly: false,
+      configuration: "default",
+    },
+  ];
+
+  const attempts = [];
+
+  for (const requestBody of candidateBodies) {
+    const res = await onshapeFetch(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      },
+      {
+        route: "/api/fuzzycad/save-project",
+        operation: "insert-fuzzycad-visualization-overlay",
+      },
+    );
+
+    const data = await parseJsonOrText(res);
+
+    attempts.push({
+      ok: res.ok,
+      status: res.status,
+      endpoint,
+      requestBody,
+      data,
+    });
+
+    if (res.ok) {
+      return {
+        ok: true,
+        mode: "inserted-visualization-layer-into-assembly",
+        status: res.status,
+        endpoint,
+        requestBody,
+        data,
+        attempts,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    mode: "failed-to-insert-visualization-layer-into-assembly",
+    endpoint,
+    attempts,
+  };
+}
+
+async function ensureVisualizationLayerInSelectedAssembly(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  selectedAssemblyElementId: string | null;
+  visualizationElementId: string | null;
+}) {
+  if (!input.selectedAssemblyElementId) {
+    return {
+      ok: false,
+      mode: "missing-selected-assembly",
+      message: "Project state does not contain source.assemblyElementId.",
+    };
+  }
+
+  if (!input.visualizationElementId) {
+    return {
+      ok: false,
+      mode: "missing-visualization-layer",
+      message: "No visualizationElementId was produced by STL translation.",
+    };
+  }
+
+  const assemblyResult = await getAssemblyDefinitionForOverlay({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    assemblyElementId: input.selectedAssemblyElementId,
+    accessToken: input.accessToken,
+  });
+
+  if (!assemblyResult.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-read-selected-assembly",
+      status: assemblyResult.status,
+      endpoint: assemblyResult.endpoint,
+      data: assemblyResult.data,
+    };
+  }
+
+  const existingOverlay = findExistingOverlayInstance({
+    assemblyData: assemblyResult.data,
+    visualizationElementId: input.visualizationElementId,
+  });
+
+  if (existingOverlay) {
+    return {
+      ok: true,
+      mode: "reused-existing-assembly-overlay",
+      message:
+        "Selected assembly already contains the FuzzyCAD generated overlay.",
+      assemblyElementId: input.selectedAssemblyElementId,
+      visualizationElementId: input.visualizationElementId,
+      instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+      existingOverlay,
+    };
+  }
+
+  const partResult = await getFirstPartIdFromVisualizationLayer({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    visualizationElementId: input.visualizationElementId,
+    accessToken: input.accessToken,
+  });
+
+  if (!partResult.ok || !partResult.partId) {
+    return {
+      ok: false,
+      mode: "failed-to-find-visualization-layer-part",
+      assemblyElementId: input.selectedAssemblyElementId,
+      visualizationElementId: input.visualizationElementId,
+      partResult,
+    };
+  }
+
+  const insertResult = await insertVisualizationLayerInstance({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    assemblyElementId: input.selectedAssemblyElementId,
+    visualizationElementId: input.visualizationElementId,
+    partId: partResult.partId,
+    accessToken: input.accessToken,
+  });
+
+  if (insertResult.ok) {
+    clearAssemblyCache();
+  }
+
+  return {
+    ...insertResult,
+    assemblyElementId: input.selectedAssemblyElementId,
+    visualizationElementId: input.visualizationElementId,
+    partId: partResult.partId,
+    instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+    partResult,
+  };
+}
+
 async function getTranslationStatus(input: {
   href: string;
   accessToken: string;
@@ -330,7 +727,7 @@ async function getTranslationStatus(input: {
     },
     {
       route: "/api/fuzzycad/save-project",
-operation: "get-stl-translation-status",
+      operation: "get-stl-translation-status",
     },
   );
 
@@ -506,6 +903,7 @@ function buildGeneratedGeometryPayload(input: {
   projectState: UnknownRecord;
   annotatedSelectionStlResult: UpsertBlobResult | null;
   reconstructionResult: UnknownRecord | null;
+  assemblyOverlayResult: UnknownRecord | null;
 }) {
   const now = new Date().toISOString();
   const source = getProjectSource(input.projectState);
@@ -516,9 +914,12 @@ function buildGeneratedGeometryPayload(input: {
     input.projectState,
   );
 
-const visualizationLayerElementId = getVisualizationElementIdFromResult(
-  input.reconstructionResult,
-);
+  const visualizationLayerElementId = getVisualizationElementIdFromResult(
+    input.reconstructionResult,
+  );
+
+  const assemblyOverlayOk = isOkResult(input.assemblyOverlayResult);
+  const assemblyOverlayMode = getModeFromResult(input.assemblyOverlayResult);
 
   return {
     schemaVersion: "fuzzycad.generatedGeometry.v1",
@@ -528,17 +929,17 @@ const visualizationLayerElementId = getVisualizationElementIdFromResult(
     objectMap: input.projectState.objectMap ?? {},
     annotations: input.projectState.annotations ?? [],
 
-annotatedSelectionStl: input.annotatedSelectionStlResult
-  ? {
-      filename: input.annotatedSelectionStlResult.filename,
-      elementId: input.annotatedSelectionStlResult.elementId,
-      mode: input.annotatedSelectionStlResult.mode,
-      status: input.annotatedSelectionStlResult.status,
-      updatedAt: now,
-      coordinateSpace: "onshape-assembly",
-      ...annotatedSelectionManifest,
-    }
-  : null,
+    annotatedSelectionStl: input.annotatedSelectionStlResult
+      ? {
+          filename: input.annotatedSelectionStlResult.filename,
+          elementId: input.annotatedSelectionStlResult.elementId,
+          mode: input.annotatedSelectionStlResult.mode,
+          status: input.annotatedSelectionStlResult.status,
+          updatedAt: now,
+          coordinateSpace: "onshape-assembly",
+          ...annotatedSelectionManifest,
+        }
+      : null,
 
     visualizationLayer: {
       name: VISUALIZATION_LAYER_NAME,
@@ -549,8 +950,12 @@ annotatedSelectionStl: input.annotatedSelectionStlResult
     assemblyOverlay: selectedAssemblyElementId
       ? {
           assemblyElementId: selectedAssemblyElementId,
-          instanceName: "FuzzyCAD_Generated_Overlay",
-          status: "pending-insertion",
+          instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+          status: assemblyOverlayOk
+            ? "inserted-or-reused"
+            : "pending-insertion",
+          mode: assemblyOverlayMode,
+          result: input.assemblyOverlayResult,
         }
       : null,
 
@@ -594,7 +999,7 @@ export async function POST(req: NextRequest) {
     projectState,
   } = parsedRequest.body;
 
-const { annotatedSelectionStl } = parsedRequest;
+  const { annotatedSelectionStl } = parsedRequest;
 
   if (!documentId || !workspaceId || !projectState) {
     return NextResponse.json(
@@ -624,53 +1029,70 @@ const { annotatedSelectionStl } = parsedRequest;
     );
   }
 
-const annotatedSelectionStlResult = annotatedSelectionStl
-  ? await upsertBlobContainer({
+  const annotatedSelectionStlResult = annotatedSelectionStl
+    ? await upsertBlobContainer({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        filename: ANNOTATED_SELECTION_STL_FILENAME,
+        blobData: annotatedSelectionStl,
+        elements: elementsResult.data,
+        route: "/api/fuzzycad/save-project",
+        createOperation: "create-annotated-selection-stl",
+        updateOperation: "update-annotated-selection-stl",
+      })
+    : null;
+
+  if (annotatedSelectionStlResult && !annotatedSelectionStlResult.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Failed to save FuzzyCAD annotated selection STL.",
+        annotatedSelectionStlResult,
+      },
+      { status: annotatedSelectionStlResult.status },
+    );
+  }
+
+  const reconstructionResult = annotatedSelectionStlResult?.elementId
+    ? await translateAnnotatedStlIntoVisualizationLayer({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        annotatedSelectionStlElementId: annotatedSelectionStlResult.elementId,
+      })
+    : {
+        ok: false,
+        mode: "missing-annotated-selection-stl",
+        message: "No annotated selection STL was provided.",
+      };
+
+  const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
+  const visualizationElementId =
+    getVisualizationElementIdFromResult(reconstructionResult);
+
+  const assemblyOverlayResult =
+    await ensureVisualizationLayerInSelectedAssembly({
       server,
       documentId,
       workspaceId,
       accessToken,
-      filename: ANNOTATED_SELECTION_STL_FILENAME,
-      blobData: annotatedSelectionStl,
-      elements: elementsResult.data,
-      route: "/api/fuzzycad/save-project",
-      createOperation: "create-annotated-selection-stl",
-      updateOperation: "update-annotated-selection-stl",
-    })
-  : null;
+      selectedAssemblyElementId,
+      visualizationElementId,
+    });
 
-if (annotatedSelectionStlResult && !annotatedSelectionStlResult.ok) {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "Failed to save FuzzyCAD annotated selection STL.",
-      annotatedSelectionStlResult,
-    },
-    { status: annotatedSelectionStlResult.status },
-  );
-}
-
-const reconstructionResult = annotatedSelectionStlResult?.elementId
-  ? await translateAnnotatedStlIntoVisualizationLayer({
-      server,
-      documentId,
-      workspaceId,
-      accessToken,
-      annotatedSelectionStlElementId: annotatedSelectionStlResult.elementId,
-    })
-  : {
-      ok: false,
-      mode: "missing-annotated-selection-stl",
-      message: "No annotated selection STL was provided.",
-    };
-
-const generatedGeometryPayload = buildGeneratedGeometryPayload({
-  projectState,
-  annotatedSelectionStlResult,
-  reconstructionResult: isRecord(reconstructionResult)
-    ? reconstructionResult
-    : null,
-});
+  const generatedGeometryPayload = buildGeneratedGeometryPayload({
+    projectState,
+    annotatedSelectionStlResult,
+    reconstructionResult: isRecord(reconstructionResult)
+      ? reconstructionResult
+      : null,
+    assemblyOverlayResult: isRecord(assemblyOverlayResult)
+      ? assemblyOverlayResult
+      : null,
+  });
 
   const elementsAfterArtifactsResult = await getCachedElements({
     server,
@@ -692,6 +1114,7 @@ const generatedGeometryPayload = buildGeneratedGeometryPayload({
         error:
           "Generated artifacts were saved, but failed to refresh elements before saving generated geometry metadata.",
         annotatedSelectionStlResult,
+        assemblyOverlayResult,
         reconstructionResult,
       },
       { status: elementsAfterArtifactsResult.status },
@@ -718,6 +1141,7 @@ const generatedGeometryPayload = buildGeneratedGeometryPayload({
         error: "Failed to save FuzzyCAD generated geometry container.",
         annotatedSelectionStlResult,
         reconstructionResult,
+        assemblyOverlayResult,
         generatedGeometryResult,
       },
       { status: generatedGeometryResult.status },
@@ -730,16 +1154,16 @@ const generatedGeometryPayload = buildGeneratedGeometryPayload({
       ...(isRecord(projectState.generatedGeometry)
         ? projectState.generatedGeometry
         : {}),
-mode: annotatedSelectionStlResult ? "imported-mesh" : "none",
-containerElementId: generatedGeometryResult.elementId,
-annotatedSelectionStl: annotatedSelectionStlResult
-  ? {
-      filename: annotatedSelectionStlResult.filename,
-      elementId: annotatedSelectionStlResult.elementId,
-      mode: annotatedSelectionStlResult.mode,
-      status: annotatedSelectionStlResult.status,
-    }
-  : null,
+      mode: annotatedSelectionStlResult ? "imported-mesh" : "none",
+      containerElementId: generatedGeometryResult.elementId,
+      annotatedSelectionStl: annotatedSelectionStlResult
+        ? {
+            filename: annotatedSelectionStlResult.filename,
+            elementId: annotatedSelectionStlResult.elementId,
+            mode: annotatedSelectionStlResult.mode,
+            status: annotatedSelectionStlResult.status,
+          }
+        : null,
       visualizationLayer: isRecord(reconstructionResult)
         ? {
             name: VISUALIZATION_LAYER_NAME,
@@ -749,11 +1173,15 @@ annotatedSelectionStl: annotatedSelectionStlResult
           }
         : null,
 
-      assemblyOverlay: getSourceAssemblyElementId(projectState)
+      assemblyOverlay: selectedAssemblyElementId
         ? {
-            assemblyElementId: getSourceAssemblyElementId(projectState),
-            instanceName: "FuzzyCAD_Generated_Overlay",
-            status: "pending-insertion",
+            assemblyElementId: selectedAssemblyElementId,
+            instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
+            status: isOkResult(assemblyOverlayResult)
+              ? "inserted-or-reused"
+              : "pending-insertion",
+            mode: getModeFromResult(assemblyOverlayResult),
+            result: assemblyOverlayResult,
           }
         : null,
       lastGeneratedAt: new Date().toISOString(),
@@ -782,6 +1210,7 @@ annotatedSelectionStl: annotatedSelectionStlResult
           "Generated geometry was saved, but failed to refresh elements before saving project state.",
         annotatedSelectionStlResult,
         generatedGeometryResult,
+        assemblyOverlayResult,
         reconstructionResult,
       },
       { status: refreshedElementsResult.status },
@@ -810,6 +1239,7 @@ annotatedSelectionStl: annotatedSelectionStlResult
         annotatedSelectionStlResult,
         generatedGeometryResult,
         reconstructionResult,
+        assemblyOverlayResult,
         projectStateResult,
       },
       { status: projectStateResult.status },
@@ -817,15 +1247,17 @@ annotatedSelectionStl: annotatedSelectionStlResult
   }
 
   clearElementsCache();
+  clearAssemblyCache();
 
-return NextResponse.json({
-  ok: true,
-  status: 200,
-  message: "FuzzyCAD project saved.",
-  annotatedSelectionStlResult,
-  generatedGeometryResult,
-  reconstructionResult,
-  projectStateResult,
-  projectState: projectStateWithGeneratedGeometry,
-});
+  return NextResponse.json({
+    ok: true,
+    status: 200,
+    message: "FuzzyCAD project saved.",
+    annotatedSelectionStlResult,
+    generatedGeometryResult,
+    reconstructionResult,
+    assemblyOverlayResult,
+    projectStateResult,
+    projectState: projectStateWithGeneratedGeometry,
+  });
 }

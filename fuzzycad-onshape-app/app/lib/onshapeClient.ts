@@ -24,6 +24,7 @@ export type ApiResult = {
   mode?: string;
   message?: string;
 annotatedSelectionStlResult?: unknown;
+assemblyOverlayResult?: unknown;
 
   generatedGeometryResult?: unknown;
   projectStateResult?: unknown;
