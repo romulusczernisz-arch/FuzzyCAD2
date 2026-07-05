@@ -288,7 +288,10 @@ function getFirstStringFromArrayField(data: unknown, key: string) {
   return typeof first === "string" ? first : null;
 }
 
-function getTranslatedElementId(data: unknown, sourceElementId?: string | null) {
+function getTranslatedElementId(
+  data: unknown,
+  sourceElementId?: string | null,
+) {
   if (!isRecord(data)) return null;
 
   /**
@@ -333,6 +336,18 @@ function getTranslatedElementId(data: unknown, sourceElementId?: string | null) 
 }
 
 function getVisualizationElementIdFromResult(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const visualizationElementId = value.visualizationElementId;
+
+  return typeof visualizationElementId === "string"
+    ? visualizationElementId
+    : null;
+}
+
+function getVisualizationElementIdFromAttempt(value: unknown) {
   if (!isRecord(value)) {
     return null;
   }
@@ -765,6 +780,90 @@ async function getTranslationStatus(input: {
   };
 }
 
+function buildStlTranslationFormData(input: {
+  annotatedSelectionStl: Blob;
+  variant: "import-default" | "import-onshape" | "translate-stl-fallback";
+}) {
+  const formData = new FormData();
+
+  formData.append(
+    "file",
+    input.annotatedSelectionStl,
+    ANNOTATED_SELECTION_STL_FILENAME,
+  );
+  formData.append("encodedFilename", ANNOTATED_SELECTION_STL_FILENAME);
+  formData.append("storeInDocument", "true");
+  formData.append("destinationName", VISUALIZATION_LAYER_NAME);
+
+  /**
+   * Important:
+   * formatName: "STL" produced a Blob element in our test.
+   *
+   * So try import-style requests first. The old STL formatName path is kept
+   * only as a final diagnostic fallback.
+   */
+  if (input.variant === "import-onshape") {
+    formData.append("formatName", "ONSHAPE");
+  }
+
+  if (input.variant === "translate-stl-fallback") {
+    formData.append("formatName", "STL");
+  }
+
+  formData.append("importInOwnerDocument", "true");
+  formData.append("allowFaultyParts", "true");
+  formData.append("createComposite", "false");
+  formData.append("joinAdjacentSurfaces", "false");
+
+  return formData;
+}
+
+async function pollTranslationToCompletion(input: {
+  initialData: unknown;
+  href: string | null;
+  accessToken: string;
+}) {
+  let translationData = input.initialData;
+
+  if (!input.href) {
+    return translationData;
+  }
+
+  for (let i = 0; i < 20; i += 1) {
+    const state = getTranslationState(translationData);
+
+    if (state === "DONE" || state === "COMPLETED" || state === "SUCCESS") {
+      break;
+    }
+
+    if (state === "FAILED" || state === "CANCELLED" || state === "ERROR") {
+      return translationData;
+    }
+
+    await sleep(1000);
+
+    const statusResult = await getTranslationStatus({
+      href: input.href,
+      accessToken: input.accessToken,
+    });
+
+    if (!statusResult.ok) {
+      return {
+        ok: false,
+        mode: "failed-to-poll-stl-translation",
+        status: statusResult.status,
+        href: input.href,
+        data: statusResult.data,
+        initialData: translationData,
+      };
+    }
+
+    translationData = statusResult.data;
+  }
+
+  return translationData;
+}
+
 async function translateAnnotatedStlIntoVisualizationLayer(input: {
   server: string;
   documentId: string;
@@ -775,120 +874,138 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
 }) {
   const endpoint = `${input.server}/api/translations/d/${input.documentId}/w/${input.workspaceId}`;
 
-  const formData = new FormData();
-
-  formData.append(
-    "file",
-    input.annotatedSelectionStl,
-    ANNOTATED_SELECTION_STL_FILENAME,
-  );
-  formData.append("encodedFilename", ANNOTATED_SELECTION_STL_FILENAME);
-  formData.append("formatName", "STL");
-  formData.append("storeInDocument", "true");
-  formData.append("destinationName", VISUALIZATION_LAYER_NAME);
-
-  /**
-   * These are import-tolerance options. They are harmless if Onshape ignores
-   * them, and useful if the STL mesh has minor issues.
-   */
-  formData.append("allowFaultyParts", "true");
-  formData.append("createComposite", "false");
-  formData.append("joinAdjacentSurfaces", "false");
-
-  const startRes = await onshapeFetch(
-    endpoint,
+  const variants: {
+    variant: "import-default" | "import-onshape" | "translate-stl-fallback";
+    description: string;
+  }[] = [
     {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${input.accessToken}`,
-        Accept: "application/json",
+      variant: "import-default",
+      description:
+        "Upload STL without formatName so Onshape can infer import behavior.",
+    },
+    {
+      variant: "import-onshape",
+      description:
+        "Upload STL with formatName=ONSHAPE to request native document import.",
+    },
+    {
+      variant: "translate-stl-fallback",
+      description:
+        "Old behavior: formatName=STL. Expected to produce a Blob, kept only for diagnostics.",
+    },
+  ];
+
+  const attempts = [];
+
+  for (const item of variants) {
+    const startRes = await onshapeFetch(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          Accept: "application/json",
+        },
+        body: buildStlTranslationFormData({
+          annotatedSelectionStl: input.annotatedSelectionStl,
+          variant: item.variant,
+        }),
       },
-      body: formData,
-    },
-    {
-      route: "/api/fuzzycad/save-project",
-      operation: "translate-annotated-stl-upload-into-visualization-layer",
-    },
-  );
+      {
+        route: "/api/fuzzycad/save-project",
+        operation: `translate-annotated-stl-${item.variant}`,
+      },
+    );
 
-  let translationData = await parseJsonOrText(startRes);
+    const initialData = await parseJsonOrText(startRes);
 
-  if (!startRes.ok) {
-    return {
-      ok: false,
-      mode: "failed-to-start-stl-upload-translation",
+    if (!startRes.ok) {
+      attempts.push({
+        ok: false,
+        variant: item.variant,
+        description: item.description,
+        status: startRes.status,
+        endpoint,
+        data: initialData,
+      });
+
+      continue;
+    }
+
+    const href = getTranslationHref(initialData);
+    const translationData = await pollTranslationToCompletion({
+      initialData,
+      href,
+      accessToken: input.accessToken,
+    });
+
+    const state = getTranslationState(translationData);
+
+    const visualizationElementId = getTranslatedElementId(
+      translationData,
+      input.annotatedSelectionStlElementId,
+    );
+
+    const validation = await validateVisualizationLayerElement({
+      server: input.server,
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      accessToken: input.accessToken,
+      visualizationElementId,
+    });
+
+    const attempt = {
+      ok: validation.ok,
+      variant: item.variant,
+      description: item.description,
       status: startRes.status,
       endpoint,
       sourceBlobElementId: input.annotatedSelectionStlElementId,
       requestBodyKind: "multipart/form-data",
+      href,
+      state,
+      visualizationElementId,
+      validation,
+      initialData,
       data: translationData,
     };
-  }
 
-  const href = getTranslationHref(translationData);
+    attempts.push(attempt);
 
-  if (href) {
-    for (let i = 0; i < 20; i += 1) {
-      const state = getTranslationState(translationData);
-
-      if (state === "DONE" || state === "COMPLETED" || state === "SUCCESS") {
-        break;
-      }
-
-      if (state === "FAILED" || state === "CANCELLED" || state === "ERROR") {
-        return {
-          ok: false,
-          mode: "stl-upload-translation-failed",
-          status: startRes.status,
-          endpoint,
-          sourceBlobElementId: input.annotatedSelectionStlElementId,
-          href,
-          data: translationData,
-        };
-      }
-
-      await sleep(1000);
-
-      const statusResult = await getTranslationStatus({
+    if (validation.ok) {
+      return {
+        ok: true,
+        mode: "stl-import-produced-insertable-visualization-layer",
+        status: startRes.status,
+        endpoint,
+        sourceBlobElementId: input.annotatedSelectionStlElementId,
+        requestBodyKind: "multipart/form-data",
         href,
-        accessToken: input.accessToken,
-      });
-
-      if (!statusResult.ok) {
-        return {
-          ok: false,
-          mode: "failed-to-poll-stl-upload-translation",
-          status: statusResult.status,
-          endpoint,
-          sourceBlobElementId: input.annotatedSelectionStlElementId,
-          href,
-          data: statusResult.data,
-          initialData: translationData,
-        };
-      }
-
-      translationData = statusResult.data;
+        visualizationElementId,
+        validation,
+        attempts,
+        data: translationData,
+      };
     }
   }
 
- const visualizationElementId = getTranslatedElementId(
-  translationData,
-  input.annotatedSelectionStlElementId,
-);
+  const lastAttempt = attempts[attempts.length - 1] ?? null;
+const lastVisualizationElementId =
+  getVisualizationElementIdFromAttempt(lastAttempt);
 
-  return {
-    ok: true,
-    mode: visualizationElementId
-      ? "stl-upload-translated-to-visualization-layer"
-      : "stl-upload-translation-started-but-result-element-not-found",
-    status: startRes.status,
-    endpoint,
-    sourceBlobElementId: input.annotatedSelectionStlElementId,
-    requestBodyKind: "multipart/form-data",
-    href,
-    visualizationElementId,
-    data: translationData,
-  };
+return {
+  ok: false,
+  mode: "stl-import-did-not-produce-insertable-visualization-layer",
+  status:
+    lastAttempt && typeof lastAttempt.status === "number"
+      ? lastAttempt.status
+      : 500,
+  endpoint,
+  sourceBlobElementId: input.annotatedSelectionStlElementId,
+  visualizationElementId: lastVisualizationElementId,
+  attempts,
+  data: lastAttempt,
+};
 }
 
 function getElementTypeLabel(element: UnknownRecord) {
@@ -982,10 +1099,6 @@ async function validateVisualizationLayerElement(input: {
     element,
   };
 }
-
-
-
-
 
 function getProjectSource(projectState: UnknownRecord) {
   return isRecord(projectState.source) ? projectState.source : {};
@@ -1196,27 +1309,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
-const reconstructionResult = annotatedSelectionStl
-  ? await translateAnnotatedStlIntoVisualizationLayer({
-      server,
-      documentId,
-      workspaceId,
-      accessToken,
-      annotatedSelectionStl,
-      annotatedSelectionStlElementId: annotatedSelectionStlResult?.elementId ?? null,
-    })
-  : {
-      ok: false,
-      mode: "missing-annotated-selection-stl",
-      message: "No annotated selection STL was provided.",
-    };
+  const reconstructionResult = annotatedSelectionStl
+    ? await translateAnnotatedStlIntoVisualizationLayer({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        annotatedSelectionStl,
+        annotatedSelectionStlElementId:
+          annotatedSelectionStlResult?.elementId ?? null,
+      })
+    : {
+        ok: false,
+        mode: "missing-annotated-selection-stl",
+        message: "No annotated selection STL was provided.",
+      };
 
-const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
-const visualizationElementId =
-  getVisualizationElementIdFromResult(reconstructionResult);
+  const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
+  const visualizationElementId =
+    getVisualizationElementIdFromResult(reconstructionResult);
 
-const visualizationLayerValidation =
-  await validateVisualizationLayerElement({
+  const visualizationLayerValidation = await validateVisualizationLayerElement({
     server,
     documentId,
     workspaceId,
@@ -1224,22 +1337,22 @@ const visualizationLayerValidation =
     visualizationElementId,
   });
 
-const assemblyOverlayResult = visualizationLayerValidation.ok
-  ? await ensureVisualizationLayerInSelectedAssembly({
-      server,
-      documentId,
-      workspaceId,
-      accessToken,
-      selectedAssemblyElementId,
-      visualizationElementId,
-    })
-  : {
-      ok: false,
-      mode: "visualization-layer-not-insertable",
-      selectedAssemblyElementId,
-      visualizationElementId,
-      validation: visualizationLayerValidation,
-    };
+  const assemblyOverlayResult = visualizationLayerValidation.ok
+    ? await ensureVisualizationLayerInSelectedAssembly({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        selectedAssemblyElementId,
+        visualizationElementId,
+      })
+    : {
+        ok: false,
+        mode: "visualization-layer-not-insertable",
+        selectedAssemblyElementId,
+        visualizationElementId,
+        validation: visualizationLayerValidation,
+      };
 
   const generatedGeometryPayload = buildGeneratedGeometryPayload({
     projectState,
@@ -1342,10 +1455,10 @@ const assemblyOverlayResult = visualizationLayerValidation.ok
             result: assemblyOverlayResult,
           }
         : null,
-lastGeneratedAt: new Date().toISOString(),
-reconstruction: reconstructionResult,
-visualizationLayerValidation,
-assemblyOverlayResult,
+      lastGeneratedAt: new Date().toISOString(),
+      reconstruction: reconstructionResult,
+      visualizationLayerValidation,
+      assemblyOverlayResult,
     },
   };
 
@@ -1409,16 +1522,16 @@ assemblyOverlayResult,
   clearElementsCache();
   clearAssemblyCache();
 
- return NextResponse.json({
-  ok: true,
-  status: 200,
-  message: "FuzzyCAD project saved.",
-  annotatedSelectionStlResult,
-  generatedGeometryResult,
-  reconstructionResult,
-  visualizationLayerValidation,
-  assemblyOverlayResult,
-  projectStateResult,
-  projectState: projectStateWithGeneratedGeometry,
-});
+  return NextResponse.json({
+    ok: true,
+    status: 200,
+    message: "FuzzyCAD project saved.",
+    annotatedSelectionStlResult,
+    generatedGeometryResult,
+    reconstructionResult,
+    visualizationLayerValidation,
+    assemblyOverlayResult,
+    projectStateResult,
+    projectState: projectStateWithGeneratedGeometry,
+  });
 }
