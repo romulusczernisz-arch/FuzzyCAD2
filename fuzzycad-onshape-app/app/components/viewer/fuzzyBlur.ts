@@ -485,28 +485,26 @@ function addSketchSegment({
   }
 }
 
-
-
 function makeFramePoint({
   measure,
-  normalAxisName,
+  dimensionAxis,
   uAxisName,
   vAxisName,
-  normal,
+  dimension,
   u,
   v,
 }: {
   measure: FrameMeasure;
-  normalAxisName: ConfidenceAxis;
+  dimensionAxis: ConfidenceAxis;
   uAxisName: ConfidenceAxis;
   vAxisName: ConfidenceAxis;
-  normal: number;
+  dimension: number;
   u: number;
   v: number;
 }) {
   return measure.centerWorld
     .clone()
-    .add(measure.axes[normalAxisName].clone().multiplyScalar(normal))
+    .add(measure.axes[dimensionAxis].clone().multiplyScalar(dimension))
     .add(measure.axes[uAxisName].clone().multiplyScalar(u))
     .add(measure.axes[vAxisName].clone().multiplyScalar(v));
 }
@@ -517,7 +515,7 @@ function createAbstractObjectSketchStrokeLayer({
   uncertaintyAxis,
   sign,
   level,
-  offsetAmount,
+  extensionAmount,
   jitterAmount,
   seed,
 }: {
@@ -526,141 +524,100 @@ function createAbstractObjectSketchStrokeLayer({
   uncertaintyAxis: ConfidenceAxis;
   sign: number;
   level: UncertaintyVisualLevel;
-  offsetAmount: number;
+  extensionAmount: number;
   jitterAmount: number;
   seed: number;
 }) {
   const [uAxisName, vAxisName] = getOtherFrameAxes(uncertaintyAxis);
 
-  const normalExtent =
+  const originalBoundary =
     sign > 0
       ? measure.extents[uncertaintyAxis].max
       : measure.extents[uncertaintyAxis].min;
 
-  const sketchNormal = normalExtent + sign * offsetAmount;
+  const uncertainBoundary = originalBoundary + sign * extensionAmount;
 
-  const uMin = measure.extents[uAxisName].min;
-  const uMax = measure.extents[uAxisName].max;
-  const vMin = measure.extents[vAxisName].min;
-  const vMax = measure.extents[vAxisName].max;
-
-  const padding = measure.objectSize * (level === "low" ? 0.018 : 0.009);
-
-  const u0 = uMin - padding;
-  const u1 = uMax + padding;
-  const v0 = vMin - padding;
-  const v1 = vMax + padding;
+  // 这里不加 padding。也就是说，sketch extension 的“粗细”
+  // 和原 object 在另外两个方向上的尺寸完全一样。
+  const u0 = measure.extents[uAxisName].min;
+  const u1 = measure.extents[uAxisName].max;
+  const v0 = measure.extents[vAxisName].min;
+  const v1 = measure.extents[vAxisName].max;
 
   const positions: number[] = [];
 
-  const sketchCap = [
+  const capAt = (dimension: number) => [
     makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
+      dimension,
       u: u0,
       v: v0,
     }),
     makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
+      dimension,
       u: u1,
       v: v0,
     }),
     makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
+      dimension,
       u: u1,
       v: v1,
     }),
     makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
-      u: u0,
-      v: v1,
-    }),
-  ];
-
-  const originalCap = [
-    makeFramePoint({
-      measure,
-      normalAxisName: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      normal: normalExtent,
-      u: u0,
-      v: v0,
-    }),
-    makeFramePoint({
-      measure,
-      normalAxisName: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      normal: normalExtent,
-      u: u1,
-      v: v0,
-    }),
-    makeFramePoint({
-      measure,
-      normalAxisName: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      normal: normalExtent,
-      u: u1,
-      v: v1,
-    }),
-    makeFramePoint({
-      measure,
-      normalAxisName: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      normal: normalExtent,
+      dimension,
       u: u0,
       v: v1,
     }),
   ];
 
-  // 1) Uncertain boundary cap outline.
-  for (let index = 0; index < 4; index += 1) {
-    addSketchSegment({
-      positions,
-      object,
-      startWorld: sketchCap[index],
-      endWorld: sketchCap[(index + 1) % 4],
-      jitterAmount,
-      seed: seed + index * 17,
-    });
-  }
+  const originalCap = capAt(originalBoundary);
+  const uncertainCap = capAt(uncertainBoundary);
 
-  // 2) Light connector strokes from current boundary to uncertain boundary.
-  // This makes the visual read as dimension uncertainty, not object-scale ghosting.
+  // 1) 连接原边界和 uncertain boundary：读起来像“这个 dimension 在延展/未定”。
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
       startWorld: originalCap[index],
-      endWorld: sketchCap[index],
-      jitterAmount: jitterAmount * 0.45,
+      endWorld: uncertainCap[index],
+      jitterAmount: jitterAmount * 0.65,
+      seed: seed + index * 17,
+    });
+  }
+
+  // 2) uncertain cap outline：截面大小和原 geo 一样。
+  for (let index = 0; index < 4; index += 1) {
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: uncertainCap[index],
+      endWorld: uncertainCap[(index + 1) % 4],
+      jitterAmount,
       seed: seed + 100 + index * 19,
     });
   }
 
-  // 3) Hatch fill on the uncertain cap plane.
-  const hatchCount = level === "low" ? 18 : 8;
-  const hatchSpan = level === "low" ? 0.34 : 0.46;
+  // 3) hatch fill on the extension sleeve.
+  // hatch 在 originalBoundary 和 uncertainBoundary 之间，不覆盖整个 object。
+  const hatchCount = level === "low" ? 14 : 6;
+  const hatchSpan = level === "low" ? 0.46 : 0.58;
 
-  for (let index = -hatchCount; index < hatchCount * 2; index += 1) {
+  for (let index = -2; index < hatchCount + 2; index += 1) {
     const t0 = index / hatchCount;
     const t1 = t0 + hatchSpan;
 
@@ -668,39 +625,36 @@ function createAbstractObjectSketchStrokeLayer({
       continue;
     }
 
-    const startU = THREE.MathUtils.lerp(
-      u0,
-      u1,
+    const d0 = THREE.MathUtils.lerp(
+      originalBoundary,
+      uncertainBoundary,
       THREE.MathUtils.clamp(t0, 0, 1),
     );
 
-    const endU = THREE.MathUtils.lerp(
-      u0,
-      u1,
+    const d1 = THREE.MathUtils.lerp(
+      originalBoundary,
+      uncertainBoundary,
       THREE.MathUtils.clamp(t1, 0, 1),
     );
 
-    const startV = v0;
-    const endV = v1;
-
     const startWorld = makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
-      u: startU,
-      v: startV,
+      dimension: d0,
+      u: u0,
+      v: v0,
     });
 
     const endWorld = makeFramePoint({
       measure,
-      normalAxisName: uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      normal: sketchNormal,
-      u: endU,
-      v: endV,
+      dimension: d1,
+      u: u1,
+      v: v1,
     });
 
     addSketchSegment({
@@ -708,7 +662,7 @@ function createAbstractObjectSketchStrokeLayer({
       object,
       startWorld,
       endWorld,
-      jitterAmount: jitterAmount * (level === "low" ? 0.9 : 0.55),
+      jitterAmount: jitterAmount * (level === "low" ? 0.95 : 0.5),
       seed: seed + 300 + index * 11,
     });
   }
@@ -720,7 +674,7 @@ function createAbstractObjectSketchStrokeLayer({
   const material = new THREE.LineBasicMaterial({
     color: level === "low" ? 0x0f172a : 0x475569,
     transparent: true,
-    opacity: level === "low" ? 0.68 : 0.44,
+    opacity: level === "low" ? 0.72 : 0.46,
     depthTest: false,
     depthWrite: false,
   });
@@ -766,15 +720,22 @@ function createObjectLineArtRepresentation({
       axisLevel === "low" ? "low" : "medium";
 
     const signs = getDirectionSigns(directions[axis]);
+
+    // low = 多个 possible extent，medium = 一个 possible extent。
     const lineCount = axisLevel === "low" ? 3 : 1;
+
+    const axisLength =
+      measure.extents[axis].max - measure.extents[axis].min;
 
     for (const sign of signs) {
       for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
         const layerRatio = (lineIndex + 1) / lineCount;
 
-        const offsetAmount =
-          measure.objectSize *
-          (axisLevel === "low" ? 0.03 : 0.014) *
+        // 这里的 extension 是沿 selected dimension 的长度变化；
+        // 不影响另外两个方向的“粗细”。
+        const extensionAmount =
+          Math.max(axisLength, measure.objectSize * 0.2) *
+          (axisLevel === "low" ? 0.22 : 0.1) *
           layerRatio;
 
         const jitterAmount =
@@ -788,7 +749,7 @@ function createObjectLineArtRepresentation({
           uncertaintyAxis: axis,
           sign,
           level: visualLevel,
-          offsetAmount,
+          extensionAmount,
           jitterAmount,
           seed:
             axis.charCodeAt(0) * 1000 +
