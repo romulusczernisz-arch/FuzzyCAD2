@@ -12,12 +12,20 @@ export type ConfidenceAxisFrame = Record<
 >;
 
 const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
+const FUZZY_ORIGINAL_MATERIALS = "__fuzzycad_original_materials__";
+const FUZZY_ACTIVE_MATERIAL = "__fuzzycad_active_material__";
+
+
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldNormal;
+  varying vec3 vWorldPosition;
 
   void main() {
+    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    vWorldPosition = worldPosition.xyz;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
+
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -31,18 +39,24 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   uniform float uThickness;
   uniform float uAngle;
 
+  uniform float uRimStrength;
+  uniform float uRimPower;
+
   varying vec3 vWorldNormal;
+  varying vec3 vWorldPosition;
 
   float random(vec2 value) {
     return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453123);
   }
 
   void main() {
-    vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
+    vec3 normal = normalize(vWorldNormal);
+    vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
+    // line direction
+    vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
     float projected = dot(gl_FragCoord.xy, direction);
     float stripe = fract(projected / uSpacing);
-
     float distanceToLine = abs(stripe - 0.5);
 
     float line = 1.0 - smoothstep(
@@ -51,16 +65,22 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
       distanceToLine
     );
 
+    // slight hand-drawn breakup
     float paperNoise = random(floor(gl_FragCoord.xy / 4.0));
     float brokenLine = mix(0.78, 1.0, paperNoise);
 
-    vec3 normal = normalize(vWorldNormal);
+    // simple shading term
     vec3 lightDirection = normalize(vec3(0.25, 0.7, 0.45));
     float facing = dot(normal, lightDirection) * 0.5 + 0.5;
+    float shadeWeight = mix(0.78, 1.0, 1.0 - facing);
 
-    float shadeWeight = mix(0.7, 1.0, 1.0 - facing);
+    // rim term: stronger near silhouette
+    float rim = pow(1.0 - abs(dot(normal, viewDir)), uRimPower);
 
-    float alpha = line * brokenLine * shadeWeight * uOpacity;
+    // 不要做 glow，只拿 rim 来增强线条可见性
+    float rimBoost = 1.0 + rim * uRimStrength;
+
+    float alpha = line * brokenLine * shadeWeight * rimBoost * uOpacity;
 
     if (alpha < 0.015) {
       discard;
@@ -70,21 +90,93 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+function getMeshMaterials(mesh: THREE.Mesh) {
+  return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+}
+
+function restoreOriginalMaterials(scene: THREE.Object3D) {
+  scene.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) {
+      return;
+    }
+
+    const originalMaterials = object.userData[
+      FUZZY_ORIGINAL_MATERIALS
+    ] as THREE.Material[] | undefined;
+
+    if (!originalMaterials) {
+      return;
+    }
+
+    const currentMaterials = getMeshMaterials(object);
+
+    for (const material of currentMaterials) {
+      if (material.userData?.[FUZZY_ACTIVE_MATERIAL]) {
+        material.dispose();
+      }
+    }
+
+    object.material =
+      originalMaterials.length === 1 ? originalMaterials[0] : originalMaterials;
+
+    delete object.userData[FUZZY_ORIGINAL_MATERIALS];
+  });
+}
+
+function hideOriginalMaterials(object: THREE.Object3D) {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    if (!child.userData[FUZZY_ORIGINAL_MATERIALS]) {
+      child.userData[FUZZY_ORIGINAL_MATERIALS] = getMeshMaterials(child);
+    }
+
+    const originalMaterials = child.userData[
+      FUZZY_ORIGINAL_MATERIALS
+    ] as THREE.Material[];
+
+    const hiddenMaterials = originalMaterials.map((material) => {
+      const hidden = material.clone();
+
+      hidden.transparent = true;
+      hidden.opacity = 0.0;
+      hidden.colorWrite = false;
+      hidden.depthWrite = false;
+
+      hidden.userData[FUZZY_ACTIVE_MATERIAL] = true;
+
+      return hidden;
+    });
+
+    child.material =
+      hiddenMaterials.length === 1 ? hiddenMaterials[0] : hiddenMaterials;
+  });
+}
+
 function createLineOverlayMaterial() {
   const material = new THREE.ShaderMaterial({
     vertexShader: LINE_OVERLAY_VERTEX_SHADER,
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
-      uOpacity: { value: 0.82 },
-      uSpacing: { value: 9.0 },
+      uOpacity: { value: 0.78 },
+      uSpacing: { value: 8.0 },
       uThickness: { value: 0.075 },
       uAngle: { value: Math.PI * 0.18 },
+
+      uRimStrength: { value: 0.55 },
+      uRimPower: { value: 2.2 },
     },
     transparent: true,
     depthTest: true,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -248,6 +340,7 @@ export function applyFuzzyConfidence(
   scene.updateMatrixWorld(true);
 
   clearFuzzyVisualChildren(scene);
+  restoreOriginalMaterials(scene);
 
   if (annotations.length === 0) {
     return;
@@ -259,6 +352,8 @@ export function applyFuzzyConfidence(
   );
 
   for (const object of targetObjects) {
+    hideOriginalMaterials(object);
+
     const overlay = createSelectedObjectLineOverlay(object);
 
     if (!overlay) {
