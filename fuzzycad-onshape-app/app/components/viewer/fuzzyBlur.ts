@@ -164,10 +164,17 @@ function hideOriginalMaterials(object: THREE.Object3D) {
     const hiddenMaterials = originalMaterials.map((material) => {
       const hidden = material.clone();
 
-      hidden.transparent = true;
-      hidden.opacity = 0.0;
+      // 关键：不要 transparent true。
+      // 它要作为 invisible depth mask 先写入 depth buffer。
+      hidden.transparent = false;
+      hidden.opacity = 1.0;
+
+      // 不写颜色，所以看不见原 mesh。
       hidden.colorWrite = false;
-      hidden.depthWrite = false;
+
+      // 关键：必须写 depth，不然 outline shell 会整片露出来。
+      hidden.depthWrite = true;
+      hidden.depthTest = true;
 
       hidden.userData[FUZZY_ACTIVE_MATERIAL] = true;
 
@@ -176,6 +183,9 @@ function hideOriginalMaterials(object: THREE.Object3D) {
 
     child.material =
       hiddenMaterials.length === 1 ? hiddenMaterials[0] : hiddenMaterials;
+
+    // 让 invisible depth mask 先画。
+    child.renderOrder = 1400;
   });
 }
 
@@ -212,7 +222,7 @@ function getGeometryOutlineWidth(geometry: THREE.BufferGeometry) {
 
   const radius = geometry.boundingSphere?.radius ?? 1;
 
-  return Math.max(radius * 0.012, 0.001);
+  return Math.max(radius * 0.0045, 0.0005);
 }
 
 function createOuterOutlineMaterial(outlineWidth: number) {
@@ -222,7 +232,7 @@ function createOuterOutlineMaterial(outlineWidth: number) {
     uniforms: {
       uOutlineWidth: { value: outlineWidth },
       uOutlineColor: { value: new THREE.Color(0x111827) },
-      uOutlineOpacity: { value: 0.88 },
+      uOutlineOpacity: { value: 0.9 },
     },
     transparent: true,
     depthTest: true,
