@@ -387,6 +387,8 @@ function measureObjectInFrame(
   };
 }
 
+
+
 function getOtherFrameAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
   if (axis === "x") {
     return ["y", "z"];
@@ -404,13 +406,17 @@ function makeDraftStrokePoints({
   end,
   jitterAmount,
   seed,
-  segments = 8,
+  segments = 10,
+  bow,
 }: {
   start: THREE.Vector3;
   end: THREE.Vector3;
   jitterAmount: number;
   seed: number;
   segments?: number;
+  // 弧度偏移向量：笔画中段沿这个向量鼓出去（sin 轮廓），
+  // 两端为 0，做出铅笔长线自然的微弯。
+  bow?: THREE.Vector3;
 }) {
   const points: THREE.Vector3[] = [];
   const tangent = end.clone().sub(start);
@@ -447,7 +453,13 @@ function makeDraftStrokePoints({
           .multiplyScalar((n1 - 0.5) * jitterAmount * endFade),
       );
 
-    points.push(base.add(jitter));
+    base.add(jitter);
+
+    if (bow) {
+      base.add(bow.clone().multiplyScalar(Math.sin(Math.PI * t)));
+    }
+
+    points.push(base);
   }
 
   return points;
@@ -460,6 +472,7 @@ function addSketchSegment({
   endWorld,
   jitterAmount,
   seed,
+  bow,
 }: {
   positions: number[];
   object: THREE.Object3D;
@@ -467,12 +480,14 @@ function addSketchSegment({
   endWorld: THREE.Vector3;
   jitterAmount: number;
   seed: number;
+  bow?: THREE.Vector3;
 }) {
   const points = makeDraftStrokePoints({
     start: startWorld,
     end: endWorld,
     jitterAmount,
     seed,
+    bow,
   });
 
   for (let index = 0; index < points.length - 1; index += 1) {
@@ -483,184 +498,11 @@ function addSketchSegment({
   }
 }
 
-// Liang–Barsky:把参数直线 p + t·dir 裁剪到 2D 矩形内。
-// 返回可见区间 [t0, t1]，完全在矩形外时返回 null。
-function clipLineToRect(
-  px: number,
-  py: number,
-  dx: number,
-  dy: number,
-  xMin: number,
-  xMax: number,
-  yMin: number,
-  yMax: number,
-): [number, number] | null {
-  let t0 = -Infinity;
-  let t1 = Infinity;
-
-  const clips: Array<[number, number]> = [
-    [-dx, px - xMin],
-    [dx, xMax - px],
-    [-dy, py - yMin],
-    [dy, yMax - py],
-  ];
-
-  for (const [p, q] of clips) {
-    if (Math.abs(p) < 1e-12) {
-      if (q < 0) {
-        return null;
-      }
-      continue;
-    }
-
-    const r = q / p;
-
-    if (p < 0) {
-      t0 = Math.max(t0, r);
-    } else {
-      t1 = Math.min(t1, r);
-    }
-  }
-
-  return t0 < t1 ? [t0, t1] : null;
-}
-
-// 在 sleeve 的某个侧面上画一族手绘感的平行斜线（排线）。
-// 面用 2D 参数化：d = 沿 uncertainty axis 的坐标，w = 面上另一个自由轴。
-// 手绘感来自：间距轻微不均、每笔角度微偏、笔画两端随机缩进、加上 stroke jitter。
-// 所有笔画都被裁剪在（已内收的）面矩形内，不会戳出体块。
-function addHatchOnFace({
-  positions,
-  object,
-  measure,
-  uncertaintyAxis,
-  uAxisName,
-  vAxisName,
-  d0,
-  d1,
-  w0,
-  w1,
-  wIsU,
-  fixedValue,
-  spacing,
-  jitterAmount,
-  seed,
-}: {
-  positions: number[];
-  object: THREE.Object3D;
-  measure: FrameMeasure;
-  uncertaintyAxis: ConfidenceAxis;
-  uAxisName: ConfidenceAxis;
-  vAxisName: ConfidenceAxis;
-  d0: number;
-  d1: number;
-  w0: number;
-  w1: number;
-  wIsU: boolean;
-  fixedValue: number;
-  spacing: number;
-  jitterAmount: number;
-  seed: number;
-}) {
-  // 面内边距：保证 stroke jitter 之后笔画仍在面矩形内。
-  const margin = jitterAmount * 1.5;
-  const dMin = Math.min(d0, d1) + margin;
-  const dMax = Math.max(d0, d1) - margin;
-  const wMin = Math.min(w0, w1) + margin;
-  const wMax = Math.max(w0, w1) - margin;
-
-  if (dMax <= dMin || wMax <= wMin) {
-    return;
-  }
-
-  const toWorld = (d: number, w: number) =>
-    makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension: d,
-      u: wIsU ? w : fixedValue,
-      v: wIsU ? fixedValue : w,
-    });
-
-  // 45° 排线（相对 (d, w) 参数平面）。
-  // d 是 uncertainty axis，所以每条排线都带一个沿不确定方向的分量，
-  // 多层 sleeve 叠加时方向感会进一步加强。
-  const baseAngle = Math.PI / 4;
-
-  // 排线族的法线方向，用来给每条线分配偏移量。
-  const nx = -Math.sin(baseAngle);
-  const ny = Math.cos(baseAngle);
-
-  // 面矩形四角在法线上的投影范围 → 决定需要多少条排线。
-  let cMin = Infinity;
-  let cMax = -Infinity;
-
-  const cornersForRange: Array<[number, number]> = [
-    [dMin, wMin],
-    [dMax, wMin],
-    [dMax, wMax],
-    [dMin, wMax],
-  ];
-
-  for (const [d, w] of cornersForRange) {
-    const c = d * nx + w * ny;
-    cMin = Math.min(cMin, c);
-    cMax = Math.max(cMax, c);
-  }
-
-  // 排线数量由投影范围 ÷ spacing 自然决定：
-  // extension 很短时只有一两条短线，密度和 body 连续，不会突变。
-  const count = Math.max(1, Math.floor((cMax - cMin) / spacing));
-
-  for (let index = 0; index <= count; index += 1) {
-    // 间距轻微不均 → 手绘感。
-    const wobble = (seededNoise(seed + index * 7.3) - 0.5) * spacing * 0.35;
-    const c = cMin + (index / count) * (cMax - cMin) + wobble;
-
-    // 每笔角度轻微偏转（约 ±3°）。
-    const angle = baseAngle + (seededNoise(seed + index * 13.7) - 0.5) * 0.1;
-    const dx = Math.cos(angle);
-    const dy = Math.sin(angle);
-
-    // 该排线上的一个基准点（沿法线偏移 c）。
-    const px = c * nx;
-    const py = c * ny;
-
-    const clip = clipLineToRect(px, py, dx, dy, dMin, dMax, wMin, wMax);
-
-    if (!clip) {
-      continue;
-    }
-
-    let [t0, t1] = clip;
-
-    // 笔画两端随机缩进，不顶死边框，更像手绘。
-    const strokeLength = t1 - t0;
-
-    t0 += strokeLength * seededNoise(seed + index * 21.1) * 0.08;
-    t1 -= strokeLength * seededNoise(seed + index * 33.9) * 0.08;
-
-    if (t1 - t0 < spacing * 0.2) {
-      continue;
-    }
-
-    addSketchSegment({
-      positions,
-      object,
-      startWorld: toWorld(px + t0 * dx, py + t0 * dy),
-      endWorld: toWorld(px + t1 * dx, py + t1 * dy),
-      jitterAmount: jitterAmount * 0.6,
-      seed: seed + index * 17,
-    });
-  }
-}
-
-// 在 sleeve 的四个侧面上铺手绘排线。
-// 传入的 u0/u1/v0/v1 应当是已经向内收过 jitter 余量的截面范围
-//（见 createAbstractObjectSketchStrokeLayer），这里不再额外内收面平面。
-function addSketchHatch({
+// Scribble fill：密集的长斜线扫过整个截面，沿 uncertainty axis 一层层排下去。
+// 手绘感来自：每笔端点随机（角度、长度都在变）、间距轻微不均、
+// 微弯（bow）、以及半透明叠加出深浅不一的灰调。
+// 所有端点都收在截面范围内，笔画不会戳出体块。
+function addScribbleHatch({
   positions,
   object,
   measure,
@@ -693,37 +535,124 @@ function addSketchHatch({
   jitterAmount: number;
   seed: number;
 }) {
+  const dimensionLength = Math.abs(toDimension - fromDimension);
+
+  if (dimensionLength < 1e-9) {
+    return;
+  }
+
   const crossSize = Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0), 0.01);
 
-  // 排线间距：low 更密（更"没把握"→ 调子更重），medium 更疏。
-  const spacing = crossSize * (level === "low" ? 0.14 : 0.22);
+  // 沿 uncertainty axis 的排线间距。比原版密很多——scribble 靠密度叠出调子。
+  // low（更不确定）→ 更密、调子更重。
+  const spacing = crossSize * (level === "low" ? 0.09 : 0.16);
 
-  const faces = [
-    { wIsU: true, w0: u0, w1: u1, fixedValue: v0 },
-    { wIsU: true, w0: u0, w1: u1, fixedValue: v1 },
-    { wIsU: false, w0: v0, w1: v1, fixedValue: u0 },
-    { wIsU: false, w0: v0, w1: v1, fixedValue: u1 },
-  ];
+  const strokeCount = Math.max(2, Math.ceil(dimensionLength / spacing));
 
-  faces.forEach((face, faceIndex) => {
-    addHatchOnFace({
-      positions,
-      object,
+  // 端点向内收，保证 jitter + 弧度之后仍在截面之内。
+  const inset = jitterAmount * 2;
+  const iu0 = Math.min(u0 + inset, (u0 + u1) / 2);
+  const iu1 = Math.max(u1 - inset, (u0 + u1) / 2);
+  const iv0 = Math.min(v0 + inset, (v0 + v1) / 2);
+  const iv1 = Math.max(v1 - inset, (v0 + v1) / 2);
+
+  const dimLo = Math.min(fromDimension, toDimension);
+  const dimHi = Math.max(fromDimension, toDimension);
+
+  // 弧度方向沿 uncertainty axis：永远不会把笔画推出截面。
+  const axisDir = measure.axes[uncertaintyAxis];
+
+  for (let index = 0; index <= strokeCount; index += 1) {
+    const t = strokeCount === 0 ? 0 : index / strokeCount;
+
+    const strokeSeed = seed + index * 37.7;
+
+    // 沿轴位置：均匀排布 + 轻微不均（间距忽密忽疏）。
+    const wobble =
+      (seededNoise(strokeSeed + 1.1) - 0.5) * spacing * 0.8;
+
+    const dimensionMid = THREE.MathUtils.clamp(
+      THREE.MathUtils.lerp(fromDimension, toDimension, t) + wobble,
+      dimLo,
+      dimHi,
+    );
+
+    // 每笔在轴向上还带一点倾斜（起点和终点不在同一个截面上），
+    // 让排线不是严格垂直于轴的一圈圈，而是随意扫过去的感觉。
+    const tilt = (seededNoise(strokeSeed + 2.2) - 0.5) * spacing * 3;
+
+    const dimStart = THREE.MathUtils.clamp(dimensionMid - tilt, dimLo, dimHi);
+    const dimEnd = THREE.MathUtils.clamp(dimensionMid + tilt, dimLo, dimHi);
+
+    // 端点：大方向固定（从 u 低侧扫到 u 高侧，v 从低到高 → 统一的斜向），
+    // 但每笔的起止位置都随机，角度和长度自然就在变。
+    const uStart = THREE.MathUtils.lerp(
+      iu0,
+      iu1,
+      seededNoise(strokeSeed + 3.3) * 0.18,
+    );
+    const uEnd = THREE.MathUtils.lerp(
+      iu0,
+      iu1,
+      1 - seededNoise(strokeSeed + 4.4) * 0.18,
+    );
+
+    const vStart = THREE.MathUtils.lerp(
+      iv0,
+      iv1,
+      seededNoise(strokeSeed + 5.5) * 0.45,
+    );
+    const vEnd = THREE.MathUtils.lerp(
+      iv0,
+      iv1,
+      1 - seededNoise(strokeSeed + 6.6) * 0.45,
+    );
+
+    const startWorld = makeFramePoint({
       measure,
-      uncertaintyAxis,
+      dimensionAxis: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      d0: fromDimension,
-      d1: toDimension,
-      w0: face.w0,
-      w1: face.w1,
-      wIsU: face.wIsU,
-      fixedValue: face.fixedValue,
-      spacing,
-      jitterAmount,
-      seed: seed + faceIndex * 1000,
+      dimension: dimStart,
+      u: uStart,
+      v: vStart,
     });
-  });
+
+    const endWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension: dimEnd,
+      u: uEnd,
+      v: vEnd,
+    });
+
+    // 微弯：弧度沿轴向鼓出，幅度随机、方向随机，
+    // clamp 保证鼓出去之后依然在 [dimLo, dimHi] 之内。
+    const bowRoom = Math.min(
+      dimensionMid - dimLo,
+      dimHi - dimensionMid,
+    );
+
+    const bowAmount = THREE.MathUtils.clamp(
+      (seededNoise(strokeSeed + 7.7) - 0.5) * crossSize * 0.12,
+      -bowRoom,
+      bowRoom,
+    );
+
+    const bow = axisDir.clone().multiplyScalar(bowAmount);
+
+    addSketchSegment({
+      positions,
+      object,
+      startWorld,
+      endWorld,
+      jitterAmount: jitterAmount * (level === "low" ? 0.75 : 0.42),
+      seed: strokeSeed,
+      bow,
+    });
+  }
 }
 
 function makeFramePoint({
@@ -777,17 +706,11 @@ function createAbstractObjectSketchStrokeLayer({
   const originalBoundary = sign > 0 ? originalMax : originalMin;
   const uncertainBoundary = originalBoundary + sign * extensionAmount;
 
-  // 截面整体向内收一个 jitter 余量：
-  // rails / connector / cap / hatch 抖动之后仍留在体块的截面范围之内。
-  const inset = jitterAmount;
-  const u0 = measure.extents[uAxisName].min + inset;
-  const u1 = measure.extents[uAxisName].max - inset;
-  const v0 = measure.extents[vAxisName].min + inset;
-  const v1 = measure.extents[vAxisName].max - inset;
-
-  if (u1 <= u0 || v1 <= v0) {
-    return null;
-  }
+  // 不加 padding，保证 hatch sleeve 的粗细和原 geo 一样。
+  const u0 = measure.extents[uAxisName].min;
+  const u1 = measure.extents[uAxisName].max;
+  const v0 = measure.extents[vAxisName].min;
+  const v1 = measure.extents[vAxisName].max;
 
   const positions: number[] = [];
 
@@ -836,20 +759,22 @@ function createAbstractObjectSketchStrokeLayer({
   const uncertainCap = capAt(uncertainBoundary);
 
   // 1) Original body rails：让中间原 object 也有 sketch 结构。
-  for (let index = 0; index < 4; index += 1) {
-    addSketchSegment({
-      positions,
-      object,
-      startWorld: originalStartCap[index],
-      endWorld: originalEndCap[index],
-      jitterAmount: jitterAmount * 0.45,
-      seed: seed + 10 + index * 17,
-    });
+  // 参考图里轮廓是"描过两遍"的感觉，所以 rails 画两道，seed 不同、微微错开。
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let index = 0; index < 4; index += 1) {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: originalStartCap[index],
+        endWorld: originalEndCap[index],
+        jitterAmount: jitterAmount * (pass === 0 ? 0.45 : 0.9),
+        seed: seed + 10 + pass * 101 + index * 17,
+      });
+    }
   }
 
-  // 2) Original body 排线。
-  // 画在 sleeve 的四个侧面上（面内 45° 斜线），不是穿过体内的对角线。
-  addSketchHatch({
+  // 2) Original body scribble fill.
+  addScribbleHatch({
     positions,
     object,
     measure,
@@ -879,21 +804,23 @@ function createAbstractObjectSketchStrokeLayer({
     });
   }
 
-  // 4) Uncertain cap outline.
-  for (let index = 0; index < 4; index += 1) {
-    addSketchSegment({
-      positions,
-      object,
-      startWorld: uncertainCap[index],
-      endWorld: uncertainCap[(index + 1) % 4],
-      jitterAmount,
-      seed: seed + 700 + index * 19,
-    });
+  // 4) Uncertain cap outline（也描两遍）.
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let index = 0; index < 4; index += 1) {
+      addSketchSegment({
+        positions,
+        object,
+        startWorld: uncertainCap[index],
+        endWorld: uncertainCap[(index + 1) % 4],
+        jitterAmount: jitterAmount * (pass === 0 ? 1 : 1.6),
+        seed: seed + 700 + pass * 113 + index * 19,
+      });
+    }
   }
 
-  // 5) Extension 排线。
-  // 排线数量由长度 ÷ spacing 自然决定，密度和 body 连续。
-  addSketchHatch({
+  // 5) Extension scribble fill.
+  // 和 body 用同一个 spacing 逻辑，笔数由长度自然决定，密度连续。
+  addScribbleHatch({
     positions,
     object,
     measure,
@@ -911,18 +838,16 @@ function createAbstractObjectSketchStrokeLayer({
     seed: seed + 900,
   });
 
-  if (positions.length === 0) {
-    return null;
-  }
-
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.computeBoundingSphere();
 
+  // scribble 靠大量笔画叠加出灰调，单笔 opacity 要压低，
+  // 否则密度上去之后会糊成一团黑。
   const material = new THREE.LineBasicMaterial({
     color: level === "low" ? 0x0f172a : 0x475569,
     transparent: true,
-    opacity: level === "low" ? 0.64 : 0.42,
+    opacity: level === "low" ? 0.4 : 0.28,
     depthTest: false,
     depthWrite: false,
   });
@@ -1005,9 +930,7 @@ function createObjectLineArtRepresentation({
             lineIndex * 31,
         });
 
-        if (sketch) {
-          group.add(sketch);
-        }
+        group.add(sketch);
       }
     }
   }
