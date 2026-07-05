@@ -4,6 +4,7 @@ import {
   onshapeFetch,
   shouldForceRefresh,
 } from "../../../lib/server/onshapeApi";
+import { getCachedElements } from "../../../lib/server/onshapeElementsCache";
 
 export const runtime = "nodejs";
 
@@ -23,6 +24,8 @@ type GeometryCacheEntry = {
 };
 
 const GEOMETRY_CACHE_TTL_MS = 5 * 60 * 1000;
+const SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME =
+  "fuzzycad-source-assembly-gltf-snapshot.bin";
 
 const geometryCache = new Map<string, GeometryCacheEntry>();
 
@@ -48,6 +51,208 @@ function headersToRecord(headers: Headers): Record<string, string> {
   });
 
   return record;
+}
+
+function getElementName(element: UnknownRecord) {
+  const name = element.name;
+  return typeof name === "string" ? name : "";
+}
+
+function getElementId(element: UnknownRecord) {
+  const id = element.id;
+  return typeof id === "string" ? id : null;
+}
+
+function findLatestElementByName(elements: unknown, name: string) {
+  if (!Array.isArray(elements)) {
+    return null;
+  }
+
+  const matched = elements
+    .filter(isRecord)
+    .filter((element) => getElementName(element) === name);
+
+  const latest = matched[matched.length - 1];
+
+  if (!latest) {
+    return null;
+  }
+
+  const id = getElementId(latest);
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    element: latest,
+  };
+}
+
+async function getSourceAssemblySnapshotBuffer(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+}) {
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/onshape/assembly-gltf",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements-for-source-snapshot",
+      elementsResult,
+    };
+  }
+
+  const snapshotElement = findLatestElementByName(
+    elementsResult.data,
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+
+  if (!snapshotElement) {
+    return {
+      ok: false,
+      mode: "missing-source-assembly-gltf-snapshot",
+    };
+  }
+
+  const endpoint = `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}/e/${snapshotElement.id}`;
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept:
+          "application/octet-stream, application/zip, model/gltf-binary, model/gltf+json, */*",
+      },
+    },
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "read-source-assembly-gltf-snapshot",
+    },
+  );
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-read-source-assembly-gltf-snapshot",
+      status: res.status,
+      endpoint,
+      data: await parseResponse(res),
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "read-source-assembly-gltf-snapshot",
+    status: res.status,
+    endpoint,
+    contentType: res.headers.get("content-type") || "application/octet-stream",
+    rawBuffer: await res.arrayBuffer(),
+  };
+}
+
+function isSourceSnapshotReadSuccess(value: unknown): value is {
+  ok: true;
+  mode: string;
+  status: number;
+  endpoint: string;
+  contentType: string;
+  rawBuffer: ArrayBuffer;
+} {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    typeof value.mode === "string" &&
+    typeof value.status === "number" &&
+    typeof value.endpoint === "string" &&
+    typeof value.contentType === "string" &&
+    value.rawBuffer instanceof ArrayBuffer
+  );
+}
+
+async function upsertSourceAssemblySnapshotBuffer(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  rawBuffer: ArrayBuffer;
+}) {
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/onshape/assembly-gltf",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements-before-saving-source-snapshot",
+      elementsResult,
+    };
+  }
+
+  const existingElement = findLatestElementByName(
+    elementsResult.data,
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+
+  const endpoint = existingElement
+    ? `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}/e/${existingElement.id}`
+    : `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}`;
+
+  const bytes = new Uint8Array(input.rawBuffer.byteLength);
+  bytes.set(new Uint8Array(input.rawBuffer));
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([bytes], { type: "application/octet-stream" }),
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+  formData.append("encodedFilename", SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME);
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+      },
+      body: formData,
+    },
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: existingElement
+        ? "update-source-assembly-gltf-snapshot"
+        : "create-source-assembly-gltf-snapshot",
+    },
+  );
+
+  return {
+    ok: res.ok,
+    mode: existingElement
+      ? "updated-source-assembly-gltf-snapshot"
+      : "created-source-assembly-gltf-snapshot",
+    status: res.status,
+    endpoint,
+    data: await parseResponse(res),
+  };
 }
 
 async function responseFromGeometryCache(
@@ -262,11 +467,7 @@ function cloneGltfRecord(record: UnknownRecord): GltfDoc {
   return JSON.parse(JSON.stringify(record)) as GltfDoc;
 }
 
-function offsetNumberField(
-  record: UnknownRecord,
-  key: string,
-  offset: number,
-) {
+function offsetNumberField(record: UnknownRecord, key: string, offset: number) {
   const value = record[key];
 
   if (typeof value === "number") {
@@ -274,11 +475,7 @@ function offsetNumberField(
   }
 }
 
-async function embedGltfBuffers(
-  zip: JSZip,
-  gltfName: string,
-  gltf: GltfDoc,
-) {
+async function embedGltfBuffers(zip: JSZip, gltfName: string, gltf: GltfDoc) {
   for (const buffer of getRecordArray(gltf, "buffers")) {
     const uri = getStringField(buffer, ["uri"]);
 
@@ -544,7 +741,7 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
   const zip = await JSZip.loadAsync(arrayBuffer);
 
   const fileNames = Object.keys(zip.files).filter(
-    (name) => !zip.files[name].dir
+    (name) => !zip.files[name].dir,
   );
 
   const extensionCounts: Record<string, number> = {};
@@ -587,13 +784,13 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
         asset: gltf.asset ?? null,
         nodeNames: nodes
           .map((node) =>
-            isRecord(node) && typeof node.name === "string" ? node.name : ""
+            isRecord(node) && typeof node.name === "string" ? node.name : "",
           )
           .filter(Boolean)
           .slice(0, 80),
         meshNames: meshes
           .map((mesh) =>
-            isRecord(mesh) && typeof mesh.name === "string" ? mesh.name : ""
+            isRecord(mesh) && typeof mesh.name === "string" ? mesh.name : "",
           )
           .filter(Boolean)
           .slice(0, 80),
@@ -601,12 +798,12 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
           .map((buffer) =>
             isRecord(buffer) && typeof buffer.uri === "string"
               ? buffer.uri
-              : ""
+              : "",
           )
           .filter(Boolean),
         imageUris: images
           .map((image) =>
-            isRecord(image) && typeof image.uri === "string" ? image.uri : ""
+            isRecord(image) && typeof image.uri === "string" ? image.uri : "",
           )
           .filter(Boolean),
       });
@@ -637,12 +834,12 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
 }
 
 async function unpackZipToLoadableGltf(
-  arrayBuffer: ArrayBuffer
+  arrayBuffer: ArrayBuffer,
 ): Promise<NextResponse> {
   const zip = await JSZip.loadAsync(arrayBuffer);
 
   const fileNames = Object.keys(zip.files).filter(
-    (name) => !zip.files[name].dir
+    (name) => !zip.files[name].dir,
   );
 
   const glbName = fileNames.find((name) => name.toLowerCase().endsWith(".glb"));
@@ -666,7 +863,7 @@ async function unpackZipToLoadableGltf(
   }
 
   const gltfNames = fileNames.filter((name) =>
-    name.toLowerCase().endsWith(".gltf")
+    name.toLowerCase().endsWith(".gltf"),
   );
 
   if (gltfNames.length === 0) {
@@ -676,7 +873,7 @@ async function unpackZipToLoadableGltf(
         error: "ZIP did not contain a .glb or .gltf file.",
         files: fileNames,
       },
-      { status: 415 }
+      { status: 415 },
     );
   }
 
@@ -724,13 +921,13 @@ async function unpackZipToLoadableGltf(
         gltfNames,
         files: fileNames,
       },
-      { status: 415 }
+      { status: 415 },
     );
   }
 
   candidates.sort((a, b) => b.score - a.score);
 
- for (const candidate of candidates) {
+  for (const candidate of candidates) {
     await embedGltfBuffers(zip, candidate.name, candidate.gltf as GltfDoc);
   }
 
@@ -748,10 +945,10 @@ async function unpackZipToLoadableGltf(
         candidates.length === 1 ? "embedded-gltf" : "merged-gltf",
       "X-FuzzyCAD-Gltf-Candidates": String(candidates.length),
       "X-FuzzyCAD-Merged-Nodes": String(
-        Array.isArray(mergedGltf.nodes) ? mergedGltf.nodes.length : 0
+        Array.isArray(mergedGltf.nodes) ? mergedGltf.nodes.length : 0,
       ),
       "X-FuzzyCAD-Merged-Meshes": String(
-        Array.isArray(mergedGltf.meshes) ? mergedGltf.meshes.length : 0
+        Array.isArray(mergedGltf.meshes) ? mergedGltf.meshes.length : 0,
       ),
     },
   });
@@ -797,7 +994,7 @@ async function handleGeometryBuffer(
     translationHref?: string | null;
     downloadEndpoint?: string | null;
     downloadContentType?: string;
-  }
+  },
 ): Promise<NextResponse> {
   if (isZip(downloadedBuffer)) {
     if (debugZip) {
@@ -829,7 +1026,7 @@ async function handleGeometryBuffer(
           error: "Failed to unpack ZIP glTF package.",
           details: error instanceof Error ? error.message : String(error),
         },
-        { status: 500 }
+        { status: 500 },
       );
     }
   }
@@ -856,7 +1053,7 @@ async function handleGeometryBuffer(
       firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
       error: "Downloaded result was not ZIP and not GLB.",
     },
-    { status: 415 }
+    { status: 415 },
   );
 }
 
@@ -877,7 +1074,7 @@ export async function GET(req: NextRequest) {
       {
         error: "Missing documentId, workspaceId, or assemblyElementId",
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -887,47 +1084,86 @@ export async function GET(req: NextRequest) {
         error: "Not connected to Onshape yet",
         action: "Click Connect Onshape first",
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
- const exportEndpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}/export/gltf`;
+  const exportEndpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}/export/gltf`;
 
-const cacheKey = makeGeometryCacheKey({
-  server,
-  documentId,
-  workspaceId,
-  assemblyElementId,
-});
+  const cacheKey = makeGeometryCacheKey({
+    server,
+    documentId,
+    workspaceId,
+    assemblyElementId,
+  });
 
-if (!force) {
-  const cached = geometryCache.get(cacheKey);
+  const liveSource = searchParams.get("liveSource") === "1";
 
-  if (cached && cached.expiresAt > Date.now()) {
-    return responseFromGeometryCache(cached, debugZip);
+ if (!liveSource && !debugZip) {
+  const snapshotResult = await getSourceAssemblySnapshotBuffer({
+    server,
+    documentId,
+    workspaceId,
+    accessToken,
+  });
+
+  if (isSourceSnapshotReadSuccess(snapshotResult)) {
+    const snapshotRawBuffer = snapshotResult.rawBuffer;
+
+    const response = await handleGeometryBuffer(
+      snapshotRawBuffer,
+      false,
+      {
+        exportEndpoint,
+        downloadEndpoint: snapshotResult.endpoint,
+        downloadContentType: snapshotResult.contentType,
+      },
+    );
+
+    response.headers.set("X-FuzzyCAD-Source-Snapshot", "hit");
+
+    return cacheGeometryResponse({
+      cacheKey,
+      response,
+      rawBuffer: snapshotRawBuffer,
+      context: {
+        exportEndpoint,
+        downloadEndpoint: snapshotResult.endpoint,
+        downloadContentType: snapshotResult.contentType,
+      },
+      enabled: true,
+    });
   }
 }
 
-const exportRes = await onshapeFetch(
-  exportEndpoint,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept:
-        "application/json, model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
-      "Content-Type": "application/json",
+  if (!force) {
+    const cached = geometryCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      return responseFromGeometryCache(cached, debugZip);
+    }
+  }
+
+  const exportRes = await onshapeFetch(
+    exportEndpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept:
+          "application/json, model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        storeInDocument: false,
+        formatName: "GLTF",
+      }),
     },
-    body: JSON.stringify({
-      storeInDocument: false,
-      formatName: "GLTF",
-    }),
-  },
-  {
-    route: "/api/onshape/assembly-gltf",
-    operation: "start-gltf-export",
-  },
-);
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "start-gltf-export",
+    },
+  );
 
   const exportContentType = exportRes.headers.get("content-type") || "";
 
@@ -943,33 +1179,48 @@ const exportRes = await onshapeFetch(
         error: "Failed to start assembly glTF export",
         details: errorData,
       },
-      { status: exportRes.status }
+      { status: exportRes.status },
     );
   }
 
-if (
-  exportContentType.includes("model/gltf-binary") ||
-  exportContentType.includes("application/octet-stream") ||
-  exportContentType.includes("application/zip")
-) {
-  const directBuffer = await exportRes.arrayBuffer();
+  if (
+    exportContentType.includes("model/gltf-binary") ||
+    exportContentType.includes("application/octet-stream") ||
+    exportContentType.includes("application/zip")
+  ) {
+    const directBuffer = await exportRes.arrayBuffer();
 
-  const response = await handleGeometryBuffer(directBuffer, debugZip, {
-    exportEndpoint,
-    downloadContentType: exportContentType,
-  });
+    const sourceSnapshotResult = !debugZip
+      ? await upsertSourceAssemblySnapshotBuffer({
+          server,
+          documentId,
+          workspaceId,
+          accessToken,
+          rawBuffer: directBuffer,
+        })
+      : null;
 
-  return cacheGeometryResponse({
-    cacheKey,
-    response,
-    rawBuffer: directBuffer,
-    context: {
+    const response = await handleGeometryBuffer(directBuffer, debugZip, {
       exportEndpoint,
       downloadContentType: exportContentType,
-    },
-    enabled: !debugZip,
-  });
-}
+    });
+
+    response.headers.set(
+      "X-FuzzyCAD-Source-Snapshot",
+      sourceSnapshotResult?.ok ? "saved" : "not-saved",
+    );
+
+    return cacheGeometryResponse({
+      cacheKey,
+      response,
+      rawBuffer: directBuffer,
+      context: {
+        exportEndpoint,
+        downloadContentType: exportContentType,
+      },
+      enabled: !debugZip,
+    });
+  }
 
   const initialData = await parseResponse(exportRes);
 
@@ -983,7 +1234,7 @@ if (
         error: "Unexpected export response",
         details: initialData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -999,33 +1250,24 @@ if (
         error: "Export returned JSON but no translation href",
         data: initialData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   let statusData: UnknownRecord = initialData;
 
-const pollDelaysMs = [
-  5000,
-  5000,
-  5000,
-  5000,
-  5000,
-  5000,
-  5000,
-  5000,
-];
+  const pollDelaysMs = [5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
 
-for (const delayMs of pollDelaysMs) {
-  const state = getStringField(statusData, ["requestState"]);
+  for (const delayMs of pollDelaysMs) {
+    const state = getStringField(statusData, ["requestState"]);
 
-  if (state === "DONE" || state === "FAILED") {
-    break;
+    if (state === "DONE" || state === "FAILED") {
+      break;
+    }
+
+    await sleep(delayMs);
+    statusData = await getTranslationStatus(translationHref, accessToken);
   }
-
-  await sleep(delayMs);
-  statusData = await getTranslationStatus(translationHref, accessToken);
-}
 
   const finalState = getStringField(statusData, ["requestState"]);
 
@@ -1041,7 +1283,7 @@ for (const delayMs of pollDelaysMs) {
         requestState: finalState,
         data: statusData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -1075,30 +1317,31 @@ for (const delayMs of pollDelaysMs) {
         error: "Translation is DONE, but no resultExternalDataId was found.",
         data: statusData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   const resultDocumentId =
-    getStringField(statusData, ["resultDocumentId", "documentId"]) || documentId;
+    getStringField(statusData, ["resultDocumentId", "documentId"]) ||
+    documentId;
 
   const downloadEndpoint = `${server}/api/documents/d/${resultDocumentId}/externaldata/${externalDataId}`;
 
-const downloadRes = await onshapeFetch(
-  downloadEndpoint,
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept:
-        "model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+  const downloadRes = await onshapeFetch(
+    downloadEndpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept:
+          "model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+      },
     },
-  },
-  {
-    route: "/api/onshape/assembly-gltf",
-    operation: "download-gltf-result",
-  },
-);
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "download-gltf-result",
+    },
+  );
 
   const downloadContentType =
     downloadRes.headers.get("content-type") || "application/octet-stream";
@@ -1116,32 +1359,47 @@ const downloadRes = await onshapeFetch(
         error: "Failed to download translated external data.",
         details: errorData,
       },
-      { status: downloadRes.status }
+      { status: downloadRes.status },
     );
   }
 
   const downloadedBuffer = await downloadRes.arrayBuffer();
 
-const response = await handleGeometryBuffer(downloadedBuffer, debugZip, {
-  exportEndpoint,
-  translationHref,
-  downloadEndpoint,
-  downloadContentType,
-});
+  const sourceSnapshotResult = !debugZip
+    ? await upsertSourceAssemblySnapshotBuffer({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        rawBuffer: downloadedBuffer,
+      })
+    : null;
 
-response.headers.set("X-FuzzyCAD-Translation-Id", translationId || "");
-response.headers.set("X-FuzzyCAD-External-Data-Id", externalDataId);
-
-return cacheGeometryResponse({
-  cacheKey,
-  response,
-  rawBuffer: downloadedBuffer,
-  context: {
+  const response = await handleGeometryBuffer(downloadedBuffer, debugZip, {
     exportEndpoint,
     translationHref,
     downloadEndpoint,
     downloadContentType,
-  },
-  enabled: !debugZip,
-});
+  });
+
+  response.headers.set(
+    "X-FuzzyCAD-Source-Snapshot",
+    sourceSnapshotResult?.ok ? "saved" : "not-saved",
+  );
+
+  response.headers.set("X-FuzzyCAD-Translation-Id", translationId || "");
+  response.headers.set("X-FuzzyCAD-External-Data-Id", externalDataId);
+
+  return cacheGeometryResponse({
+    cacheKey,
+    response,
+    rawBuffer: downloadedBuffer,
+    context: {
+      exportEndpoint,
+      translationHref,
+      downloadEndpoint,
+      downloadContentType,
+    },
+    enabled: !debugZip,
+  });
 }
