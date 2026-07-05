@@ -743,16 +743,30 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
   documentId: string;
   workspaceId: string;
   accessToken: string;
-  annotatedSelectionStlElementId: string;
+  annotatedSelectionStl: Blob;
+  annotatedSelectionStlElementId: string | null;
 }) {
   const endpoint = `${input.server}/api/translations/d/${input.documentId}/w/${input.workspaceId}`;
 
-  const requestBody = {
-    elementId: input.annotatedSelectionStlElementId,
-    formatName: "STL",
-    storeInDocument: true,
-    destinationName: VISUALIZATION_LAYER_NAME,
-  };
+  const formData = new FormData();
+
+  formData.append(
+    "file",
+    input.annotatedSelectionStl,
+    ANNOTATED_SELECTION_STL_FILENAME,
+  );
+  formData.append("encodedFilename", ANNOTATED_SELECTION_STL_FILENAME);
+  formData.append("formatName", "STL");
+  formData.append("storeInDocument", "true");
+  formData.append("destinationName", VISUALIZATION_LAYER_NAME);
+
+  /**
+   * These are import-tolerance options. They are harmless if Onshape ignores
+   * them, and useful if the STL mesh has minor issues.
+   */
+  formData.append("allowFaultyParts", "true");
+  formData.append("createComposite", "false");
+  formData.append("joinAdjacentSurfaces", "false");
 
   const startRes = await onshapeFetch(
     endpoint,
@@ -761,13 +775,12 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
       headers: {
         Authorization: `Bearer ${input.accessToken}`,
         Accept: "application/json",
-        "Content-Type": "application/json",
       },
-      body: JSON.stringify(requestBody),
+      body: formData,
     },
     {
       route: "/api/fuzzycad/save-project",
-      operation: "translate-annotated-stl-into-visualization-layer",
+      operation: "translate-annotated-stl-upload-into-visualization-layer",
     },
   );
 
@@ -776,10 +789,11 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
   if (!startRes.ok) {
     return {
       ok: false,
-      mode: "failed-to-start-stl-translation",
+      mode: "failed-to-start-stl-upload-translation",
       status: startRes.status,
       endpoint,
-      requestBody,
+      sourceBlobElementId: input.annotatedSelectionStlElementId,
+      requestBodyKind: "multipart/form-data",
       data: translationData,
     };
   }
@@ -797,10 +811,10 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
       if (state === "FAILED" || state === "CANCELLED" || state === "ERROR") {
         return {
           ok: false,
-          mode: "stl-translation-failed",
+          mode: "stl-upload-translation-failed",
           status: startRes.status,
           endpoint,
-          requestBody,
+          sourceBlobElementId: input.annotatedSelectionStlElementId,
           href,
           data: translationData,
         };
@@ -816,10 +830,10 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
       if (!statusResult.ok) {
         return {
           ok: false,
-          mode: "failed-to-poll-stl-translation",
+          mode: "failed-to-poll-stl-upload-translation",
           status: statusResult.status,
           endpoint,
-          requestBody,
+          sourceBlobElementId: input.annotatedSelectionStlElementId,
           href,
           data: statusResult.data,
           initialData: translationData,
@@ -835,11 +849,12 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
   return {
     ok: true,
     mode: visualizationElementId
-      ? "stl-translated-to-visualization-layer"
-      : "stl-translation-started-but-result-element-not-found",
+      ? "stl-upload-translated-to-visualization-layer"
+      : "stl-upload-translation-started-but-result-element-not-found",
     status: startRes.status,
     endpoint,
-    requestBody,
+    sourceBlobElementId: input.annotatedSelectionStlElementId,
+    requestBodyKind: "multipart/form-data",
     href,
     visualizationElementId,
     data: translationData,
@@ -1055,19 +1070,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const reconstructionResult = annotatedSelectionStlResult?.elementId
-    ? await translateAnnotatedStlIntoVisualizationLayer({
-        server,
-        documentId,
-        workspaceId,
-        accessToken,
-        annotatedSelectionStlElementId: annotatedSelectionStlResult.elementId,
-      })
-    : {
-        ok: false,
-        mode: "missing-annotated-selection-stl",
-        message: "No annotated selection STL was provided.",
-      };
+const reconstructionResult = annotatedSelectionStl
+  ? await translateAnnotatedStlIntoVisualizationLayer({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      annotatedSelectionStl,
+      annotatedSelectionStlElementId: annotatedSelectionStlResult?.elementId ?? null,
+    })
+  : {
+      ok: false,
+      mode: "missing-annotated-selection-stl",
+      message: "No annotated selection STL was provided.",
+    };
 
   const selectedAssemblyElementId = getSourceAssemblyElementId(projectState);
   const visualizationElementId =
