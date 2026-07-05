@@ -406,7 +406,7 @@ function getPartIdFromPartRecord(part: UnknownRecord) {
   );
 }
 
-async function getFirstPartIdFromVisualizationLayer(input: {
+async function getPartIdsFromVisualizationLayer(input: {
   server: string;
   documentId: string;
   workspaceId: string;
@@ -438,36 +438,36 @@ async function getFirstPartIdFromVisualizationLayer(input: {
       mode: "failed-to-read-visualization-layer-parts",
       status: res.status,
       endpoint,
-
       data,
-      partId: null,
+      partIds: [] as string[],
     };
   }
 
   const parts = getPartsFromPartsResponse(data);
-  const firstPart = parts[0] ?? null;
-  const partId = firstPart ? getPartIdFromPartRecord(firstPart) : null;
+  const partIds = parts
+    .map((part) => getPartIdFromPartRecord(part))
+    .filter((partId): partId is string => Boolean(partId));
 
-  if (!partId) {
+  if (partIds.length === 0) {
     return {
       ok: false,
-      mode: "visualization-layer-has-no-readable-part-id",
+      mode: "visualization-layer-has-no-readable-part-ids",
       status: res.status,
       endpoint,
       data,
-      partsPreview: parts.slice(0, 5),
-      partId: null,
+      partsPreview: parts.slice(0, 10),
+      partIds,
     };
   }
 
   return {
     ok: true,
-    mode: "found-visualization-layer-part",
+    mode: "found-visualization-layer-parts",
     status: res.status,
     endpoint,
     data,
-    partsPreview: parts.slice(0, 5),
-    partId,
+    partsPreview: parts.slice(0, 10),
+    partIds,
   };
 }
 
@@ -528,6 +528,99 @@ function getInstanceName(instance: UnknownRecord) {
   );
 }
 
+function addStringToSet(set: Set<string>, value: unknown) {
+  if (typeof value === "string" && value.length > 0) {
+    set.add(value);
+  }
+}
+
+function collectPreviousVisualizationElementIds(projectState: UnknownRecord) {
+  const ids = new Set<string>();
+
+  const generatedGeometry = isRecord(projectState.generatedGeometry)
+    ? projectState.generatedGeometry
+    : null;
+
+  if (!generatedGeometry) {
+    return ids;
+  }
+
+  const visualizationLayer = isRecord(generatedGeometry.visualizationLayer)
+    ? generatedGeometry.visualizationLayer
+    : null;
+
+  addStringToSet(ids, visualizationLayer?.elementId);
+
+  const reconstruction = isRecord(generatedGeometry.reconstruction)
+    ? generatedGeometry.reconstruction
+    : null;
+
+  addStringToSet(ids, reconstruction?.visualizationElementId);
+
+  const assemblyOverlay = isRecord(generatedGeometry.assemblyOverlay)
+    ? generatedGeometry.assemblyOverlay
+    : null;
+
+  const assemblyOverlayResult = isRecord(assemblyOverlay?.result)
+    ? assemblyOverlay.result
+    : null;
+
+  addStringToSet(ids, assemblyOverlayResult?.visualizationElementId);
+
+  const directAssemblyOverlayResult = isRecord(
+    generatedGeometry.assemblyOverlayResult,
+  )
+    ? generatedGeometry.assemblyOverlayResult
+    : null;
+
+  addStringToSet(ids, directAssemblyOverlayResult?.visualizationElementId);
+
+  return ids;
+}
+
+function findExistingOverlayInstances(input: {
+  assemblyData: unknown;
+  visualizationElementId: string;
+  previousVisualizationElementIds: Set<string>;
+}) {
+  const instances = getAssemblyInstances(input.assemblyData);
+
+  const knownVisualizationElementIds = new Set<string>([
+    input.visualizationElementId,
+    ...input.previousVisualizationElementIds,
+  ]);
+
+  return instances
+    .map((instance) => {
+      const id = getInstanceId(instance);
+      const name = getInstanceName(instance);
+      const elementId = getStringFromRecord(instance, "elementId");
+      const partId = getStringFromRecord(instance, "partId");
+
+      return {
+        id,
+        name,
+        elementId,
+        partId,
+        instance,
+      };
+    })
+    .filter((instance) => {
+      if (instance.name === ASSEMBLY_OVERLAY_INSTANCE_NAME) {
+        return true;
+      }
+
+      if (
+        instance.elementId &&
+        knownVisualizationElementIds.has(instance.elementId)
+      ) {
+        return true;
+      }
+
+      return false;
+    });
+}
+
 function findExistingOverlayInstance(input: {
   assemblyData: unknown;
   visualizationElementId: string;
@@ -557,98 +650,130 @@ function findExistingOverlayInstance(input: {
   };
 }
 
-async function insertVisualizationLayerInstance(input: {
+async function insertVisualizationLayerInstances(input: {
   server: string;
   documentId: string;
   workspaceId: string;
   assemblyElementId: string;
   visualizationElementId: string;
-  partId: string;
+  partIds: string[];
   accessToken: string;
 }) {
   const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/instances`;
 
-  /**
-   * Onshape instance insertion payloads can be picky depending on whether
-   * the source is a part, mesh import, or whole part studio.
-   *
-   * Try name/instanceName/no-name variants. The first accepted request wins.
-   * If all fail, the response includes every attempt for debugging.
-   */
-  const candidateBodies = [
-    {
-      documentId: input.documentId,
-      elementId: input.visualizationElementId,
-      partId: input.partId,
-      isAssembly: false,
-      configuration: "default",
-      name: ASSEMBLY_OVERLAY_INSTANCE_NAME,
-    },
-    {
-      documentId: input.documentId,
-      elementId: input.visualizationElementId,
-      partId: input.partId,
-      isAssembly: false,
-      configuration: "default",
-      instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
-    },
-    {
-      documentId: input.documentId,
-      elementId: input.visualizationElementId,
-      partId: input.partId,
-      isAssembly: false,
-      configuration: "default",
-    },
-  ];
+  const inserted = [];
+  const failed = [];
 
-  const attempts = [];
+  for (let index = 0; index < input.partIds.length; index += 1) {
+    const partId = input.partIds[index];
 
-  for (const requestBody of candidateBodies) {
-    const res = await onshapeFetch(
-      endpoint,
+    const candidateBodies = [
       {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${input.accessToken}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
+        documentId: input.documentId,
+        elementId: input.visualizationElementId,
+        partId,
+        isAssembly: false,
+        configuration: "default",
+        name:
+          input.partIds.length === 1
+            ? ASSEMBLY_OVERLAY_INSTANCE_NAME
+            : `${ASSEMBLY_OVERLAY_INSTANCE_NAME}_${index + 1}`,
+      },
+      {
+        documentId: input.documentId,
+        elementId: input.visualizationElementId,
+        partId,
+        isAssembly: false,
+        configuration: "default",
+        instanceName:
+          input.partIds.length === 1
+            ? ASSEMBLY_OVERLAY_INSTANCE_NAME
+            : `${ASSEMBLY_OVERLAY_INSTANCE_NAME}_${index + 1}`,
+      },
+      {
+        documentId: input.documentId,
+        elementId: input.visualizationElementId,
+        partId,
+        isAssembly: false,
+        configuration: "default",
+      },
+    ];
+
+    const attempts = [];
+    let insertedThisPart = false;
+
+    for (const requestBody of candidateBodies) {
+      const res = await onshapeFetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${input.accessToken}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
         },
-        body: JSON.stringify(requestBody),
-      },
-      {
-        route: "/api/fuzzycad/save-project",
-        operation: "insert-fuzzycad-visualization-overlay",
-      },
-    );
+        {
+          route: "/api/fuzzycad/save-project",
+          operation: "insert-fuzzycad-visualization-overlay-part",
+        },
+      );
 
-    const data = await parseJsonOrText(res);
+      const data = await parseJsonOrText(res);
 
-    attempts.push({
-      ok: res.ok,
-      status: res.status,
-      endpoint,
-      requestBody,
-      data,
-    });
-
-    if (res.ok) {
-      return {
-        ok: true,
-        mode: "inserted-visualization-layer-into-assembly",
+      attempts.push({
+        ok: res.ok,
         status: res.status,
         endpoint,
         requestBody,
         data,
+      });
+
+      if (res.ok) {
+        inserted.push({
+          partId,
+          status: res.status,
+          endpoint,
+          requestBody,
+          data,
+          attempts,
+        });
+
+        insertedThisPart = true;
+        break;
+      }
+    }
+
+    if (!insertedThisPart) {
+      failed.push({
+        partId,
         attempts,
-      };
+      });
     }
   }
 
+  if (failed.length > 0) {
+    return {
+      ok: false,
+      mode: "failed-to-insert-some-visualization-layer-parts",
+      endpoint,
+      visualizationElementId: input.visualizationElementId,
+      partIds: input.partIds,
+      inserted,
+      failed,
+    };
+  }
+
   return {
-    ok: false,
-    mode: "failed-to-insert-visualization-layer-into-assembly",
+    ok: true,
+    mode: "inserted-visualization-layer-parts-into-assembly",
+    status: 200,
     endpoint,
-    attempts,
+    visualizationElementId: input.visualizationElementId,
+    partIds: input.partIds,
+    insertedCount: inserted.length,
+    inserted,
   };
 }
 
@@ -659,6 +784,7 @@ async function ensureVisualizationLayerInSelectedAssembly(input: {
   accessToken: string;
   selectedAssemblyElementId: string | null;
   visualizationElementId: string | null;
+  projectState: UnknownRecord;
 }) {
   if (!input.selectedAssemblyElementId) {
     return {
@@ -694,25 +820,32 @@ async function ensureVisualizationLayerInSelectedAssembly(input: {
     };
   }
 
-  const existingOverlay = findExistingOverlayInstance({
+  const previousVisualizationElementIds =
+    collectPreviousVisualizationElementIds(input.projectState);
+
+  const existingOverlays = findExistingOverlayInstances({
     assemblyData: assemblyResult.data,
     visualizationElementId: input.visualizationElementId,
+    previousVisualizationElementIds,
   });
 
-  if (existingOverlay) {
+  if (existingOverlays.length > 0) {
     return {
       ok: true,
       mode: "reused-existing-assembly-overlay",
       message:
-        "Selected assembly already contains the FuzzyCAD generated overlay.",
+        "Selected assembly already contains a FuzzyCAD generated overlay. Skipped insertion to avoid duplicates.",
       assemblyElementId: input.selectedAssemblyElementId,
       visualizationElementId: input.visualizationElementId,
+      previousVisualizationElementIds: Array.from(
+        previousVisualizationElementIds,
+      ),
       instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
-      existingOverlay,
+      existingOverlays,
     };
   }
 
-  const partResult = await getFirstPartIdFromVisualizationLayer({
+  const partResult = await getPartIdsFromVisualizationLayer({
     server: input.server,
     documentId: input.documentId,
     workspaceId: input.workspaceId,
@@ -720,23 +853,23 @@ async function ensureVisualizationLayerInSelectedAssembly(input: {
     accessToken: input.accessToken,
   });
 
-  if (!partResult.ok || !partResult.partId) {
+  if (!partResult.ok || partResult.partIds.length === 0) {
     return {
       ok: false,
-      mode: "failed-to-find-visualization-layer-part",
+      mode: "failed-to-find-visualization-layer-parts",
       assemblyElementId: input.selectedAssemblyElementId,
       visualizationElementId: input.visualizationElementId,
       partResult,
     };
   }
 
-  const insertResult = await insertVisualizationLayerInstance({
+  const insertResult = await insertVisualizationLayerInstances({
     server: input.server,
     documentId: input.documentId,
     workspaceId: input.workspaceId,
     assemblyElementId: input.selectedAssemblyElementId,
     visualizationElementId: input.visualizationElementId,
-    partId: partResult.partId,
+    partIds: partResult.partIds,
     accessToken: input.accessToken,
   });
 
@@ -748,7 +881,7 @@ async function ensureVisualizationLayerInSelectedAssembly(input: {
     ...insertResult,
     assemblyElementId: input.selectedAssemblyElementId,
     visualizationElementId: input.visualizationElementId,
-    partId: partResult.partId,
+    partIds: partResult.partIds,
     instanceName: ASSEMBLY_OVERLAY_INSTANCE_NAME,
     partResult,
   };
@@ -990,22 +1123,22 @@ async function translateAnnotatedStlIntoVisualizationLayer(input: {
   }
 
   const lastAttempt = attempts[attempts.length - 1] ?? null;
-const lastVisualizationElementId =
-  getVisualizationElementIdFromAttempt(lastAttempt);
+  const lastVisualizationElementId =
+    getVisualizationElementIdFromAttempt(lastAttempt);
 
-return {
-  ok: false,
-  mode: "stl-import-did-not-produce-insertable-visualization-layer",
-  status:
-    lastAttempt && typeof lastAttempt.status === "number"
-      ? lastAttempt.status
-      : 500,
-  endpoint,
-  sourceBlobElementId: input.annotatedSelectionStlElementId,
-  visualizationElementId: lastVisualizationElementId,
-  attempts,
-  data: lastAttempt,
-};
+  return {
+    ok: false,
+    mode: "stl-import-did-not-produce-insertable-visualization-layer",
+    status:
+      lastAttempt && typeof lastAttempt.status === "number"
+        ? lastAttempt.status
+        : 500,
+    endpoint,
+    sourceBlobElementId: input.annotatedSelectionStlElementId,
+    visualizationElementId: lastVisualizationElementId,
+    attempts,
+    data: lastAttempt,
+  };
 }
 
 function getElementTypeLabel(element: UnknownRecord) {
@@ -1345,6 +1478,7 @@ export async function POST(req: NextRequest) {
         accessToken,
         selectedAssemblyElementId,
         visualizationElementId,
+        projectState,
       })
     : {
         ok: false,
