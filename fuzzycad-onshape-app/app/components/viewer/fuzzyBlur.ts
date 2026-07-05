@@ -530,15 +530,13 @@ function createAbstractObjectSketchStrokeLayer({
 }) {
   const [uAxisName, vAxisName] = getOtherFrameAxes(uncertaintyAxis);
 
-  const originalBoundary =
-    sign > 0
-      ? measure.extents[uncertaintyAxis].max
-      : measure.extents[uncertaintyAxis].min;
+  const originalMin = measure.extents[uncertaintyAxis].min;
+  const originalMax = measure.extents[uncertaintyAxis].max;
 
+  const originalBoundary = sign > 0 ? originalMax : originalMin;
   const uncertainBoundary = originalBoundary + sign * extensionAmount;
 
-  // 这里不加 padding。也就是说，sketch extension 的“粗细”
-  // 和原 object 在另外两个方向上的尺寸完全一样。
+  // 不加 padding，保证 hatch sleeve 的粗细和原 geo 一样。
   const u0 = measure.extents[uAxisName].min;
   const u1 = measure.extents[uAxisName].max;
   const v0 = measure.extents[vAxisName].min;
@@ -585,22 +583,90 @@ function createAbstractObjectSketchStrokeLayer({
     }),
   ];
 
-  const originalCap = capAt(originalBoundary);
+  const originalStartCap = capAt(originalMin);
+  const originalEndCap = capAt(originalMax);
+  const originalBoundaryCap = capAt(originalBoundary);
   const uncertainCap = capAt(uncertainBoundary);
 
-  // 1) 连接原边界和 uncertain boundary：读起来像“这个 dimension 在延展/未定”。
+  // 1) Original body rails：让中间原 object 也有 sketch 结构。
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
-      startWorld: originalCap[index],
-      endWorld: uncertainCap[index],
-      jitterAmount: jitterAmount * 0.65,
-      seed: seed + index * 17,
+      startWorld: originalStartCap[index],
+      endWorld: originalEndCap[index],
+      jitterAmount: jitterAmount * 0.45,
+      seed: seed + 10 + index * 17,
     });
   }
 
-  // 2) uncertain cap outline：截面大小和原 geo 一样。
+  // 2) Original body hatch：填充中间部分，不再空着。
+  const bodyHatchCount = level === "low" ? 22 : 10;
+  const bodyHatchSpan = level === "low" ? 0.28 : 0.42;
+
+  for (let index = -2; index < bodyHatchCount + 2; index += 1) {
+    const t0 = index / bodyHatchCount;
+    const t1 = t0 + bodyHatchSpan;
+
+    if (t1 < 0 || t0 > 1) {
+      continue;
+    }
+
+    const d0 = THREE.MathUtils.lerp(
+      originalMin,
+      originalMax,
+      THREE.MathUtils.clamp(t0, 0, 1),
+    );
+
+    const d1 = THREE.MathUtils.lerp(
+      originalMin,
+      originalMax,
+      THREE.MathUtils.clamp(t1, 0, 1),
+    );
+
+    const startWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension: d0,
+      u: u0,
+      v: v0,
+    });
+
+    const endWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension: d1,
+      u: u1,
+      v: v1,
+    });
+
+    addSketchSegment({
+      positions,
+      object,
+      startWorld,
+      endWorld,
+      jitterAmount: jitterAmount * (level === "low" ? 0.65 : 0.35),
+      seed: seed + 200 + index * 11,
+    });
+  }
+
+  // 3) Connector from original boundary to uncertain boundary.
+  for (let index = 0; index < 4; index += 1) {
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: originalBoundaryCap[index],
+      endWorld: uncertainCap[index],
+      jitterAmount: jitterAmount * 0.65,
+      seed: seed + 500 + index * 17,
+    });
+  }
+
+  // 4) Uncertain cap outline.
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
@@ -608,18 +674,17 @@ function createAbstractObjectSketchStrokeLayer({
       startWorld: uncertainCap[index],
       endWorld: uncertainCap[(index + 1) % 4],
       jitterAmount,
-      seed: seed + 100 + index * 19,
+      seed: seed + 700 + index * 19,
     });
   }
 
-  // 3) hatch fill on the extension sleeve.
-  // hatch 在 originalBoundary 和 uncertainBoundary 之间，不覆盖整个 object。
-  const hatchCount = level === "low" ? 14 : 6;
-  const hatchSpan = level === "low" ? 0.46 : 0.58;
+  // 5) Extension hatch：只填 originalBoundary 到 uncertainBoundary 之间。
+  const extensionHatchCount = level === "low" ? 12 : 5;
+  const extensionHatchSpan = level === "low" ? 0.46 : 0.58;
 
-  for (let index = -2; index < hatchCount + 2; index += 1) {
-    const t0 = index / hatchCount;
-    const t1 = t0 + hatchSpan;
+  for (let index = -2; index < extensionHatchCount + 2; index += 1) {
+    const t0 = index / extensionHatchCount;
+    const t1 = t0 + extensionHatchSpan;
 
     if (t1 < 0 || t0 > 1) {
       continue;
@@ -663,7 +728,7 @@ function createAbstractObjectSketchStrokeLayer({
       startWorld,
       endWorld,
       jitterAmount: jitterAmount * (level === "low" ? 0.95 : 0.5),
-      seed: seed + 300 + index * 11,
+      seed: seed + 900 + index * 11,
     });
   }
 
@@ -674,7 +739,7 @@ function createAbstractObjectSketchStrokeLayer({
   const material = new THREE.LineBasicMaterial({
     color: level === "low" ? 0x0f172a : 0x475569,
     transparent: true,
-    opacity: level === "low" ? 0.72 : 0.46,
+    opacity: level === "low" ? 0.64 : 0.42,
     depthTest: false,
     depthWrite: false,
   });
