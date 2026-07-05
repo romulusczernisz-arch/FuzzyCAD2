@@ -784,11 +784,24 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
   selectedAssemblyElementId: string | null;
   projectState: UnknownRecord;
 }) {
+  const currentSelectionSignature = getSelectionSignatureFromProjectState(
+    input.projectState,
+  );
+  const previousSelectionSignature = getPreviousSelectionSignature(
+    input.projectState,
+  );
+
   if (!input.selectedAssemblyElementId) {
     return {
       ok: false,
       mode: "missing-selected-assembly",
-      existingOverlays: [],
+      shouldSkipImport: false,
+      shouldReplaceOverlay: false,
+      hasExistingOverlay: false,
+      selectionMatches: false,
+      currentSelectionSignature,
+      previousSelectionSignature,
+      existingOverlays: [] as UnknownRecord[],
       knownVisualizationElementIds: [] as string[],
     };
   }
@@ -806,8 +819,14 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
     return {
       ok: false,
       mode: "failed-to-read-elements-before-overlay-preflight",
+      shouldSkipImport: false,
+      shouldReplaceOverlay: false,
+      hasExistingOverlay: false,
+      selectionMatches: false,
+      currentSelectionSignature,
+      previousSelectionSignature,
       elementsResult,
-      existingOverlays: [],
+      existingOverlays: [] as UnknownRecord[],
       knownVisualizationElementIds: [] as string[],
     };
   }
@@ -824,8 +843,14 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
     return {
       ok: false,
       mode: "failed-to-read-assembly-before-overlay-preflight",
+      shouldSkipImport: false,
+      shouldReplaceOverlay: false,
+      hasExistingOverlay: false,
+      selectionMatches: false,
+      currentSelectionSignature,
+      previousSelectionSignature,
       assemblyResult,
-      existingOverlays: [],
+      existingOverlays: [] as UnknownRecord[],
       knownVisualizationElementIds: [] as string[],
     };
   }
@@ -863,15 +888,188 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
       );
     });
 
+  const hasExistingOverlay = existingOverlays.length > 0;
+  const selectionMatches =
+    previousSelectionSignature !== null &&
+    currentSelectionSignature === previousSelectionSignature;
+
+  const shouldSkipImport = hasExistingOverlay && selectionMatches;
+  const shouldReplaceOverlay = hasExistingOverlay && !selectionMatches;
+
   return {
-    ok: existingOverlays.length > 0,
-    mode:
-      existingOverlays.length > 0
-        ? "found-existing-fuzzycad-overlay-before-import"
-        : "no-existing-fuzzycad-overlay-before-import",
+    ok: shouldSkipImport,
+    mode: !hasExistingOverlay
+      ? "no-existing-fuzzycad-overlay-before-import"
+      : selectionMatches
+        ? "found-existing-fuzzycad-overlay-same-selection"
+        : "found-existing-fuzzycad-overlay-stale-selection",
+    shouldSkipImport,
+    shouldReplaceOverlay,
+    hasExistingOverlay,
+    selectionMatches,
+    currentSelectionSignature,
+    previousSelectionSignature,
     assemblyElementId: input.selectedAssemblyElementId,
     existingOverlays,
     knownVisualizationElementIds: Array.from(knownVisualizationElementIds),
+  };
+}
+
+function getOverlayDeleteInstanceId(overlay: unknown) {
+  if (!isRecord(overlay)) {
+    return null;
+  }
+
+  const directId =
+    getStringFromRecord(overlay, "id") ??
+    getStringFromRecord(overlay, "instanceId") ??
+    getStringFromRecord(overlay, "nodeId");
+
+  if (directId) {
+    return directId;
+  }
+
+  const instance = isRecord(overlay.instance) ? overlay.instance : null;
+
+  if (!instance) {
+    return null;
+  }
+
+  return getInstanceId(instance);
+}
+
+async function deleteAssemblyInstance(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  instanceId: string;
+  accessToken: string;
+}) {
+  const encodedInstanceId = encodeURIComponent(input.instanceId);
+
+  const candidateEndpoints = [
+    {
+      mode: "delete-instance-by-nodeid",
+      endpoint: `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/instance/nodeid/${encodedInstanceId}`,
+    },
+    {
+      mode: "delete-instance-by-instances-id",
+      endpoint: `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/instances/${encodedInstanceId}`,
+    },
+  ];
+
+  const attempts: UnknownRecord[] = [];
+
+  for (const candidate of candidateEndpoints) {
+    const res = await onshapeFetch(
+      candidate.endpoint,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          Accept: "application/json",
+        },
+      },
+      {
+        route: "/api/fuzzycad/save-project",
+        operation: candidate.mode,
+      },
+    );
+
+    const data = await parseJsonOrText(res);
+
+    attempts.push({
+      ok: res.ok,
+      status: res.status,
+      mode: candidate.mode,
+      endpoint: candidate.endpoint,
+      data,
+    });
+
+    if (res.ok) {
+      return {
+        ok: true,
+        status: res.status,
+        mode: candidate.mode,
+        endpoint: candidate.endpoint,
+        data,
+        attempts,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    mode: "failed-to-delete-assembly-instance",
+    instanceId: input.instanceId,
+    attempts,
+  };
+}
+
+async function deleteExistingFuzzyCadOverlayInstances(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  accessToken: string;
+  existingOverlays: unknown[];
+}) {
+  const deleted: UnknownRecord[] = [];
+  const failed: UnknownRecord[] = [];
+
+  for (const overlay of input.existingOverlays) {
+    const instanceId = getOverlayDeleteInstanceId(overlay);
+
+    if (!instanceId) {
+      failed.push({
+        ok: false,
+        mode: "missing-overlay-instance-id",
+        overlay,
+      });
+      continue;
+    }
+
+    const deleteResult = await deleteAssemblyInstance({
+      server: input.server,
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      assemblyElementId: input.assemblyElementId,
+      instanceId,
+      accessToken: input.accessToken,
+    });
+
+    if (deleteResult.ok) {
+      deleted.push({
+        instanceId,
+        overlay,
+        deleteResult,
+      });
+    } else {
+      failed.push({
+        instanceId,
+        overlay,
+        deleteResult,
+      });
+    }
+  }
+
+  if (failed.length > 0) {
+    return {
+      ok: false,
+      mode: "failed-to-delete-some-existing-fuzzycad-overlay-instances",
+      deleted,
+      failed,
+    };
+  }
+
+  clearAssemblyCache();
+
+  return {
+    ok: true,
+    mode: "deleted-existing-fuzzycad-overlay-instances",
+    deletedCount: deleted.length,
+    deleted,
   };
 }
 
@@ -1384,6 +1582,80 @@ function buildAnnotatedSelectionManifest(projectState: UnknownRecord) {
   };
 }
 
+function getSelectionSignatureFromProjectState(projectState: UnknownRecord) {
+  const manifest = buildAnnotatedSelectionManifest(projectState);
+
+  return manifest.includedObjects
+    .map((item) => `${item.annotationId}:${item.type}:${item.pathKey}`)
+    .sort()
+    .join("|");
+}
+
+function getPreviousSelectionSignature(projectState: UnknownRecord) {
+  const generatedGeometry = isRecord(projectState.generatedGeometry)
+    ? projectState.generatedGeometry
+    : null;
+
+  if (!generatedGeometry) {
+    return null;
+  }
+
+  const directSignature = generatedGeometry.selectionSignature;
+  if (typeof directSignature === "string") {
+    return directSignature;
+  }
+
+  const annotatedSelectionStl = isRecord(
+    generatedGeometry.annotatedSelectionStl,
+  )
+    ? generatedGeometry.annotatedSelectionStl
+    : null;
+
+  const stlSignature = annotatedSelectionStl?.selectionSignature;
+
+  return typeof stlSignature === "string" ? stlSignature : null;
+}
+
+function getPreviousVisualizationLayerElementId(projectState: UnknownRecord) {
+  const generatedGeometry = isRecord(projectState.generatedGeometry)
+    ? projectState.generatedGeometry
+    : null;
+
+  if (!generatedGeometry) {
+    return null;
+  }
+
+  const visualizationLayer = isRecord(generatedGeometry.visualizationLayer)
+    ? generatedGeometry.visualizationLayer
+    : null;
+
+  const visualizationLayerElementId = visualizationLayer?.elementId;
+  if (typeof visualizationLayerElementId === "string") {
+    return visualizationLayerElementId;
+  }
+
+  const reconstruction = isRecord(generatedGeometry.reconstruction)
+    ? generatedGeometry.reconstruction
+    : null;
+
+  const reconstructionElementId = reconstruction?.visualizationElementId;
+  if (typeof reconstructionElementId === "string") {
+    return reconstructionElementId;
+  }
+
+  return null;
+}
+
+function getResolvedVisualizationLayerElementId(input: {
+  projectState: UnknownRecord;
+  reconstructionResult: unknown;
+}) {
+  return (
+    getVisualizationElementIdFromResult(input.reconstructionResult) ??
+    getPreviousVisualizationLayerElementId(input.projectState)
+  );
+}
+
 function buildGeneratedGeometryPayload(input: {
   projectState: UnknownRecord;
   annotatedSelectionStlResult: UpsertBlobResult | null;
@@ -1399,9 +1671,14 @@ function buildGeneratedGeometryPayload(input: {
     input.projectState,
   );
 
-  const visualizationLayerElementId = getVisualizationElementIdFromResult(
-    input.reconstructionResult,
-  );
+  const selectionSignature = getSelectionSignatureFromProjectState(
+  input.projectState,
+);
+
+const visualizationLayerElementId = getResolvedVisualizationLayerElementId({
+  projectState: input.projectState,
+  reconstructionResult: input.reconstructionResult,
+});
 
   const assemblyOverlayOk = isOkResult(input.assemblyOverlayResult);
   const assemblyOverlayMode = getModeFromResult(input.assemblyOverlayResult);
@@ -1409,6 +1686,7 @@ function buildGeneratedGeometryPayload(input: {
   return {
     schemaVersion: "fuzzycad.generatedGeometry.v1",
     updatedAt: now,
+      selectionSignature,
 
     source,
     objectMap: input.projectState.objectMap ?? {},
@@ -1416,12 +1694,13 @@ function buildGeneratedGeometryPayload(input: {
 
     annotatedSelectionStl: input.annotatedSelectionStlResult
       ? {
-          filename: input.annotatedSelectionStlResult.filename,
-          elementId: input.annotatedSelectionStlResult.elementId,
-          mode: input.annotatedSelectionStlResult.mode,
-          status: input.annotatedSelectionStlResult.status,
-          updatedAt: now,
-          coordinateSpace: "onshape-assembly",
+           filename: input.annotatedSelectionStlResult.filename,
+      elementId: input.annotatedSelectionStlResult.elementId,
+      mode: input.annotatedSelectionStlResult.mode,
+      status: input.annotatedSelectionStlResult.status,
+      updatedAt: now,
+      coordinateSpace: "onshape-assembly",
+      selectionSignature,
           ...annotatedSelectionManifest,
         }
       : null,
@@ -1552,12 +1831,37 @@ export async function POST(req: NextRequest) {
       projectState,
     });
 
-  const reconstructionResult = existingOverlayPreflight.ok
+  const staleOverlayCleanupResult =
+    existingOverlayPreflight.shouldReplaceOverlay && selectedAssemblyElementId
+      ? await deleteExistingFuzzyCadOverlayInstances({
+          server,
+          documentId,
+          workspaceId,
+          assemblyElementId: selectedAssemblyElementId,
+          accessToken,
+          existingOverlays: existingOverlayPreflight.existingOverlays,
+        })
+      : null;
+
+  if (staleOverlayCleanupResult && !staleOverlayCleanupResult.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Existing FuzzyCAD overlay is stale, but failed to delete old assembly instances. Aborted before importing new overlay to avoid duplicates.",
+        existingOverlayPreflight,
+        staleOverlayCleanupResult,
+      },
+      { status: 500 },
+    );
+  }
+
+  const reconstructionResult = existingOverlayPreflight.shouldSkipImport
     ? {
         ok: true,
-        mode: "skipped-stl-import-existing-overlay-found",
+        mode: "skipped-stl-import-existing-overlay-same-selection",
         message:
-          "Selected assembly already contains a FuzzyCAD overlay, so STL import was skipped to avoid duplicate Part Studios and duplicate assembly instances.",
+          "Selected assembly already contains a FuzzyCAD overlay for the same selection, so STL import was skipped.",
         existingOverlayPreflight,
       }
     : annotatedSelectionStl
@@ -1576,50 +1880,53 @@ export async function POST(req: NextRequest) {
           message: "No annotated selection STL was provided.",
         };
 
-  const visualizationElementId =
-    getVisualizationElementIdFromResult(reconstructionResult);
+const visualizationElementId = getResolvedVisualizationLayerElementId({
+  projectState,
+  reconstructionResult,
+});
 
-  const visualizationLayerValidation = existingOverlayPreflight.ok
-    ? {
-        ok: true,
-        mode: "skipped-validation-existing-overlay-found",
-        visualizationElementId: null,
-        existingOverlayPreflight,
-      }
-    : await validateVisualizationLayerElement({
+const visualizationLayerValidation = existingOverlayPreflight.shouldSkipImport
+  ? {
+      ok: true,
+      mode: "skipped-validation-existing-overlay-same-selection",
+      visualizationElementId,
+      existingOverlayPreflight,
+    }
+  : await validateVisualizationLayerElement({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      visualizationElementId,
+    });
+
+const assemblyOverlayResult = existingOverlayPreflight.shouldSkipImport
+  ? {
+      ok: true,
+      mode: "reused-existing-assembly-overlay-same-selection",
+      message:
+        "Selected assembly already contains FuzzyCAD overlay instances for the same selection. Skipped insertion.",
+      selectedAssemblyElementId,
+      visualizationElementId,
+      existingOverlayPreflight,
+    }
+  : visualizationLayerValidation.ok
+    ? await ensureVisualizationLayerInSelectedAssembly({
         server,
         documentId,
         workspaceId,
         accessToken,
-        visualizationElementId,
-      });
-
-  const assemblyOverlayResult = existingOverlayPreflight.ok
-    ? {
-        ok: true,
-        mode: "reused-existing-assembly-overlay",
-        message:
-          "Selected assembly already contains FuzzyCAD overlay instances. Skipped insertion.",
         selectedAssemblyElementId,
-        existingOverlayPreflight,
-      }
-    : visualizationLayerValidation.ok
-      ? await ensureVisualizationLayerInSelectedAssembly({
-          server,
-          documentId,
-          workspaceId,
-          accessToken,
-          selectedAssemblyElementId,
-          visualizationElementId,
-          projectState,
-        })
-      : {
-          ok: false,
-          mode: "visualization-layer-not-insertable",
-          selectedAssemblyElementId,
-          visualizationElementId,
-          validation: visualizationLayerValidation,
-        };
+        visualizationElementId,
+        projectState,
+      })
+    : {
+        ok: false,
+        mode: "visualization-layer-not-insertable",
+        selectedAssemblyElementId,
+        visualizationElementId,
+        validation: visualizationLayerValidation,
+      };
 
   const generatedGeometryPayload = buildGeneratedGeometryPayload({
     projectState,
@@ -1686,6 +1993,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const selectionSignature = getSelectionSignatureFromProjectState(projectState);
+
   const projectStateWithGeneratedGeometry = {
     ...projectState,
     generatedGeometry: {
@@ -1693,20 +2002,21 @@ export async function POST(req: NextRequest) {
         ? projectState.generatedGeometry
         : {}),
       mode: annotatedSelectionStlResult ? "imported-mesh" : "none",
+        selectionSignature,
       containerElementId: generatedGeometryResult.elementId,
       annotatedSelectionStl: annotatedSelectionStlResult
-        ? {
-            filename: annotatedSelectionStlResult.filename,
-            elementId: annotatedSelectionStlResult.elementId,
-            mode: annotatedSelectionStlResult.mode,
-            status: annotatedSelectionStlResult.status,
-          }
-        : null,
+  ? {
+      filename: annotatedSelectionStlResult.filename,
+      elementId: annotatedSelectionStlResult.elementId,
+      mode: annotatedSelectionStlResult.mode,
+      status: annotatedSelectionStlResult.status,
+      selectionSignature,
+    }
+  : null,
       visualizationLayer: isRecord(reconstructionResult)
         ? {
             name: VISUALIZATION_LAYER_NAME,
-            elementId:
-              getVisualizationElementIdFromResult(reconstructionResult),
+elementId: visualizationElementId,
             mode: reconstructionResult.mode,
           }
         : null,
@@ -1789,17 +2099,18 @@ export async function POST(req: NextRequest) {
   clearElementsCache();
   clearAssemblyCache();
 
-  return NextResponse.json({
-    ok: true,
-    status: 200,
-    message: "FuzzyCAD project saved.",
-    annotatedSelectionStlResult,
-    generatedGeometryResult,
-    existingOverlayPreflight,
-    reconstructionResult,
-    visualizationLayerValidation,
-    assemblyOverlayResult,
-    projectStateResult,
-    projectState: projectStateWithGeneratedGeometry,
-  });
+return NextResponse.json({
+  ok: true,
+  status: 200,
+  message: "FuzzyCAD project saved.",
+  annotatedSelectionStlResult,
+  generatedGeometryResult,
+  existingOverlayPreflight,
+  staleOverlayCleanupResult,
+  reconstructionResult,
+  visualizationLayerValidation,
+  assemblyOverlayResult,
+  projectStateResult,
+  projectState: projectStateWithGeneratedGeometry,
+});
 }
