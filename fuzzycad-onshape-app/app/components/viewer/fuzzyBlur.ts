@@ -288,6 +288,242 @@ function createDashedBoundary(mesh: THREE.Mesh, strength: number) {
   return line;
 }
 
+function getConfidenceLineCount(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 4;
+  }
+
+  if (level === "medium") {
+    return 1;
+  }
+
+  return 0;
+}
+
+function getConfidenceOffsetMultiplier(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 0.085;
+  }
+
+  if (level === "medium") {
+    return 0.035;
+  }
+
+  return 0;
+}
+
+function getConfidenceJitterMultiplier(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 0.012;
+  }
+
+  if (level === "medium") {
+    return 0.0045;
+  }
+
+  return 0;
+}
+
+function getConfidenceLineOpacity(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 0.92;
+  }
+
+  if (level === "medium") {
+    return 0.72;
+  }
+
+  return 0;
+}
+
+function getConfidenceLineColor(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 0x111111;
+  }
+
+  return 0x334155;
+}
+
+function getDirectionSigns(direction: ConfidenceDirection) {
+  if (direction === "positive") {
+    return [1];
+  }
+
+  if (direction === "negative") {
+    return [-1];
+  }
+
+  return [-1, 1];
+}
+
+function seededNoise(seed: number) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function getGeometryRadius(geometry: THREE.BufferGeometry) {
+  geometry.computeBoundingSphere();
+
+  return Math.max(geometry.boundingSphere?.radius ?? 0.05, 0.01);
+}
+
+function worldAxisToMeshLocal(mesh: THREE.Mesh, axisWorld: THREE.Vector3) {
+  const inverseWorld = mesh.matrixWorld.clone().invert();
+
+  return axisWorld
+    .clone()
+    .normalize()
+    .transformDirection(inverseWorld)
+    .normalize();
+}
+
+function createSketchyEdgeGeometry(input: {
+  source: THREE.BufferGeometry;
+  jitterAmount: number;
+  seed: number;
+}) {
+  const position = input.source.getAttribute("position");
+
+  if (!position) {
+    return input.source.clone();
+  }
+
+  const points: number[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+
+  for (let index = 0; index < position.count; index += 2) {
+    a.fromBufferAttribute(position, index);
+    b.fromBufferAttribute(position, index + 1);
+
+    const tangent = b.clone().sub(a);
+
+    if (tangent.lengthSq() < 1e-12) {
+      continue;
+    }
+
+    tangent.normalize();
+
+    const helper =
+      Math.abs(tangent.y) < 0.85
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+
+    const normalA = new THREE.Vector3()
+      .crossVectors(tangent, helper)
+      .normalize();
+
+    const normalB = new THREE.Vector3()
+      .crossVectors(tangent, normalA)
+      .normalize();
+
+    const n0 = seededNoise(input.seed + index * 13.17);
+    const n1 = seededNoise(input.seed + index * 17.31);
+    const n2 = seededNoise(input.seed + index * 23.47);
+    const n3 = seededNoise(input.seed + index * 29.91);
+
+    const jitterStart = normalA
+      .clone()
+      .multiplyScalar((n0 - 0.5) * input.jitterAmount)
+      .add(normalB.clone().multiplyScalar((n1 - 0.5) * input.jitterAmount));
+
+    const jitterEnd = normalA
+      .clone()
+      .multiplyScalar((n2 - 0.5) * input.jitterAmount)
+      .add(normalB.clone().multiplyScalar((n3 - 0.5) * input.jitterAmount));
+
+    const aa = a.clone().add(jitterStart);
+    const bb = b.clone().add(jitterEnd);
+
+    points.push(aa.x, aa.y, aa.z, bb.x, bb.y, bb.z);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+
+  return geometry;
+}
+
+function createSketchConfidenceEdges({
+  mesh,
+  confidence,
+  directions,
+  axisFrame,
+}: {
+  mesh: THREE.Mesh;
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+  axisFrame: ConfidenceAxisFrame;
+}) {
+  const baseEdges = new THREE.EdgesGeometry(mesh.geometry, 35);
+  const radius = getGeometryRadius(mesh.geometry);
+
+  const group = new THREE.Group();
+  group.userData[FUZZY_VISUAL_CHILD] = true;
+
+  const axes: ConfidenceAxis[] = ["x", "y", "z"];
+
+  axes.forEach((axis, axisIndex) => {
+    const level = confidence[axis];
+    const lineCount = getConfidenceLineCount(level);
+
+    if (lineCount === 0) {
+      return;
+    }
+
+    const axisWorld = new THREE.Vector3(...axisFrame[axis]).normalize();
+    const axisLocal = worldAxisToMeshLocal(mesh, axisWorld);
+    const signs = getDirectionSigns(directions[axis]);
+
+    const offsetBase = radius * getConfidenceOffsetMultiplier(level);
+    const jitterBase = radius * getConfidenceJitterMultiplier(level);
+
+    for (const sign of signs) {
+      for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+        const layerRatio = (lineIndex + 1) / lineCount;
+        const offsetDistance = offsetBase * layerRatio;
+
+        const sketchGeometry = createSketchyEdgeGeometry({
+          source: baseEdges,
+          jitterAmount: jitterBase * (0.75 + layerRatio),
+          seed: axisIndex * 1000 + sign * 100 + lineIndex * 17,
+        });
+
+        const material = new THREE.LineDashedMaterial({
+          color: getConfidenceLineColor(level),
+          linewidth: 1,
+          dashSize: level === "low" ? radius * 0.025 : radius * 0.04,
+          gapSize: level === "low" ? radius * 0.018 : radius * 0.025,
+          transparent: true,
+          opacity: getConfidenceLineOpacity(level) * (1.0 - lineIndex * 0.12),
+          depthTest: false,
+          depthWrite: false,
+        });
+
+        const line = new THREE.LineSegments(sketchGeometry, material);
+
+        line.position.copy(
+          axisLocal.clone().multiplyScalar(sign * offsetDistance),
+        );
+
+        line.computeLineDistances();
+        line.renderOrder = 1100 + axisIndex * 20 + lineIndex;
+        line.userData[FUZZY_VISUAL_CHILD] = true;
+
+        group.add(line);
+      }
+    }
+  });
+
+  baseEdges.dispose();
+
+  if (group.children.length === 0) {
+    return null;
+  }
+
+  return group;
+}
+
 function makeAxisShellMaterial({
   objectCenterWorld,
   axisWorld,
@@ -576,11 +812,9 @@ function createFuzzyVolume({
 
 function applyUncertaintyToMesh({
   mesh,
-  objectCenterWorld,
   confidence,
   directions,
   axisFrame,
-  strength,
 }: {
   mesh: THREE.Mesh;
   objectCenterWorld: THREE.Vector3;
@@ -589,23 +823,16 @@ function applyUncertaintyToMesh({
   axisFrame: ConfidenceAxisFrame;
   strength: number;
 }) {
-  dimOriginalMesh(mesh, strength);
-
-  const fuzzyVolume = createFuzzyVolume({
+  const sketchEdges = createSketchConfidenceEdges({
     mesh,
-    objectCenterWorld,
     confidence,
     directions,
     axisFrame,
   });
 
-  const dashedBoundary = createDashedBoundary(mesh, strength);
-
-  if (fuzzyVolume) {
-    mesh.add(fuzzyVolume);
+  if (sketchEdges) {
+    mesh.add(sketchEdges);
   }
-
-  mesh.add(dashedBoundary);
 }
 
 function applyUncertaintyToObject({
