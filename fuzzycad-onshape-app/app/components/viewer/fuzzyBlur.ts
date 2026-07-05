@@ -387,21 +387,7 @@ function measureObjectInFrame(
   };
 }
 
-function getLongestFrameAxis(measure: FrameMeasure): ConfidenceAxis {
-  const xLength = measure.extents.x.max - measure.extents.x.min;
-  const yLength = measure.extents.y.max - measure.extents.y.min;
-  const zLength = measure.extents.z.max - measure.extents.z.min;
 
-  if (yLength >= xLength && yLength >= zLength) {
-    return "y";
-  }
-
-  if (xLength >= zLength) {
-    return "x";
-  }
-
-  return "z";
-}
 
 function getOtherFrameAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
   if (axis === "x") {
@@ -499,29 +485,28 @@ function addSketchSegment({
   }
 }
 
+
+
 function makeFramePoint({
   measure,
-  railAxisName,
+  normalAxisName,
   uAxisName,
   vAxisName,
-  rail,
+  normal,
   u,
   v,
-  offsetWorld,
 }: {
   measure: FrameMeasure;
-  railAxisName: ConfidenceAxis;
+  normalAxisName: ConfidenceAxis;
   uAxisName: ConfidenceAxis;
   vAxisName: ConfidenceAxis;
-  rail: number;
+  normal: number;
   u: number;
   v: number;
-  offsetWorld: THREE.Vector3;
 }) {
   return measure.centerWorld
     .clone()
-    .add(offsetWorld)
-    .add(measure.axes[railAxisName].clone().multiplyScalar(rail))
+    .add(measure.axes[normalAxisName].clone().multiplyScalar(normal))
     .add(measure.axes[uAxisName].clone().multiplyScalar(u))
     .add(measure.axes[vAxisName].clone().multiplyScalar(v));
 }
@@ -529,23 +514,30 @@ function makeFramePoint({
 function createAbstractObjectSketchStrokeLayer({
   object,
   measure,
-  offsetWorld,
+  uncertaintyAxis,
+  sign,
   level,
+  offsetAmount,
   jitterAmount,
   seed,
 }: {
   object: THREE.Object3D;
   measure: FrameMeasure;
-  offsetWorld: THREE.Vector3;
+  uncertaintyAxis: ConfidenceAxis;
+  sign: number;
   level: UncertaintyVisualLevel;
+  offsetAmount: number;
   jitterAmount: number;
   seed: number;
 }) {
-  const railAxisName = getLongestFrameAxis(measure);
-  const [uAxisName, vAxisName] = getOtherFrameAxes(railAxisName);
+  const [uAxisName, vAxisName] = getOtherFrameAxes(uncertaintyAxis);
 
-  const railMin = measure.extents[railAxisName].min;
-  const railMax = measure.extents[railAxisName].max;
+  const normalExtent =
+    sign > 0
+      ? measure.extents[uncertaintyAxis].max
+      : measure.extents[uncertaintyAxis].min;
+
+  const sketchNormal = normalExtent + sign * offsetAmount;
 
   const uMin = measure.extents[uAxisName].min;
   const uMax = measure.extents[uAxisName].max;
@@ -561,143 +553,165 @@ function createAbstractObjectSketchStrokeLayer({
 
   const positions: number[] = [];
 
-  const cornersAt = (rail: number) => [
+  const sketchCap = [
     makeFramePoint({
       measure,
-      railAxisName,
+      normalAxisName: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      rail,
+      normal: sketchNormal,
       u: u0,
       v: v0,
-      offsetWorld,
     }),
     makeFramePoint({
       measure,
-      railAxisName,
+      normalAxisName: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      rail,
+      normal: sketchNormal,
       u: u1,
       v: v0,
-      offsetWorld,
     }),
     makeFramePoint({
       measure,
-      railAxisName,
+      normalAxisName: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      rail,
+      normal: sketchNormal,
       u: u1,
       v: v1,
-      offsetWorld,
     }),
     makeFramePoint({
       measure,
-      railAxisName,
+      normalAxisName: uncertaintyAxis,
       uAxisName,
       vAxisName,
-      rail,
+      normal: sketchNormal,
       u: u0,
       v: v1,
-      offsetWorld,
     }),
   ];
 
-  const startCap = cornersAt(railMin);
-  const endCap = cornersAt(railMax);
+  const originalCap = [
+    makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: normalExtent,
+      u: u0,
+      v: v0,
+    }),
+    makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: normalExtent,
+      u: u1,
+      v: v0,
+    }),
+    makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: normalExtent,
+      u: u1,
+      v: v1,
+    }),
+    makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: normalExtent,
+      u: u0,
+      v: v1,
+    }),
+  ];
 
-  // 1) Long sketch rails.
+  // 1) Uncertain boundary cap outline.
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
-      startWorld: startCap[index],
-      endWorld: endCap[index],
+      startWorld: sketchCap[index],
+      endWorld: sketchCap[(index + 1) % 4],
       jitterAmount,
       seed: seed + index * 17,
     });
   }
 
-  // 2) Cap outlines. This fixes the missing “盖子”.
+  // 2) Light connector strokes from current boundary to uncertain boundary.
+  // This makes the visual read as dimension uncertainty, not object-scale ghosting.
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
-      startWorld: startCap[index],
-      endWorld: startCap[(index + 1) % 4],
-      jitterAmount: jitterAmount * 0.75,
+      startWorld: originalCap[index],
+      endWorld: sketchCap[index],
+      jitterAmount: jitterAmount * 0.45,
       seed: seed + 100 + index * 19,
+    });
+  }
+
+  // 3) Hatch fill on the uncertain cap plane.
+  const hatchCount = level === "low" ? 18 : 8;
+  const hatchSpan = level === "low" ? 0.34 : 0.46;
+
+  for (let index = -hatchCount; index < hatchCount * 2; index += 1) {
+    const t0 = index / hatchCount;
+    const t1 = t0 + hatchSpan;
+
+    if (t1 < 0 || t0 > 1) {
+      continue;
+    }
+
+    const startU = THREE.MathUtils.lerp(
+      u0,
+      u1,
+      THREE.MathUtils.clamp(t0, 0, 1),
+    );
+
+    const endU = THREE.MathUtils.lerp(
+      u0,
+      u1,
+      THREE.MathUtils.clamp(t1, 0, 1),
+    );
+
+    const startV = v0;
+    const endV = v1;
+
+    const startWorld = makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: sketchNormal,
+      u: startU,
+      v: startV,
+    });
+
+    const endWorld = makeFramePoint({
+      measure,
+      normalAxisName: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      normal: sketchNormal,
+      u: endU,
+      v: endV,
     });
 
     addSketchSegment({
       positions,
       object,
-      startWorld: endCap[index],
-      endWorld: endCap[(index + 1) % 4],
-      jitterAmount: jitterAmount * 0.75,
-      seed: seed + 200 + index * 23,
+      startWorld,
+      endWorld,
+      jitterAmount: jitterAmount * (level === "low" ? 0.9 : 0.55),
+      seed: seed + 300 + index * 11,
     });
   }
-
-  // 3) Loose hatch fill on two side faces.
-  // This makes it feel more like the d3.sketchy reference instead of only rails.
-  const hatchCount = level === "low" ? 18 : 8;
-  const hatchSpan = level === "low" ? 0.18 : 0.24;
-
-  [v0, v1].forEach((v, faceIndex) => {
-    for (let index = -2; index < hatchCount + 2; index += 1) {
-      const t0 = index / hatchCount;
-      const t1 = t0 + hatchSpan;
-
-      if (t1 < 0 || t0 > 1) {
-        continue;
-      }
-
-      const railA = THREE.MathUtils.lerp(
-        railMin,
-        railMax,
-        THREE.MathUtils.clamp(t0, 0, 1),
-      );
-
-      const railB = THREE.MathUtils.lerp(
-        railMin,
-        railMax,
-        THREE.MathUtils.clamp(t1, 0, 1),
-      );
-
-      const startWorld = makeFramePoint({
-        measure,
-        railAxisName,
-        uAxisName,
-        vAxisName,
-        rail: railA,
-        u: u0,
-        v,
-        offsetWorld,
-      });
-
-      const endWorld = makeFramePoint({
-        measure,
-        railAxisName,
-        uAxisName,
-        vAxisName,
-        rail: railB,
-        u: u1,
-        v,
-        offsetWorld,
-      });
-
-      addSketchSegment({
-        positions,
-        object,
-        startWorld,
-        endWorld,
-        jitterAmount: jitterAmount * (level === "low" ? 0.9 : 0.55),
-        seed: seed + 300 + faceIndex * 100 + index * 11,
-      });
-    }
-  });
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -760,23 +774,21 @@ function createObjectLineArtRepresentation({
 
         const offsetAmount =
           measure.objectSize *
-          (axisLevel === "low" ? 0.035 : 0.016) *
+          (axisLevel === "low" ? 0.03 : 0.014) *
           layerRatio;
 
         const jitterAmount =
           measure.objectSize *
-          (axisLevel === "low" ? 0.004 : 0.0018) *
+          (axisLevel === "low" ? 0.0045 : 0.002) *
           (1 + layerRatio);
-
-        const offsetWorld = measure.axes[axis]
-          .clone()
-          .multiplyScalar(sign * offsetAmount);
 
         const sketch = createAbstractObjectSketchStrokeLayer({
           object,
           measure,
-          offsetWorld,
+          uncertaintyAxis: axis,
+          sign,
           level: visualLevel,
+          offsetAmount,
           jitterAmount,
           seed:
             axis.charCodeAt(0) * 1000 +
