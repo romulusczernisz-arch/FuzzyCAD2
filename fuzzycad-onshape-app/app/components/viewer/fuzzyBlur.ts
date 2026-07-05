@@ -485,6 +485,88 @@ function addSketchSegment({
   }
 }
 
+function addCrossHatchOnSleeve({
+  positions,
+  object,
+  measure,
+  uncertaintyAxis,
+  uAxisName,
+  vAxisName,
+  fromDimension,
+  toDimension,
+  u0,
+  u1,
+  v0,
+  v1,
+  level,
+  jitterAmount,
+  seed,
+}: {
+  positions: number[];
+  object: THREE.Object3D;
+  measure: FrameMeasure;
+  uncertaintyAxis: ConfidenceAxis;
+  uAxisName: ConfidenceAxis;
+  vAxisName: ConfidenceAxis;
+  fromDimension: number;
+  toDimension: number;
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  level: UncertaintyVisualLevel;
+  jitterAmount: number;
+  seed: number;
+}) {
+  const dimensionLength = Math.abs(toDimension - fromDimension);
+  const crossSize = Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0), 0.01);
+
+  // 用真实 spacing 控制密度，body 和 extension 共享同一个 spacing 逻辑。
+  const spacing =
+    crossSize * (level === "low" ? 0.55 : 0.85);
+
+  const hatchCount = Math.max(3, Math.ceil(dimensionLength / spacing));
+
+  for (let index = 0; index <= hatchCount; index += 1) {
+    const t = hatchCount === 0 ? 0 : index / hatchCount;
+
+    const dimension = THREE.MathUtils.lerp(fromDimension, toDimension, t);
+
+    // 关键：hatch 不沿 dimensionAxis 画，只在 u/v 截面方向画短斜线。
+    // 这样它不会顺着腿的长边变成一堆长平行线。
+    const drift = ((index % 3) - 1) * crossSize * 0.08;
+
+    const startWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u0 + drift,
+      v: v0,
+    });
+
+    const endWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u1 + drift,
+      v: v1,
+    });
+
+    addSketchSegment({
+      positions,
+      object,
+      startWorld,
+      endWorld,
+      jitterAmount: jitterAmount * (level === "low" ? 0.75 : 0.42),
+      seed: seed + index * 17,
+    });
+  }
+}
+
 function makeFramePoint({
   measure,
   dimensionAxis,
@@ -600,59 +682,25 @@ function createAbstractObjectSketchStrokeLayer({
     });
   }
 
-  // 2) Original body hatch：填充中间部分，不再空着。
-  const bodyHatchCount = level === "low" ? 22 : 10;
-  const bodyHatchSpan = level === "low" ? 0.28 : 0.42;
-
-  for (let index = -2; index < bodyHatchCount + 2; index += 1) {
-    const t0 = index / bodyHatchCount;
-    const t1 = t0 + bodyHatchSpan;
-
-    if (t1 < 0 || t0 > 1) {
-      continue;
-    }
-
-    const d0 = THREE.MathUtils.lerp(
-      originalMin,
-      originalMax,
-      THREE.MathUtils.clamp(t0, 0, 1),
-    );
-
-    const d1 = THREE.MathUtils.lerp(
-      originalMin,
-      originalMax,
-      THREE.MathUtils.clamp(t1, 0, 1),
-    );
-
-    const startWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension: d0,
-      u: u0,
-      v: v0,
-    });
-
-    const endWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension: d1,
-      u: u1,
-      v: v1,
-    });
-
-    addSketchSegment({
-      positions,
-      object,
-      startWorld,
-      endWorld,
-      jitterAmount: jitterAmount * (level === "low" ? 0.65 : 0.35),
-      seed: seed + 200 + index * 11,
-    });
-  }
+  // 2) Original body hatch.
+  // hatch 横切 selected dimension，不沿长边方向跑。
+  addCrossHatchOnSleeve({
+    positions,
+    object,
+    measure,
+    uncertaintyAxis,
+    uAxisName,
+    vAxisName,
+    fromDimension: originalMin,
+    toDimension: originalMax,
+    u0,
+    u1,
+    v0,
+    v1,
+    level,
+    jitterAmount,
+    seed: seed + 200,
+  });
 
   // 3) Connector from original boundary to uncertain boundary.
   for (let index = 0; index < 4; index += 1) {
@@ -678,59 +726,25 @@ function createAbstractObjectSketchStrokeLayer({
     });
   }
 
-  // 5) Extension hatch：只填 originalBoundary 到 uncertainBoundary 之间。
-  const extensionHatchCount = level === "low" ? 12 : 5;
-  const extensionHatchSpan = level === "low" ? 0.46 : 0.58;
-
-  for (let index = -2; index < extensionHatchCount + 2; index += 1) {
-    const t0 = index / extensionHatchCount;
-    const t1 = t0 + extensionHatchSpan;
-
-    if (t1 < 0 || t0 > 1) {
-      continue;
-    }
-
-    const d0 = THREE.MathUtils.lerp(
-      originalBoundary,
-      uncertainBoundary,
-      THREE.MathUtils.clamp(t0, 0, 1),
-    );
-
-    const d1 = THREE.MathUtils.lerp(
-      originalBoundary,
-      uncertainBoundary,
-      THREE.MathUtils.clamp(t1, 0, 1),
-    );
-
-    const startWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension: d0,
-      u: u0,
-      v: v0,
-    });
-
-    const endWorld = makeFramePoint({
-      measure,
-      dimensionAxis: uncertaintyAxis,
-      uAxisName,
-      vAxisName,
-      dimension: d1,
-      u: u1,
-      v: v1,
-    });
-
-    addSketchSegment({
-      positions,
-      object,
-      startWorld,
-      endWorld,
-      jitterAmount: jitterAmount * (level === "low" ? 0.95 : 0.5),
-      seed: seed + 900 + index * 11,
-    });
-  }
+  // 5) Extension hatch.
+  // 和 body 使用同一种 spacing 逻辑，所以密度不会突然变。
+  addCrossHatchOnSleeve({
+    positions,
+    object,
+    measure,
+    uncertaintyAxis,
+    uAxisName,
+    vAxisName,
+    fromDimension: originalBoundary,
+    toDimension: uncertainBoundary,
+    u0,
+    u1,
+    v0,
+    v1,
+    level,
+    jitterAmount,
+    seed: seed + 900,
+  });
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
