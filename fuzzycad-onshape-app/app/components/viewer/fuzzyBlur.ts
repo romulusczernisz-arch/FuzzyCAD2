@@ -33,95 +33,127 @@ const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
 
 type UncertaintyVisualLevel = "medium" | "low";
 
-type AxisExtent = {
-  min: number;
-  max: number;
-};
-
 type FrameMeasure = {
   centerWorld: THREE.Vector3;
   axes: Record<ConfidenceAxis, THREE.Vector3>;
-  extents: Record<ConfidenceAxis, AxisExtent>;
+  extents: Record<ConfidenceAxis, { min: number; max: number }>;
   objectSize: number;
 };
 
-function confidenceToVisualLevel(
-  confidence: ConfidenceLevel,
-): UncertaintyVisualLevel | null {
-  if (confidence === "low") {
-    return "low";
+function confidenceToStrength(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 1.0;
   }
 
-  if (confidence === "medium") {
-    return "medium";
+  if (level === "medium") {
+    return 0.55;
   }
 
-  return null;
+  return 0.0;
 }
 
-function hasUncertainty(confidence: AxisConfidenceMap) {
-  return (
-    confidence.x !== "high" ||
-    confidence.y !== "high" ||
-    confidence.z !== "high"
+function getMaxUncertainty(confidence: AxisConfidenceMap) {
+  return Math.max(
+    confidenceToStrength(confidence.x),
+    confidenceToStrength(confidence.y),
+    confidenceToStrength(confidence.z),
   );
 }
 
-function stableRandom(seed: number) {
-  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
-  return value - Math.floor(value);
+function hasUncertainty(confidence: AxisConfidenceMap) {
+  return getMaxUncertainty(confidence) > 0;
 }
 
-function signedRandom(seed: number) {
-  return stableRandom(seed) * 2 - 1;
-}
-
-function normalizeAxisFrame(
-  axisFrame: ConfidenceAxisFrame | undefined,
-): Record<ConfidenceAxis, THREE.Vector3> {
-  const frame = axisFrame ?? DEFAULT_AXIS_FRAME;
-
-  return {
-    x: new THREE.Vector3(...frame.x).normalize(),
-    y: new THREE.Vector3(...frame.y).normalize(),
-    z: new THREE.Vector3(...frame.z).normalize(),
-  };
-}
-
-function getDirectionSigns(direction: ConfidenceDirection) {
-  if (direction === "positive") {
-    return [1];
-  }
-
-  if (direction === "negative") {
-    return [-1];
-  }
-
-  return [-1, 1];
-}
-
-function getOtherAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
-  if (axis === "x") {
-    return ["y", "z"];
-  }
-
-  if (axis === "y") {
-    return ["x", "z"];
-  }
-
-  return ["x", "y"];
-}
-
-function getAxisSpan(extent: AxisExtent) {
-  return Math.max(extent.max - extent.min, 0);
+function getObjectVisualLevel(
+  confidence: AxisConfidenceMap,
+): UncertaintyVisualLevel {
+  return getMaxUncertainty(confidence) >= 1 ? "low" : "medium";
 }
 
 function getMeshMaterials(mesh: THREE.Mesh) {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 }
 
+function getMaterialColor(material: THREE.Material) {
+  const materialWithColor = material as THREE.MeshStandardMaterial;
+
+  if (materialWithColor.color) {
+    return materialWithColor.color.clone();
+  }
+
+  return new THREE.Color(0x9ca3af);
+}
+
+function makeDraftSurfaceMaterial(
+  sourceMaterial: THREE.Material,
+  level: UncertaintyVisualLevel,
+) {
+  const source = sourceMaterial as THREE.MeshStandardMaterial;
+
+  const material = new THREE.MeshStandardMaterial({
+    color: getMaterialColor(sourceMaterial),
+    map: source.map ?? null,
+    transparent: true,
+    opacity: level === "low" ? 0.26 : 0.52,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    roughness: 1,
+    metalness: 0,
+  });
+
+  material.userData[FUZZY_ACTIVE_MATERIAL] = true;
+
+  return material;
+}
+
+function applyDraftSurface(object: THREE.Object3D, level: UncertaintyVisualLevel) {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    const currentMaterials = getMeshMaterials(child);
+
+    if (!child.userData[FUZZY_ORIGINAL_MATERIALS]) {
+      child.userData[FUZZY_ORIGINAL_MATERIALS] = currentMaterials;
+    }
+
+    const draftMaterials = currentMaterials.map((material) =>
+      makeDraftSurfaceMaterial(material, level),
+    );
+
+    child.material = Array.isArray(child.material)
+      ? draftMaterials
+      : draftMaterials[0];
+
+    child.renderOrder = level === "low" ? 900 : 850;
+  });
+}
+
+function disposeObjectVisual(object: THREE.Object3D) {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.LineSegments || child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    child.geometry.dispose();
+
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+
+    for (const material of materials) {
+      material.dispose();
+    }
+  });
+}
+
 function clearFuzzyVisualChildren(scene: THREE.Object3D) {
-  const toRemove: THREE.Object3D[] = [];
+  const childrenToRemove: THREE.Object3D[] = [];
 
   scene.traverse((object) => {
     if (!object.userData?.[FUZZY_VISUAL_CHILD]) {
@@ -132,30 +164,15 @@ function clearFuzzyVisualChildren(scene: THREE.Object3D) {
       return;
     }
 
-    toRemove.push(object);
+    childrenToRemove.push(object);
   });
 
-  for (const child of toRemove) {
+  for (const child of childrenToRemove) {
     if (!child.parent) {
       continue;
     }
 
-    child.traverse((node) => {
-      if (!(node instanceof THREE.LineSegments || node instanceof THREE.Line)) {
-        return;
-      }
-
-      node.geometry.dispose();
-
-      const materials = Array.isArray(node.material)
-        ? node.material
-        : [node.material];
-
-      for (const material of materials) {
-        material.dispose();
-      }
-    });
-
+    disposeObjectVisual(child);
     child.parent.remove(child);
   }
 }
@@ -243,25 +260,46 @@ function findTopLevelObjectsByPathKeys(
   return objects;
 }
 
-function measureObjectInFrame(
-  object: THREE.Object3D,
-  axisFrame: ConfidenceAxisFrame | undefined,
-): FrameMeasure | null {
-  const axes = normalizeAxisFrame(axisFrame);
-  const objectBox = new THREE.Box3().setFromObject(object);
-  const centerWorld = new THREE.Vector3();
-
-  objectBox.getCenter(centerWorld);
-
-  const extents: Record<ConfidenceAxis, AxisExtent> = {
-    x: { min: Infinity, max: -Infinity },
-    y: { min: Infinity, max: -Infinity },
-    z: { min: Infinity, max: -Infinity },
+function getFrameAxes(axisFrame: ConfidenceAxisFrame) {
+  return {
+    x: new THREE.Vector3(...axisFrame.x).normalize(),
+    y: new THREE.Vector3(...axisFrame.y).normalize(),
+    z: new THREE.Vector3(...axisFrame.z).normalize(),
   };
+}
 
-  let foundPoint = false;
-  const world = new THREE.Vector3();
-  const relative = new THREE.Vector3();
+function getDirectionSigns(direction: ConfidenceDirection) {
+  if (direction === "positive") {
+    return [1];
+  }
+
+  if (direction === "negative") {
+    return [-1];
+  }
+
+  return [-1, 1];
+}
+
+function seededNoise(seed: number) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function getBoxCorners(box: THREE.Box3) {
+  return [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+  ];
+}
+
+function collectObjectWorldPoints(object: THREE.Object3D) {
+  const points: THREE.Vector3[] = [];
 
   object.updateWorldMatrix(true, true);
 
@@ -274,92 +312,147 @@ function measureObjectInFrame(
       return;
     }
 
-    const position = child.geometry.getAttribute("position");
+    child.geometry.computeBoundingBox();
 
-    if (!position) {
+    const localBox = child.geometry.boundingBox;
+
+    if (!localBox) {
       return;
     }
 
-    child.updateWorldMatrix(true, false);
-
-    for (let index = 0; index < position.count; index += 1) {
-      world.fromBufferAttribute(position, index).applyMatrix4(child.matrixWorld);
-      relative.copy(world).sub(centerWorld);
-
-      const x = relative.dot(axes.x);
-      const y = relative.dot(axes.y);
-      const z = relative.dot(axes.z);
-
-      extents.x.min = Math.min(extents.x.min, x);
-      extents.x.max = Math.max(extents.x.max, x);
-
-      extents.y.min = Math.min(extents.y.min, y);
-      extents.y.max = Math.max(extents.y.max, y);
-
-      extents.z.min = Math.min(extents.z.min, z);
-      extents.z.max = Math.max(extents.z.max, z);
-
-      foundPoint = true;
+    for (const corner of getBoxCorners(localBox)) {
+      points.push(child.localToWorld(corner.clone()));
     }
   });
 
-  if (!foundPoint) {
-    const corners = [
-      new THREE.Vector3(objectBox.min.x, objectBox.min.y, objectBox.min.z),
-      new THREE.Vector3(objectBox.min.x, objectBox.min.y, objectBox.max.z),
-      new THREE.Vector3(objectBox.min.x, objectBox.max.y, objectBox.min.z),
-      new THREE.Vector3(objectBox.min.x, objectBox.max.y, objectBox.max.z),
-      new THREE.Vector3(objectBox.max.x, objectBox.min.y, objectBox.min.z),
-      new THREE.Vector3(objectBox.max.x, objectBox.min.y, objectBox.max.z),
-      new THREE.Vector3(objectBox.max.x, objectBox.max.y, objectBox.min.z),
-      new THREE.Vector3(objectBox.max.x, objectBox.max.y, objectBox.max.z),
-    ];
-
-    for (const corner of corners) {
-      relative.copy(corner).sub(centerWorld);
-
-      const x = relative.dot(axes.x);
-      const y = relative.dot(axes.y);
-      const z = relative.dot(axes.z);
-
-      extents.x.min = Math.min(extents.x.min, x);
-      extents.x.max = Math.max(extents.x.max, x);
-
-      extents.y.min = Math.min(extents.y.min, y);
-      extents.y.max = Math.max(extents.y.max, y);
-
-      extents.z.min = Math.min(extents.z.min, z);
-      extents.z.max = Math.max(extents.z.max, z);
-    }
-
-    foundPoint = true;
+  if (points.length > 0) {
+    return points;
   }
 
-  if (!foundPoint) {
+  const fallbackBox = new THREE.Box3().setFromObject(object);
+
+  if (fallbackBox.isEmpty()) {
+    return [];
+  }
+
+  return getBoxCorners(fallbackBox);
+}
+
+function measureObjectInFrame(
+  object: THREE.Object3D,
+  axisFrame: ConfidenceAxisFrame,
+): FrameMeasure | null {
+  const points = collectObjectWorldPoints(object);
+
+  if (points.length === 0) {
     return null;
   }
 
-  const xSpan = getAxisSpan(extents.x);
-  const ySpan = getAxisSpan(extents.y);
-  const zSpan = getAxisSpan(extents.z);
+  const worldBox = new THREE.Box3().setFromPoints(points);
+  const centerWorld = new THREE.Vector3();
+
+  worldBox.getCenter(centerWorld);
+
+  const axes = getFrameAxes(axisFrame);
+
+  const extents: FrameMeasure["extents"] = {
+    x: { min: Infinity, max: -Infinity },
+    y: { min: Infinity, max: -Infinity },
+    z: { min: Infinity, max: -Infinity },
+  };
+
+  for (const point of points) {
+    const relative = point.clone().sub(centerWorld);
+
+    (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+      const value = relative.dot(axes[axis]);
+
+      extents[axis].min = Math.min(extents[axis].min, value);
+      extents[axis].max = Math.max(extents[axis].max, value);
+    });
+  }
+
+  const objectSize = Math.max(
+    extents.x.max - extents.x.min,
+    extents.y.max - extents.y.min,
+    extents.z.max - extents.z.min,
+    0.01,
+  );
 
   return {
     centerWorld,
     axes,
     extents,
-    objectSize: Math.max(xSpan, ySpan, zSpan, 0.001),
+    objectSize,
   };
 }
 
-function makePointFromCoords(
-  measure: FrameMeasure,
-  coords: Record<ConfidenceAxis, number>,
-) {
-  return measure.centerWorld
-    .clone()
-    .add(measure.axes.x.clone().multiplyScalar(coords.x))
-    .add(measure.axes.y.clone().multiplyScalar(coords.y))
-    .add(measure.axes.z.clone().multiplyScalar(coords.z));
+
+
+function getOtherFrameAxes(axis: ConfidenceAxis): [ConfidenceAxis, ConfidenceAxis] {
+  if (axis === "x") {
+    return ["y", "z"];
+  }
+
+  if (axis === "y") {
+    return ["x", "z"];
+  }
+
+  return ["x", "y"];
+}
+
+function makeDraftStrokePoints({
+  start,
+  end,
+  jitterAmount,
+  seed,
+  segments = 8,
+}: {
+  start: THREE.Vector3;
+  end: THREE.Vector3;
+  jitterAmount: number;
+  seed: number;
+  segments?: number;
+}) {
+  const points: THREE.Vector3[] = [];
+  const tangent = end.clone().sub(start);
+
+  if (tangent.lengthSq() < 1e-12) {
+    return points;
+  }
+
+  tangent.normalize();
+
+  const helper =
+    Math.abs(tangent.y) < 0.85
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(1, 0, 0);
+
+  const normalA = new THREE.Vector3().crossVectors(tangent, helper).normalize();
+  const normalB = new THREE.Vector3().crossVectors(tangent, normalA).normalize();
+
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const base = start.clone().lerp(end, t);
+
+    const n0 = seededNoise(seed + index * 17.11);
+    const n1 = seededNoise(seed + index * 29.73);
+
+    const endFade = index === 0 || index === segments ? 0.25 : 1.0;
+
+    const jitter = normalA
+      .clone()
+      .multiplyScalar((n0 - 0.5) * jitterAmount * endFade)
+      .add(
+        normalB
+          .clone()
+          .multiplyScalar((n1 - 0.5) * jitterAmount * endFade),
+      );
+
+    points.push(base.add(jitter));
+  }
+
+  return points;
 }
 
 function addSketchSegment({
@@ -369,7 +462,6 @@ function addSketchSegment({
   endWorld,
   jitterAmount,
   seed,
-  steps = 5,
 }: {
   positions: number[];
   object: THREE.Object3D;
@@ -377,153 +469,35 @@ function addSketchSegment({
   endWorld: THREE.Vector3;
   jitterAmount: number;
   seed: number;
-  steps?: number;
 }) {
-  const direction = endWorld.clone().sub(startWorld);
+  const points = makeDraftStrokePoints({
+    start: startWorld,
+    end: endWorld,
+    jitterAmount,
+    seed,
+  });
 
-  if (direction.lengthSq() < 1e-12) {
-    return;
-  }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = object.worldToLocal(points[index].clone());
+    const b = object.worldToLocal(points[index + 1].clone());
 
-  direction.normalize();
-
-  const reference =
-    Math.abs(direction.y) < 0.9
-      ? new THREE.Vector3(0, 1, 0)
-      : new THREE.Vector3(1, 0, 0);
-
-  const normalA = new THREE.Vector3().crossVectors(direction, reference);
-
-  if (normalA.lengthSq() < 1e-12) {
-    normalA.set(0, 0, 1).cross(direction).normalize();
-  } else {
-    normalA.normalize();
-  }
-
-  const normalB = new THREE.Vector3().crossVectors(direction, normalA).normalize();
-
-  let previousLocal = object.worldToLocal(startWorld.clone());
-
-  for (let step = 1; step <= steps; step += 1) {
-    const t = step / steps;
-    const point = new THREE.Vector3().lerpVectors(startWorld, endWorld, t);
-
-    if (step < steps) {
-      point
-        .add(
-          normalA
-            .clone()
-            .multiplyScalar(signedRandom(seed + step * 17) * jitterAmount),
-        )
-        .add(
-          normalB
-            .clone()
-            .multiplyScalar(signedRandom(seed + step * 29) * jitterAmount),
-        );
-    }
-
-    const currentLocal = object.worldToLocal(point.clone());
-
-    positions.push(
-      previousLocal.x,
-      previousLocal.y,
-      previousLocal.z,
-      currentLocal.x,
-      currentLocal.y,
-      currentLocal.z,
-    );
-
-    previousLocal = currentLocal;
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
   }
 }
 
-function buildCapCorners({
-  measure,
-  axis,
-  value,
-  uAxis,
-  uMin,
-  uMax,
-  vAxis,
-  vMin,
-  vMax,
-}: {
-  measure: FrameMeasure;
-  axis: ConfidenceAxis;
-  value: number;
-  uAxis: ConfidenceAxis;
-  uMin: number;
-  uMax: number;
-  vAxis: ConfidenceAxis;
-  vMin: number;
-  vMax: number;
-}) {
-  const p0 = { x: 0, y: 0, z: 0 } as Record<ConfidenceAxis, number>;
-  const p1 = { x: 0, y: 0, z: 0 } as Record<ConfidenceAxis, number>;
-  const p2 = { x: 0, y: 0, z: 0 } as Record<ConfidenceAxis, number>;
-  const p3 = { x: 0, y: 0, z: 0 } as Record<ConfidenceAxis, number>;
-
-  p0[axis] = value;
-  p1[axis] = value;
-  p2[axis] = value;
-  p3[axis] = value;
-
-  p0[uAxis] = uMin;
-  p1[uAxis] = uMax;
-  p2[uAxis] = uMax;
-  p3[uAxis] = uMin;
-
-  p0[vAxis] = vMin;
-  p1[vAxis] = vMin;
-  p2[vAxis] = vMax;
-  p3[vAxis] = vMax;
-
-  return [
-    makePointFromCoords(measure, p0),
-    makePointFromCoords(measure, p1),
-    makePointFromCoords(measure, p2),
-    makePointFromCoords(measure, p3),
-  ];
-}
-
-function addLoopOutline({
-  positions,
-  object,
-  pointsWorld,
-  jitterAmount,
-  seed,
-}: {
-  positions: number[];
-  object: THREE.Object3D;
-  pointsWorld: THREE.Vector3[];
-  jitterAmount: number;
-  seed: number;
-}) {
-  for (let index = 0; index < pointsWorld.length; index += 1) {
-    addSketchSegment({
-      positions,
-      object,
-      startWorld: pointsWorld[index],
-      endWorld: pointsWorld[(index + 1) % pointsWorld.length],
-      jitterAmount,
-      seed: seed + index * 19,
-      steps: 5,
-    });
-  }
-}
-
-function addCapHatch({
+function addCrossHatchOnSleeve({
   positions,
   object,
   measure,
-  axis,
-  value,
-  uAxis,
-  uMin,
-  uMax,
-  vAxis,
-  vMin,
-  vMax,
+  uncertaintyAxis,
+  uAxisName,
+  vAxisName,
+  fromDimension,
+  toDimension,
+  u0,
+  u1,
+  v0,
+  v1,
   level,
   jitterAmount,
   seed,
@@ -531,327 +505,245 @@ function addCapHatch({
   positions: number[];
   object: THREE.Object3D;
   measure: FrameMeasure;
-  axis: ConfidenceAxis;
-  value: number;
-  uAxis: ConfidenceAxis;
-  uMin: number;
-  uMax: number;
-  vAxis: ConfidenceAxis;
-  vMin: number;
-  vMax: number;
+  uncertaintyAxis: ConfidenceAxis;
+  uAxisName: ConfidenceAxis;
+  vAxisName: ConfidenceAxis;
+  fromDimension: number;
+  toDimension: number;
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
   level: UncertaintyVisualLevel;
   jitterAmount: number;
   seed: number;
 }) {
-  const uSpan = Math.abs(uMax - uMin);
-  const vSpan = Math.abs(vMax - vMin);
+  const dimensionLength = Math.abs(toDimension - fromDimension);
+  const crossSize = Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0), 0.01);
 
-  const shortAxis = uSpan <= vSpan ? uAxis : vAxis;
-  const longAxis = uSpan <= vSpan ? vAxis : uAxis;
+  // 用真实 spacing 控制密度，body 和 extension 共享同一个 spacing 逻辑。
+  const spacing =
+    crossSize * (level === "low" ? 0.55 : 0.85);
 
-  const shortMin = uSpan <= vSpan ? uMin : vMin;
-  const shortMax = uSpan <= vSpan ? uMax : vMax;
+  const hatchCount = Math.max(3, Math.ceil(dimensionLength / spacing));
 
-  const longMin = uSpan <= vSpan ? vMin : uMin;
-  const longMax = uSpan <= vSpan ? vMax : uMax;
+  for (let index = 0; index <= hatchCount; index += 1) {
+    const t = hatchCount === 0 ? 0 : index / hatchCount;
 
-  const shortSpan = Math.max(shortMax - shortMin, 0.001);
-  const longSpan = Math.max(longMax - longMin, 0.001);
+    const dimension = THREE.MathUtils.lerp(fromDimension, toDimension, t);
 
-  const longMargin = longSpan * 0.07;
-  const shortMargin = shortSpan * 0.12;
+    // 关键：hatch 不沿 dimensionAxis 画，只在 u/v 截面方向画短斜线。
+    // 这样它不会顺着腿的长边变成一堆长平行线。
+    const drift = ((index % 3) - 1) * crossSize * 0.08;
 
-  const spacing = shortSpan * (level === "low" ? 0.28 : 0.42);
-  const count = Math.max(4, Math.ceil(longSpan / Math.max(spacing, 0.001)));
+    const startWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u0 + drift,
+      v: v0,
+    });
 
-  const hatchLength = shortSpan * (level === "low" ? 0.9 : 0.78);
-  const shortCenter = (shortMin + shortMax) / 2;
-
-  const slant = longSpan * 0.045;
-
-  for (let index = 0; index <= count; index += 1) {
-    const t = count === 0 ? 0 : index / count;
-
-    const longCenter =
-      THREE.MathUtils.lerp(longMin + longMargin, longMax - longMargin, t) +
-      signedRandom(seed + index * 37) * spacing * 0.16;
-
-    const shortJitter = signedRandom(seed + index * 17) * shortSpan * 0.04;
-
-    const shortStart =
-      shortCenter - hatchLength / 2 + shortMargin * 0.3 + shortJitter;
-    const shortEnd =
-      shortCenter + hatchLength / 2 - shortMargin * 0.3 + shortJitter * 0.4;
-
-    const startCoords = {
-      x: 0,
-      y: 0,
-      z: 0,
-    } as Record<ConfidenceAxis, number>;
-
-    const endCoords = {
-      x: 0,
-      y: 0,
-      z: 0,
-    } as Record<ConfidenceAxis, number>;
-
-    startCoords[axis] = value;
-    endCoords[axis] = value;
-
-    startCoords[shortAxis] = shortStart;
-    endCoords[shortAxis] = shortEnd;
-
-    // 单方向、略微斜一点；不 alternating，所以不会变成 X。
-    startCoords[longAxis] = longCenter - slant;
-    endCoords[longAxis] = longCenter + slant;
-
-    const startWorld = makePointFromCoords(measure, startCoords);
-    const endWorld = makePointFromCoords(measure, endCoords);
+    const endWorld = makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u1 + drift,
+      v: v1,
+    });
 
     addSketchSegment({
       positions,
       object,
       startWorld,
       endWorld,
-      jitterAmount: jitterAmount * (level === "low" ? 0.7 : 0.42),
-      seed: seed + index * 53,
-      steps: 5,
+      jitterAmount: jitterAmount * (level === "low" ? 0.75 : 0.42),
+      seed: seed + index * 17,
     });
   }
 }
 
-function addBodyHatch({
-  positions,
+function makeFramePoint({
+  measure,
+  dimensionAxis,
+  uAxisName,
+  vAxisName,
+  dimension,
+  u,
+  v,
+}: {
+  measure: FrameMeasure;
+  dimensionAxis: ConfidenceAxis;
+  uAxisName: ConfidenceAxis;
+  vAxisName: ConfidenceAxis;
+  dimension: number;
+  u: number;
+  v: number;
+}) {
+  return measure.centerWorld
+    .clone()
+    .add(measure.axes[dimensionAxis].clone().multiplyScalar(dimension))
+    .add(measure.axes[uAxisName].clone().multiplyScalar(u))
+    .add(measure.axes[vAxisName].clone().multiplyScalar(v));
+}
+
+function createAbstractObjectSketchStrokeLayer({
   object,
   measure,
-  axis,
-  fromValue,
-  toValue,
-  uAxis,
-  uMin,
-  uMax,
-  vAxis,
-  vMin,
-  vMax,
+  uncertaintyAxis,
+  sign,
   level,
+  extensionAmount,
   jitterAmount,
   seed,
 }: {
-  positions: number[];
   object: THREE.Object3D;
   measure: FrameMeasure;
-  axis: ConfidenceAxis;
-  fromValue: number;
-  toValue: number;
-  uAxis: ConfidenceAxis;
-  uMin: number;
-  uMax: number;
-  vAxis: ConfidenceAxis;
-  vMin: number;
-  vMax: number;
+  uncertaintyAxis: ConfidenceAxis;
+  sign: number;
   level: UncertaintyVisualLevel;
+  extensionAmount: number;
   jitterAmount: number;
   seed: number;
 }) {
-  const length = Math.abs(toValue - fromValue);
-  const crossSpan = Math.max(
-    Math.min(Math.abs(uMax - uMin), Math.abs(vMax - vMin)),
-    0.001,
-  );
+  const [uAxisName, vAxisName] = getOtherFrameAxes(uncertaintyAxis);
 
-  const spacing = crossSpan * (level === "low" ? 0.42 : 0.62);
-  const sliceCount = Math.max(2, Math.ceil(length / Math.max(spacing, 0.001)));
-
-  for (let index = 0; index <= sliceCount; index += 1) {
-    const t = sliceCount === 0 ? 0 : index / sliceCount;
-    const value = THREE.MathUtils.lerp(fromValue, toValue, t);
-
-    addCapHatch({
-      positions,
-      object,
-      measure,
-      axis,
-      value,
-      uAxis,
-      uMin,
-      uMax,
-      vAxis,
-      vMin,
-      vMax,
-      level,
-      jitterAmount,
-      seed: seed + index * 101,
-    });
-  }
-}
-
-function createAxisExtensionLayer({
-  object,
-  measure,
-  axis,
-  sign,
-  level,
-  layerIndex,
-  layerCount,
-}: {
-  object: THREE.Object3D;
-  measure: FrameMeasure;
-  axis: ConfidenceAxis;
-  sign: number;
-  level: UncertaintyVisualLevel;
-  layerIndex: number;
-  layerCount: number;
-}) {
-  const [uAxis, vAxis] = getOtherAxes(axis);
-
-  const originalMin = measure.extents[axis].min;
-  const originalMax = measure.extents[axis].max;
+  const originalMin = measure.extents[uncertaintyAxis].min;
+  const originalMax = measure.extents[uncertaintyAxis].max;
 
   const originalBoundary = sign > 0 ? originalMax : originalMin;
-
-  const uMin = measure.extents[uAxis].min;
-  const uMax = measure.extents[uAxis].max;
-  const vMin = measure.extents[vAxis].min;
-  const vMax = measure.extents[vAxis].max;
-
-  const axisSpan = Math.max(getAxisSpan(measure.extents[axis]), 0.001);
-  const layerRatio = (layerIndex + 1) / layerCount;
-
-  const extensionAmount =
-    Math.max(axisSpan, measure.objectSize * 0.18) *
-    (level === "low" ? 0.18 : 0.085) *
-    layerRatio;
-
   const uncertainBoundary = originalBoundary + sign * extensionAmount;
 
-  const jitterAmount =
-    measure.objectSize *
-    (level === "low" ? 0.0048 : 0.0024) *
-    (1 + layerRatio * 0.25);
+  // 不加 padding，保证 hatch sleeve 的粗细和原 geo 一样。
+  const u0 = measure.extents[uAxisName].min;
+  const u1 = measure.extents[uAxisName].max;
+  const v0 = measure.extents[vAxisName].min;
+  const v1 = measure.extents[vAxisName].max;
 
   const positions: number[] = [];
 
-  const originalStartCap = buildCapCorners({
-    measure,
-    axis,
-    value: originalMin,
-    uAxis,
-    uMin,
-    uMax,
-    vAxis,
-    vMin,
-    vMax,
-  });
+  const capAt = (dimension: number) => [
+    makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u0,
+      v: v0,
+    }),
+    makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u1,
+      v: v0,
+    }),
+    makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u1,
+      v: v1,
+    }),
+    makeFramePoint({
+      measure,
+      dimensionAxis: uncertaintyAxis,
+      uAxisName,
+      vAxisName,
+      dimension,
+      u: u0,
+      v: v1,
+    }),
+  ];
 
-  const originalEndCap = buildCapCorners({
-    measure,
-    axis,
-    value: originalMax,
-    uAxis,
-    uMin,
-    uMax,
-    vAxis,
-    vMin,
-    vMax,
-  });
+  const originalStartCap = capAt(originalMin);
+  const originalEndCap = capAt(originalMax);
+  const originalBoundaryCap = capAt(originalBoundary);
+  const uncertainCap = capAt(uncertainBoundary);
 
-  const originalBoundaryCap = buildCapCorners({
-    measure,
-    axis,
-    value: originalBoundary,
-    uAxis,
-    uMin,
-    uMax,
-    vAxis,
-    vMin,
-    vMax,
-  });
-
-  const uncertainCap = buildCapCorners({
-    measure,
-    axis,
-    value: uncertainBoundary,
-    uAxis,
-    uMin,
-    uMax,
-    vAxis,
-    vMin,
-    vMax,
-  });
-
-  // Body rails: very light structural sketch, same cross-section as original geo.
+  // 1) Original body rails：让中间原 object 也有 sketch 结构。
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
       startWorld: originalStartCap[index],
       endWorld: originalEndCap[index],
-      jitterAmount: jitterAmount * 0.28,
-      seed: layerIndex * 1000 + 10 + index * 17,
-      steps: 5,
+      jitterAmount: jitterAmount * 0.45,
+      seed: seed + 10 + index * 17,
     });
   }
 
-  // Body hatch: dense, one-direction, short-side oriented.
-  if (layerIndex === 0) {
-    addBodyHatch({
-      positions,
-      object,
-      measure,
-      axis,
-      fromValue: originalMin,
-      toValue: originalMax,
-      uAxis,
-      uMin,
-      uMax,
-      vAxis,
-      vMin,
-      vMax,
-      level,
-      jitterAmount,
-      seed: layerIndex * 1000 + 200,
-    });
-  }
+  // 2) Original body hatch.
+  // hatch 横切 selected dimension，不沿长边方向跑。
+  addCrossHatchOnSleeve({
+    positions,
+    object,
+    measure,
+    uncertaintyAxis,
+    uAxisName,
+    vAxisName,
+    fromDimension: originalMin,
+    toDimension: originalMax,
+    u0,
+    u1,
+    v0,
+    v1,
+    level,
+    jitterAmount,
+    seed: seed + 200,
+  });
 
-  // Extension rails: along selected axis only.
+  // 3) Connector from original boundary to uncertain boundary.
   for (let index = 0; index < 4; index += 1) {
     addSketchSegment({
       positions,
       object,
       startWorld: originalBoundaryCap[index],
       endWorld: uncertainCap[index],
-      jitterAmount: jitterAmount * 0.45,
-      seed: layerIndex * 1000 + 500 + index * 19,
-      steps: 5,
+      jitterAmount: jitterAmount * 0.65,
+      seed: seed + 500 + index * 17,
     });
   }
 
-  // Extension cap outline.
-  addLoopOutline({
-    positions,
-    object,
-    pointsWorld: uncertainCap,
-    jitterAmount,
-    seed: layerIndex * 1000 + 800,
-  });
+  // 4) Uncertain cap outline.
+  for (let index = 0; index < 4; index += 1) {
+    addSketchSegment({
+      positions,
+      object,
+      startWorld: uncertainCap[index],
+      endWorld: uncertainCap[(index + 1) % 4],
+      jitterAmount,
+      seed: seed + 700 + index * 19,
+    });
+  }
 
-  // Extension hatch: same hatch rule as body; no X, no long-edge parallel.
-  addBodyHatch({
+  // 5) Extension hatch.
+  // 和 body 使用同一种 spacing 逻辑，所以密度不会突然变。
+  addCrossHatchOnSleeve({
     positions,
     object,
     measure,
-    axis,
-    fromValue: originalBoundary,
-    toValue: uncertainBoundary,
-    uAxis,
-    uMin,
-    uMax,
-    vAxis,
-    vMin,
-    vMax,
+    uncertaintyAxis,
+    uAxisName,
+    vAxisName,
+    fromDimension: originalBoundary,
+    toDimension: uncertainBoundary,
+    u0,
+    u1,
+    v0,
+    v1,
     level,
     jitterAmount,
-    seed: layerIndex * 1000 + 950,
+    seed: seed + 900,
   });
 
   const geometry = new THREE.BufferGeometry();
@@ -861,21 +753,21 @@ function createAxisExtensionLayer({
   const material = new THREE.LineBasicMaterial({
     color: level === "low" ? 0x0f172a : 0x475569,
     transparent: true,
-    opacity: level === "low" ? 0.7 : 0.46,
+    opacity: level === "low" ? 0.64 : 0.42,
     depthTest: false,
     depthWrite: false,
   });
 
   const line = new THREE.LineSegments(geometry, material);
 
-  line.renderOrder = level === "low" ? 1300 + layerIndex : 1200 + layerIndex;
+  line.renderOrder = level === "low" ? 1300 : 1200;
   line.frustumCulled = false;
   line.userData[FUZZY_VISUAL_CHILD] = true;
 
   return line;
 }
 
-function createObjectUncertaintySketch({
+function createObjectLineArtRepresentation({
   object,
   confidence,
   directions,
@@ -884,7 +776,7 @@ function createObjectUncertaintySketch({
   object: THREE.Object3D;
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
-  axisFrame: ConfidenceAxisFrame | undefined;
+  axisFrame: ConfidenceAxisFrame;
 }) {
   const measure = measureObjectInFrame(object, axisFrame);
 
@@ -892,42 +784,106 @@ function createObjectUncertaintySketch({
     return null;
   }
 
+  const level = getObjectVisualLevel(confidence);
   const group = new THREE.Group();
 
   group.userData[FUZZY_VISUAL_CHILD] = true;
 
-  (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
-    const visualLevel = confidenceToVisualLevel(confidence[axis]);
+  const activeAxes = (["x", "y", "z"] as ConfidenceAxis[]).filter(
+    (axis) => confidence[axis] !== "high",
+  );
 
-    if (!visualLevel) {
-      return;
-    }
+  for (const axis of activeAxes) {
+    const axisLevel = confidence[axis];
+    const visualLevel: UncertaintyVisualLevel =
+      axisLevel === "low" ? "low" : "medium";
 
-    const signs = getDirectionSigns(directions[axis] ?? "both");
-    const layerCount = confidence[axis] === "low" ? 2 : 1;
+    const signs = getDirectionSigns(directions[axis]);
+
+    // low = 多个 possible extent，medium = 一个 possible extent。
+    const lineCount = axisLevel === "low" ? 3 : 1;
+
+    const axisLength =
+      measure.extents[axis].max - measure.extents[axis].min;
 
     for (const sign of signs) {
-      for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
-        group.add(
-          createAxisExtensionLayer({
-            object,
-            measure,
-            axis,
-            sign,
-            level: visualLevel,
-            layerIndex,
-            layerCount,
-          }),
-        );
+      for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+        const layerRatio = (lineIndex + 1) / lineCount;
+
+        // 这里的 extension 是沿 selected dimension 的长度变化；
+        // 不影响另外两个方向的“粗细”。
+        const extensionAmount =
+          Math.max(axisLength, measure.objectSize * 0.2) *
+          (axisLevel === "low" ? 0.22 : 0.1) *
+          layerRatio;
+
+        const jitterAmount =
+          measure.objectSize *
+          (axisLevel === "low" ? 0.0045 : 0.002) *
+          (1 + layerRatio);
+
+        const sketch = createAbstractObjectSketchStrokeLayer({
+          object,
+          measure,
+          uncertaintyAxis: axis,
+          sign,
+          level: visualLevel,
+          extensionAmount,
+          jitterAmount,
+          seed:
+            axis.charCodeAt(0) * 1000 +
+            sign * 100 +
+            lineIndex * 31,
+        });
+
+        group.add(sketch);
       }
     }
-  });
+  }
 
   if (group.children.length === 0) {
     return null;
   }
 
-  return group;
+  return {
+    group,
+    level,
+  };
+}
+
+function applyUncertaintyToObject({
+  object,
+  confidence,
+  directions,
+  axisFrame,
+}: {
+  object: THREE.Object3D;
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+  axisFrame: ConfidenceAxisFrame;
+}) {
+  if (!hasUncertainty(confidence)) {
+    return;
+  }
+
+  object.updateWorldMatrix(true, true);
+
+  const representation = createObjectLineArtRepresentation({
+    object,
+    confidence,
+    directions,
+    axisFrame,
+  });
+
+  if (!representation) {
+    return;
+  }
+
+  if (representation.level === "low") {
+    applyDraftSurface(object, "low");
+  }
+
+  object.add(representation.group);
 }
 
 export function applyFuzzyConfidence(
@@ -944,13 +900,13 @@ export function applyFuzzyConfidence(
     return;
   }
 
-  const annotationsByPathKey = new Map(
+  const annotationByPathKey = new Map(
     annotations.map((annotation) => [annotation.pathKey, annotation]),
   );
 
   const targetObjects = findTopLevelObjectsByPathKeys(
     scene,
-    annotations.map((annotation) => annotation.pathKey),
+    annotations.map((item) => item.pathKey),
   );
 
   for (const object of targetObjects) {
@@ -960,23 +916,17 @@ export function applyFuzzyConfidence(
       continue;
     }
 
-    const annotation = annotationsByPathKey.get(pathKey);
+    const annotation = annotationByPathKey.get(pathKey);
 
-    if (!annotation || !hasUncertainty(annotation.confidence)) {
+    if (!annotation) {
       continue;
     }
 
-    const sketch = createObjectUncertaintySketch({
+    applyUncertaintyToObject({
       object,
       confidence: annotation.confidence,
       directions: annotation.directions ?? DEFAULT_DIRECTIONS,
-      axisFrame: axisFramesByPathKey?.get(pathKey),
+      axisFrame: axisFramesByPathKey?.get(pathKey) ?? DEFAULT_AXIS_FRAME,
     });
-
-    if (!sketch) {
-      continue;
-    }
-
-    object.add(sketch);
   }
 }
