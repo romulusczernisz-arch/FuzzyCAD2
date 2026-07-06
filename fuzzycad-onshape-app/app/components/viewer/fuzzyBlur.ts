@@ -58,11 +58,16 @@ type VisualProfile = {
 
   outlineOpacity: number;
   outlineWidthRatio: number;
+};
 
-  ghostShellOpacity: number;
-  ghostShellSpacing: number;
-  ghostShellThickness: number;
-  ghostShellOffsetRatio: number;
+type GhostShellProfile = {
+  lineOpacity: number;
+  lineSpacing: number;
+  lineThickness: number;
+  outlineOpacity: number;
+  outlineWidthRatio: number;
+  rimStrength: number;
+  rimPower: number;
 };
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
@@ -169,7 +174,6 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
     vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
     vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
-
     float projected = dot(gl_FragCoord.xy, direction);
 
     float baseLine = stripeMask(projected, uSpacing, uThickness);
@@ -285,62 +289,100 @@ function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
 
   if (maxUncertainty >= 1.0) {
     return {
-      // 原物体基础线稿：淡一点
-      lineOpacity: 0.14,
+      lineOpacity: 0.16,
       lineSpacing: 13.0,
       lineThickness: 0.035,
 
-      // 原物体端部强化
-      endLineOpacity: 0.95,
-      endLineSpacing: 4.2,
+      endLineOpacity: 0.92,
+      endLineSpacing: 4.5,
       endLineThickness: 0.06,
-      endZoneStart: 0.38,
-      endZoneFeather: 0.18,
+      endZoneStart: 0.4,
+      endZoneFeather: 0.16,
 
       baseWeight: 1.0,
-      directionalWeight: 1.25,
+      directionalWeight: 1.18,
 
       rimStrength: 0.22,
       rimPower: 2.0,
 
-      outlineOpacity: 0.82,
+      outlineOpacity: 0.85,
       outlineWidthRatio: 0.0045,
-
-      // 方向性 ghost shell
-      ghostShellOpacity: 0.34,
-      ghostShellSpacing: 6.2,
-      ghostShellThickness: 0.045,
-      ghostShellOffsetRatio: 0.055,
     };
   }
 
   return {
-    // medium 原物体基础线稿
-    lineOpacity: 0.1,
+    lineOpacity: 0.12,
     lineSpacing: 14.0,
     lineThickness: 0.03,
 
-    // medium 端部强化
-    endLineOpacity: 0.58,
-    endLineSpacing: 5.6,
+    endLineOpacity: 0.55,
+    endLineSpacing: 6.2,
     endLineThickness: 0.05,
     endZoneStart: 0.42,
-    endZoneFeather: 0.16,
+    endZoneFeather: 0.15,
 
     baseWeight: 1.0,
-    directionalWeight: 0.95,
+    directionalWeight: 0.88,
 
     rimStrength: 0.16,
     rimPower: 2.2,
 
-    outlineOpacity: 0.55,
+    outlineOpacity: 0.6,
     outlineWidthRatio: 0.0036,
+  };
+}
 
-    // medium ghost shell 更淡、更近
-    ghostShellOpacity: 0.2,
-    ghostShellSpacing: 7.4,
-    ghostShellThickness: 0.036,
-    ghostShellOffsetRatio: 0.035,
+function getGhostShellLayerCount(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 2;
+  }
+
+  if (level === "medium") {
+    return 1;
+  }
+
+  return 0;
+}
+
+function getDirectionSigns(direction: ConfidenceDirection): number[] {
+  if (direction === "positive") {
+    return [1];
+  }
+
+  if (direction === "negative") {
+    return [-1];
+  }
+
+  return [-1, 1];
+}
+
+function getGhostShellProfile(
+  level: ConfidenceLevel,
+  layerIndex: number,
+  layerCount: number,
+): GhostShellProfile {
+  const t = layerCount <= 1 ? 0 : layerIndex / (layerCount - 1);
+
+  if (level === "low") {
+    return {
+      lineOpacity: THREE.MathUtils.lerp(0.22, 0.12, t),
+      lineSpacing: THREE.MathUtils.lerp(8.5, 7.2, t),
+      lineThickness: THREE.MathUtils.lerp(0.04, 0.033, t),
+      outlineOpacity: THREE.MathUtils.lerp(0.34, 0.18, t),
+      outlineWidthRatio: THREE.MathUtils.lerp(0.0038, 0.0032, t),
+      rimStrength: THREE.MathUtils.lerp(0.18, 0.1, t),
+      rimPower: 2.2,
+    };
+  }
+
+  return {
+    lineOpacity: 0.12,
+    lineSpacing: 9.5,
+    lineThickness: 0.034,
+    outlineOpacity: 0.2,
+    outlineWidthRatio: 0.003,
+    rimStrength: 0.1,
+    rimPower: 2.3,
   };
 }
 
@@ -387,30 +429,6 @@ function getSideStrengths(
     positive: strength,
     negative: strength,
   };
-}
-
-function getDirectionSigns(direction: ConfidenceDirection) {
-  if (direction === "positive") {
-    return [1];
-  }
-
-  if (direction === "negative") {
-    return [-1];
-  }
-
-  return [-1, 1];
-}
-
-function getGhostShellLayerCount(level: ConfidenceLevel) {
-  if (level === "low") {
-    return 2;
-  }
-
-  if (level === "medium") {
-    return 1;
-  }
-
-  return 0;
 }
 
 function getMeshMaterials(mesh: THREE.Mesh) {
@@ -522,7 +540,9 @@ function collectObjectWorldPoints(object: THREE.Object3D) {
     child.updateWorldMatrix(true, false);
 
     for (let index = 0; index < position.count; index += 1) {
-      worldPoint.fromBufferAttribute(position, index).applyMatrix4(child.matrixWorld);
+      worldPoint
+        .fromBufferAttribute(position, index)
+        .applyMatrix4(child.matrixWorld);
       points.push(worldPoint.clone());
     }
   });
@@ -675,45 +695,38 @@ function createLineOverlayMaterial({
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
-
   return material;
 }
 
 function createGhostShellLineMaterial({
   measure,
   profile,
-  layerIndex,
 }: {
   measure: DirectionalMeasure;
-  profile: VisualProfile;
-  layerIndex: number;
+  profile: GhostShellProfile;
 }) {
-  const layerFade = Math.max(0.42, 1.0 - layerIndex * 0.28);
-
   const material = new THREE.ShaderMaterial({
     vertexShader: LINE_OVERLAY_VERTEX_SHADER,
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
 
-      uOpacity: { value: profile.ghostShellOpacity * layerFade },
-      uSpacing: { value: profile.ghostShellSpacing * (1.0 + layerIndex * 0.12) },
-      uThickness: { value: profile.ghostShellThickness },
+      uOpacity: { value: profile.lineOpacity },
+      uSpacing: { value: profile.lineSpacing },
+      uThickness: { value: profile.lineThickness },
 
-      // ghost shell 自己已经通过空间 offset 表达方向，
-      // 所以这里不再开端部强化，避免太乱。
       uEndOpacity: { value: 0.0 },
-      uEndSpacing: { value: profile.ghostShellSpacing },
-      uEndThickness: { value: profile.ghostShellThickness },
-      uEndZoneStart: { value: 0.95 },
+      uEndSpacing: { value: profile.lineSpacing },
+      uEndThickness: { value: profile.lineThickness },
+      uEndZoneStart: { value: 1.0 },
       uEndZoneFeather: { value: 0.01 },
 
-      uAngle: { value: Math.PI * (0.18 + layerIndex * 0.035) },
+      uAngle: { value: Math.PI * 0.18 },
 
       uBaseWeight: { value: 1.0 },
       uDirectionalWeight: { value: 0.0 },
 
-      uRimStrength: { value: profile.rimStrength * 0.55 },
+      uRimStrength: { value: profile.rimStrength },
       uRimPower: { value: profile.rimPower },
 
       uObjectCenter: { value: measure.centerWorld.clone() },
@@ -738,109 +751,17 @@ function createGhostShellLineMaterial({
     depthWrite: false,
     side: THREE.FrontSide,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
+    polygonOffsetFactor: -1.2,
+    polygonOffsetUnits: -1.2,
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
-
   return material;
-}
-
-function makeObjectLocalOffsetMatrix({
-  object,
-  centerWorld,
-  offsetWorld,
-}: {
-  object: THREE.Object3D;
-  centerWorld: THREE.Vector3;
-  offsetWorld: THREE.Vector3;
-}) {
-  const centerLocal = object.worldToLocal(centerWorld.clone());
-  const shiftedLocal = object.worldToLocal(centerWorld.clone().add(offsetWorld));
-  const offsetLocal = shiftedLocal.sub(centerLocal);
-
-  return new THREE.Matrix4().makeTranslation(
-    offsetLocal.x,
-    offsetLocal.y,
-    offsetLocal.z,
-  );
-}
-
-function addDirectionalGhostShellsForMesh({
-  overlayGroup,
-  object,
-  sourceGeometry,
-  childToObjectMatrix,
-  measure,
-  confidence,
-  directions,
-  profile,
-}: {
-  overlayGroup: THREE.Group;
-  object: THREE.Object3D;
-  sourceGeometry: THREE.BufferGeometry;
-  childToObjectMatrix: THREE.Matrix4;
-  measure: DirectionalMeasure;
-  confidence: AxisConfidenceMap;
-  directions: AxisDirectionMap;
-  profile: VisualProfile;
-}) {
-  (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
-    const level = confidence[axis];
-    const layerCount = getGhostShellLayerCount(level);
-
-    if (layerCount === 0) {
-      return;
-    }
-
-    const signs = getDirectionSigns(directions[axis] ?? "both");
-
-    for (const sign of signs) {
-      for (let layerIndex = 0; layerIndex < layerCount; layerIndex += 1) {
-        const layerRatio = (layerIndex + 1) / layerCount;
-
-        const offsetAmount =
-          measure.objectSize *
-          profile.ghostShellOffsetRatio *
-          layerRatio;
-
-        const offsetWorld = measure.axes[axis]
-          .clone()
-          .multiplyScalar(sign * offsetAmount);
-
-        const offsetMatrix = makeObjectLocalOffsetMatrix({
-          object,
-          centerWorld: measure.centerWorld,
-          offsetWorld,
-        });
-
-        const ghostMatrix = offsetMatrix.clone().multiply(childToObjectMatrix);
-
-        const ghostGeometry = sourceGeometry.clone();
-        const ghostMaterial = createGhostShellLineMaterial({
-          measure,
-          profile,
-          layerIndex,
-        });
-
-        const ghostMesh = new THREE.Mesh(ghostGeometry, ghostMaterial);
-
-        ghostMesh.matrixAutoUpdate = false;
-        ghostMesh.matrix.copy(ghostMatrix);
-        ghostMesh.renderOrder = 1570 + layerIndex;
-        ghostMesh.frustumCulled = false;
-        ghostMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
-        overlayGroup.add(ghostMesh);
-      }
-    }
-  });
 }
 
 function getGeometryOutlineWidth(
   geometry: THREE.BufferGeometry,
-  profile: VisualProfile,
+  profile: { outlineWidthRatio: number },
 ) {
   geometry.computeBoundingSphere();
 
@@ -854,7 +775,7 @@ function createOuterOutlineMaterial({
   profile,
 }: {
   outlineWidth: number;
-  profile: VisualProfile;
+  profile: { outlineOpacity: number };
 }) {
   const material = new THREE.ShaderMaterial({
     vertexShader: OUTER_OUTLINE_VERTEX_SHADER,
@@ -871,7 +792,6 @@ function createOuterOutlineMaterial({
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
-
   return material;
 }
 
@@ -991,12 +911,10 @@ function createSelectedObjectLineOverlay({
   const profile = getVisualProfile(annotation.confidence);
 
   const overlayGroup = new THREE.Group();
-
   overlayGroup.userData[FUZZY_VISUAL_CHILD] = true;
   overlayGroup.renderOrder = 1600;
 
   object.updateWorldMatrix(true, true);
-
   const objectWorldInverse = object.matrixWorld.clone().invert();
 
   object.traverse((child) => {
@@ -1028,13 +946,11 @@ function createSelectedObjectLineOverlay({
     });
 
     const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
-
     outlineMesh.matrixAutoUpdate = false;
     outlineMesh.matrix.copy(childToObjectMatrix);
     outlineMesh.renderOrder = 1550;
     outlineMesh.frustumCulled = false;
     outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
     overlayGroup.add(outlineMesh);
 
     const overlayGeometry = sourceGeometry.clone();
@@ -1045,25 +961,12 @@ function createSelectedObjectLineOverlay({
     });
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
-
     overlayMesh.matrixAutoUpdate = false;
     overlayMesh.matrix.copy(childToObjectMatrix);
     overlayMesh.renderOrder = 1600;
     overlayMesh.frustumCulled = false;
     overlayMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
     overlayGroup.add(overlayMesh);
-
-        addDirectionalGhostShellsForMesh({
-      overlayGroup,
-      object,
-      sourceGeometry,
-      childToObjectMatrix,
-      measure,
-      confidence: annotation.confidence,
-      directions,
-      profile,
-    });
   });
 
   if (overlayGroup.children.length === 0) {
@@ -1071,6 +974,179 @@ function createSelectedObjectLineOverlay({
   }
 
   return overlayGroup;
+}
+
+function createDirectionalGhostShells({
+  object,
+  annotation,
+  axisFrame,
+}: {
+  object: THREE.Object3D;
+  annotation: FuzzyConfidenceAnnotation;
+  axisFrame: ConfidenceAxisFrame | undefined;
+}) {
+  const measure = measureObjectDirectionality(object, axisFrame);
+
+  if (!measure) {
+    return null;
+  }
+
+  const directions = annotation.directions ?? DEFAULT_DIRECTIONS;
+  const axesWorld = normalizeAxisFrame(axisFrame);
+
+  const shellGroup = new THREE.Group();
+  shellGroup.userData[FUZZY_VISUAL_CHILD] = true;
+  shellGroup.renderOrder = 1500;
+
+  object.updateWorldMatrix(true, true);
+
+  const objectWorldInverse = object.matrixWorld.clone().invert();
+  const objectWorldQuaternion = new THREE.Quaternion();
+  object.getWorldQuaternion(objectWorldQuaternion);
+  const worldToObjectQuaternion = objectWorldQuaternion.clone().invert();
+
+ const axisConfigs = (
+  [
+    {
+      axis: "x" as ConfidenceAxis,
+      level: annotation.confidence.x,
+      direction: directions.x ?? "both",
+      worldAxis: axesWorld.x,
+      halfExtent: measure.halfExtents.x,
+    },
+    {
+      axis: "y" as ConfidenceAxis,
+      level: annotation.confidence.y,
+      direction: directions.y ?? "both",
+      worldAxis: axesWorld.y,
+      halfExtent: measure.halfExtents.y,
+    },
+    {
+      axis: "z" as ConfidenceAxis,
+      level: annotation.confidence.z,
+      direction: directions.z ?? "both",
+      worldAxis: axesWorld.z,
+      halfExtent: measure.halfExtents.z,
+    },
+  ] satisfies {
+    axis: ConfidenceAxis;
+    level: ConfidenceLevel;
+    direction: ConfidenceDirection;
+    worldAxis: THREE.Vector3;
+    halfExtent: number;
+  }[]
+).filter((item) => confidenceToStrength(item.level) > 0);
+
+  if (axisConfigs.length === 0) {
+    return null;
+  }
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    const sourceGeometry = child.geometry;
+
+    if (!sourceGeometry) {
+      return;
+    }
+
+    child.updateWorldMatrix(true, false);
+
+    const childToObjectMatrix = objectWorldInverse
+      .clone()
+      .multiply(child.matrixWorld);
+
+    for (const axisConfig of axisConfigs) {
+      const layerCount = getGhostShellLayerCount(axisConfig.level);
+
+      if (layerCount <= 0) {
+        continue;
+      }
+
+      const localAxis = axisConfig.worldAxis
+        .clone()
+        .applyQuaternion(worldToObjectQuaternion)
+        .normalize();
+
+      const signs = getDirectionSigns(axisConfig.direction);
+
+      const stepDistance = Math.max(
+        axisConfig.halfExtent * 0.18,
+        measure.objectSize * 0.035,
+      );
+
+      for (let layer = 1; layer <= layerCount; layer += 1) {
+        const shellProfile = getGhostShellProfile(
+          axisConfig.level,
+          layer - 1,
+          layerCount,
+        );
+
+        for (const sign of signs) {
+          const translationLocal = localAxis
+            .clone()
+            .multiplyScalar(sign * stepDistance * layer);
+
+          const translationMatrix = new THREE.Matrix4().makeTranslation(
+            translationLocal.x,
+            translationLocal.y,
+            translationLocal.z,
+          );
+
+          const shellMatrix = translationMatrix
+            .clone()
+            .multiply(childToObjectMatrix);
+
+          const outlineGeometry = sourceGeometry.clone();
+          const outlineWidth = getGeometryOutlineWidth(
+            outlineGeometry,
+            shellProfile,
+          );
+          const outlineMaterial = createOuterOutlineMaterial({
+            outlineWidth,
+            profile: shellProfile,
+          });
+
+          const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
+          outlineMesh.matrixAutoUpdate = false;
+          outlineMesh.matrix.copy(shellMatrix);
+          outlineMesh.renderOrder = 1480;
+          outlineMesh.frustumCulled = false;
+          outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+          shellGroup.add(outlineMesh);
+
+          const shellGeometry = sourceGeometry.clone();
+          const shellLineMaterial = createGhostShellLineMaterial({
+            measure,
+            profile: shellProfile,
+          });
+
+          const shellLineMesh = new THREE.Mesh(
+            shellGeometry,
+            shellLineMaterial,
+          );
+          shellLineMesh.matrixAutoUpdate = false;
+          shellLineMesh.matrix.copy(shellMatrix);
+          shellLineMesh.renderOrder = 1490;
+          shellLineMesh.frustumCulled = false;
+          shellLineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+          shellGroup.add(shellLineMesh);
+        }
+      }
+    }
+  });
+
+  if (shellGroup.children.length === 0) {
+    return null;
+  }
+
+  return shellGroup;
 }
 
 export function applyFuzzyConfidence(
@@ -1111,16 +1187,24 @@ export function applyFuzzyConfidence(
 
     hideOriginalMaterials(object);
 
+    const shell = createDirectionalGhostShells({
+      object,
+      annotation,
+      axisFrame: axisFramesByPathKey?.get(pathKey),
+    });
+
+    if (shell) {
+      object.add(shell);
+    }
+
     const overlay = createSelectedObjectLineOverlay({
       object,
       annotation,
       axisFrame: axisFramesByPathKey?.get(pathKey),
     });
 
-    if (!overlay) {
-      continue;
+    if (overlay) {
+      object.add(overlay);
     }
-
-    object.add(overlay);
   }
 }
