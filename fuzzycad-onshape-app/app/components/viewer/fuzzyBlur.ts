@@ -675,6 +675,21 @@ function getGeometryOutlineWidth(
   return Math.max(radius * profile.outlineWidthRatio, 0.0005);
 }
 
+function createInvisibleDepthMaterial() {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    depthTest: true,
+    depthWrite: true,
+    colorWrite: false,
+  });
+
+  material.userData[FUZZY_ACTIVE_MATERIAL] = true;
+  material.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return material;
+}
+
 function createOuterOutlineMaterial({
   outlineWidth,
   profile,
@@ -1008,22 +1023,35 @@ for (const axisConfig of activeAxisConfigs) {
             .clone()
             .multiply(childToObjectMatrix);
 
-          // 1) shell outline：和主体一样的 outline profile
-          const outlineGeometry = sourceGeometry.clone();
-          const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
-          const outlineMaterial = createOuterOutlineMaterial({
-            outlineWidth,
-            profile,
-          });
+// 0) shell depth mask：不可见，但先写 depth，避免 outline 变成黑色实体块
+const depthGeometry = sourceGeometry.clone();
+const depthMaterial = createInvisibleDepthMaterial();
+const depthMesh = new THREE.Mesh(depthGeometry, depthMaterial);
 
-          const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
-          outlineMesh.matrixAutoUpdate = false;
-          outlineMesh.matrix.copy(shellMatrix);
-          outlineMesh.renderOrder = 1480;
-          outlineMesh.frustumCulled = false;
-          outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+depthMesh.matrixAutoUpdate = false;
+depthMesh.matrix.copy(shellMatrix);
+depthMesh.renderOrder = 1460;
+depthMesh.frustumCulled = false;
+depthMesh.userData[FUZZY_VISUAL_CHILD] = true;
 
-          shellGroup.add(outlineMesh);
+shellGroup.add(depthMesh);
+
+// 1) shell outline：和主体一样的 outline profile
+const outlineGeometry = sourceGeometry.clone();
+const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
+const outlineMaterial = createOuterOutlineMaterial({
+  outlineWidth,
+  profile,
+});
+
+const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
+outlineMesh.matrixAutoUpdate = false;
+outlineMesh.matrix.copy(shellMatrix);
+outlineMesh.renderOrder = 1480;
+outlineMesh.frustumCulled = false;
+outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
+shellGroup.add(outlineMesh);
 
           // 2) shell line：和主体一样的 line profile
           const shellGeometry = sourceGeometry.clone();
@@ -1036,7 +1064,7 @@ for (const axisConfig of activeAxisConfigs) {
           const shellLineMesh = new THREE.Mesh(shellGeometry, shellLineMaterial);
           shellLineMesh.matrixAutoUpdate = false;
           shellLineMesh.matrix.copy(shellMatrix);
-          shellLineMesh.renderOrder = 1490;
+          shellLineMesh.renderOrder = 1500;
           shellLineMesh.frustumCulled = false;
           shellLineMesh.userData[FUZZY_VISUAL_CHILD] = true;
 
