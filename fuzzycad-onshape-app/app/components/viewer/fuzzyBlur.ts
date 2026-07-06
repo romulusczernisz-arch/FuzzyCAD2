@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import type {
+  AxisConfidenceMap,
+  AxisDirectionMap,
   ConfidenceAxis,
+  ConfidenceDirection,
+  ConfidenceLevel,
   FuzzyConfidenceAnnotation,
 } from "../../lib/uncertainty/types";
 
@@ -11,11 +15,41 @@ export type ConfidenceAxisFrame = Record<
   [number, number, number]
 >;
 
+const DEFAULT_AXIS_FRAME: ConfidenceAxisFrame = {
+  x: [1, 0, 0],
+  y: [0, 1, 0],
+  z: [0, 0, 1],
+};
+
+const DEFAULT_DIRECTIONS: AxisDirectionMap = {
+  x: "both",
+  y: "both",
+  z: "both",
+};
+
 const FUZZY_VISUAL_CHILD = "__fuzzycad_uncertainty_visual_child__";
 const FUZZY_ORIGINAL_MATERIALS = "__fuzzycad_original_materials__";
 const FUZZY_ACTIVE_MATERIAL = "__fuzzycad_active_material__";
+const FUZZY_ORIGINAL_RENDER_ORDER = "__fuzzycad_original_render_order__";
 
+type DirectionalMeasure = {
+  centerWorld: THREE.Vector3;
+  axes: Record<ConfidenceAxis, THREE.Vector3>;
+  halfExtents: Record<ConfidenceAxis, number>;
+  objectSize: number;
+};
 
+type VisualProfile = {
+  lineOpacity: number;
+  lineSpacing: number;
+  lineThickness: number;
+  baseWeight: number;
+  directionalWeight: number;
+  rimStrength: number;
+  rimPower: number;
+  outlineOpacity: number;
+  outlineWidthRatio: number;
+};
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldNormal;
@@ -39,8 +73,28 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   uniform float uThickness;
   uniform float uAngle;
 
+  uniform float uBaseWeight;
+  uniform float uDirectionalWeight;
+
   uniform float uRimStrength;
   uniform float uRimPower;
+
+  uniform vec3 uObjectCenter;
+
+  uniform vec3 uAxisX;
+  uniform vec3 uAxisY;
+  uniform vec3 uAxisZ;
+
+  uniform float uHalfExtentX;
+  uniform float uHalfExtentY;
+  uniform float uHalfExtentZ;
+
+  uniform float uPositiveStrengthX;
+  uniform float uNegativeStrengthX;
+  uniform float uPositiveStrengthY;
+  uniform float uNegativeStrengthY;
+  uniform float uPositiveStrengthZ;
+  uniform float uNegativeStrengthZ;
 
   varying vec3 vWorldNormal;
   varying vec3 vWorldPosition;
@@ -49,11 +103,28 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
     return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453123);
   }
 
+  float sideMask(
+    vec3 axis,
+    float halfExtent,
+    float positiveStrength,
+    float negativeStrength
+  ) {
+    float coord = dot(vWorldPosition - uObjectCenter, normalize(axis));
+    float normalizedCoord = coord / max(halfExtent, 0.0001);
+
+    float positiveMask = smoothstep(0.05, 0.95, normalizedCoord);
+    float negativeMask = smoothstep(0.05, 0.95, -normalizedCoord);
+
+    return max(
+      positiveMask * positiveStrength,
+      negativeMask * negativeStrength
+    );
+  }
+
   void main() {
     vec3 normal = normalize(vWorldNormal);
     vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
-    // line direction
     vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
     float projected = dot(gl_FragCoord.xy, direction);
     float stripe = fract(projected / uSpacing);
@@ -65,22 +136,52 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
       distanceToLine
     );
 
-    // slight hand-drawn breakup
     float paperNoise = random(floor(gl_FragCoord.xy / 4.0));
-    float brokenLine = mix(0.78, 1.0, paperNoise);
+    float brokenLine = mix(0.76, 1.0, paperNoise);
 
-    // simple shading term
     vec3 lightDirection = normalize(vec3(0.25, 0.7, 0.45));
     float facing = dot(normal, lightDirection) * 0.5 + 0.5;
     float shadeWeight = mix(0.78, 1.0, 1.0 - facing);
 
-    // rim term: stronger near silhouette
+    float xMask = sideMask(
+      uAxisX,
+      uHalfExtentX,
+      uPositiveStrengthX,
+      uNegativeStrengthX
+    );
+
+    float yMask = sideMask(
+      uAxisY,
+      uHalfExtentY,
+      uPositiveStrengthY,
+      uNegativeStrengthY
+    );
+
+    float zMask = sideMask(
+      uAxisZ,
+      uHalfExtentZ,
+      uPositiveStrengthZ,
+      uNegativeStrengthZ
+    );
+
+    float directionalMask = max(max(xMask, yMask), zMask);
+
+    float directionWeight = clamp(
+      uBaseWeight + directionalMask * uDirectionalWeight,
+      0.0,
+      1.35
+    );
+
     float rim = pow(1.0 - abs(dot(normal, viewDir)), uRimPower);
+    float rimBoost = 1.0 + rim * (uRimStrength + directionalMask * 0.35);
 
-    // 不要做 glow，只拿 rim 来增强线条可见性
-    float rimBoost = 1.0 + rim * uRimStrength;
-
-    float alpha = line * brokenLine * shadeWeight * rimBoost * uOpacity;
+    float alpha =
+      line *
+      brokenLine *
+      shadeWeight *
+      directionWeight *
+      rimBoost *
+      uOpacity;
 
     if (alpha < 0.015) {
       discard;
@@ -109,6 +210,105 @@ const OUTER_OUTLINE_FRAGMENT_SHADER = /* glsl */ `
     gl_FragColor = vec4(uOutlineColor, uOutlineOpacity);
   }
 `;
+
+function confidenceToStrength(level: ConfidenceLevel) {
+  if (level === "low") {
+    return 1.0;
+  }
+
+  if (level === "medium") {
+    return 0.48;
+  }
+
+  return 0.0;
+}
+
+function getMaxUncertainty(confidence: AxisConfidenceMap) {
+  return Math.max(
+    confidenceToStrength(confidence.x),
+    confidenceToStrength(confidence.y),
+    confidenceToStrength(confidence.z),
+  );
+}
+
+function hasUncertainty(confidence: AxisConfidenceMap) {
+  return getMaxUncertainty(confidence) > 0;
+}
+
+function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
+  const maxUncertainty = getMaxUncertainty(confidence);
+
+  if (maxUncertainty >= 1.0) {
+    return {
+      lineOpacity: 0.78,
+      lineSpacing: 7.0,
+      lineThickness: 0.075,
+      baseWeight: 0.48,
+      directionalWeight: 0.82,
+      rimStrength: 0.42,
+      rimPower: 2.0,
+      outlineOpacity: 0.9,
+      outlineWidthRatio: 0.0048,
+    };
+  }
+
+  return {
+    lineOpacity: 0.56,
+    lineSpacing: 10.5,
+    lineThickness: 0.048,
+    baseWeight: 0.24,
+    directionalWeight: 0.58,
+    rimStrength: 0.25,
+    rimPower: 2.2,
+    outlineOpacity: 0.58,
+    outlineWidthRatio: 0.0036,
+  };
+}
+
+function normalizeAxisFrame(
+  axisFrame: ConfidenceAxisFrame | undefined,
+): Record<ConfidenceAxis, THREE.Vector3> {
+  const frame = axisFrame ?? DEFAULT_AXIS_FRAME;
+
+  return {
+    x: new THREE.Vector3(...frame.x).normalize(),
+    y: new THREE.Vector3(...frame.y).normalize(),
+    z: new THREE.Vector3(...frame.z).normalize(),
+  };
+}
+
+function getSideStrengths(
+  level: ConfidenceLevel,
+  direction: ConfidenceDirection,
+) {
+  const strength = confidenceToStrength(level);
+
+  if (strength <= 0) {
+    return {
+      positive: 0,
+      negative: 0,
+    };
+  }
+
+  if (direction === "positive") {
+    return {
+      positive: strength,
+      negative: 0,
+    };
+  }
+
+  if (direction === "negative") {
+    return {
+      positive: 0,
+      negative: strength,
+    };
+  }
+
+  return {
+    positive: strength,
+    negative: strength,
+  };
+}
 
 function getMeshMaterials(mesh: THREE.Mesh) {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -139,7 +339,16 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
     object.material =
       originalMaterials.length === 1 ? originalMaterials[0] : originalMaterials;
 
+    const originalRenderOrder = object.userData[
+      FUZZY_ORIGINAL_RENDER_ORDER
+    ] as number | undefined;
+
+    if (typeof originalRenderOrder === "number") {
+      object.renderOrder = originalRenderOrder;
+    }
+
     delete object.userData[FUZZY_ORIGINAL_MATERIALS];
+    delete object.userData[FUZZY_ORIGINAL_RENDER_ORDER];
   });
 }
 
@@ -157,6 +366,10 @@ function hideOriginalMaterials(object: THREE.Object3D) {
       child.userData[FUZZY_ORIGINAL_MATERIALS] = getMeshMaterials(child);
     }
 
+    if (typeof child.userData[FUZZY_ORIGINAL_RENDER_ORDER] !== "number") {
+      child.userData[FUZZY_ORIGINAL_RENDER_ORDER] = child.renderOrder;
+    }
+
     const originalMaterials = child.userData[
       FUZZY_ORIGINAL_MATERIALS
     ] as THREE.Material[];
@@ -164,15 +377,9 @@ function hideOriginalMaterials(object: THREE.Object3D) {
     const hiddenMaterials = originalMaterials.map((material) => {
       const hidden = material.clone();
 
-      // 关键：不要 transparent true。
-      // 它要作为 invisible depth mask 先写入 depth buffer。
       hidden.transparent = false;
       hidden.opacity = 1.0;
-
-      // 不写颜色，所以看不见原 mesh。
       hidden.colorWrite = false;
-
-      // 关键：必须写 depth，不然 outline shell 会整片露出来。
       hidden.depthWrite = true;
       hidden.depthTest = true;
 
@@ -184,24 +391,168 @@ function hideOriginalMaterials(object: THREE.Object3D) {
     child.material =
       hiddenMaterials.length === 1 ? hiddenMaterials[0] : hiddenMaterials;
 
-    // 让 invisible depth mask 先画。
     child.renderOrder = 1400;
   });
 }
 
-function createLineOverlayMaterial() {
+function collectObjectWorldPoints(object: THREE.Object3D) {
+  const points: THREE.Vector3[] = [];
+  const worldPoint = new THREE.Vector3();
+
+  object.updateWorldMatrix(true, true);
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    const position = child.geometry.getAttribute("position");
+
+    if (!position) {
+      return;
+    }
+
+    child.updateWorldMatrix(true, false);
+
+    for (let index = 0; index < position.count; index += 1) {
+      worldPoint.fromBufferAttribute(position, index).applyMatrix4(child.matrixWorld);
+      points.push(worldPoint.clone());
+    }
+  });
+
+  if (points.length > 0) {
+    return points;
+  }
+
+  const fallbackBox = new THREE.Box3().setFromObject(object);
+
+  if (fallbackBox.isEmpty()) {
+    return points;
+  }
+
+  return [
+    new THREE.Vector3(fallbackBox.min.x, fallbackBox.min.y, fallbackBox.min.z),
+    new THREE.Vector3(fallbackBox.min.x, fallbackBox.min.y, fallbackBox.max.z),
+    new THREE.Vector3(fallbackBox.min.x, fallbackBox.max.y, fallbackBox.min.z),
+    new THREE.Vector3(fallbackBox.min.x, fallbackBox.max.y, fallbackBox.max.z),
+    new THREE.Vector3(fallbackBox.max.x, fallbackBox.min.y, fallbackBox.min.z),
+    new THREE.Vector3(fallbackBox.max.x, fallbackBox.min.y, fallbackBox.max.z),
+    new THREE.Vector3(fallbackBox.max.x, fallbackBox.max.y, fallbackBox.min.z),
+    new THREE.Vector3(fallbackBox.max.x, fallbackBox.max.y, fallbackBox.max.z),
+  ];
+}
+
+function measureObjectDirectionality(
+  object: THREE.Object3D,
+  axisFrame: ConfidenceAxisFrame | undefined,
+): DirectionalMeasure | null {
+  const points = collectObjectWorldPoints(object);
+
+  if (points.length === 0) {
+    return null;
+  }
+
+  const worldBox = new THREE.Box3().setFromPoints(points);
+  const roughCenter = new THREE.Vector3();
+
+  worldBox.getCenter(roughCenter);
+
+  const axes = normalizeAxisFrame(axisFrame);
+
+  const extents: Record<ConfidenceAxis, { min: number; max: number }> = {
+    x: { min: Infinity, max: -Infinity },
+    y: { min: Infinity, max: -Infinity },
+    z: { min: Infinity, max: -Infinity },
+  };
+
+  for (const point of points) {
+    const relative = point.clone().sub(roughCenter);
+
+    (["x", "y", "z"] as ConfidenceAxis[]).forEach((axis) => {
+      const value = relative.dot(axes[axis]);
+
+      extents[axis].min = Math.min(extents[axis].min, value);
+      extents[axis].max = Math.max(extents[axis].max, value);
+    });
+  }
+
+  const axisMid = {
+    x: (extents.x.min + extents.x.max) / 2,
+    y: (extents.y.min + extents.y.max) / 2,
+    z: (extents.z.min + extents.z.max) / 2,
+  };
+
+  const centerWorld = roughCenter
+    .clone()
+    .add(axes.x.clone().multiplyScalar(axisMid.x))
+    .add(axes.y.clone().multiplyScalar(axisMid.y))
+    .add(axes.z.clone().multiplyScalar(axisMid.z));
+
+  const halfExtents = {
+    x: Math.max((extents.x.max - extents.x.min) / 2, 0.0001),
+    y: Math.max((extents.y.max - extents.y.min) / 2, 0.0001),
+    z: Math.max((extents.z.max - extents.z.min) / 2, 0.0001),
+  };
+
+  return {
+    centerWorld,
+    axes,
+    halfExtents,
+    objectSize: Math.max(halfExtents.x, halfExtents.y, halfExtents.z) * 2,
+  };
+}
+
+function createLineOverlayMaterial({
+  measure,
+  confidence,
+  directions,
+}: {
+  measure: DirectionalMeasure;
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+}) {
+  const profile = getVisualProfile(confidence);
+
+  const xStrength = getSideStrengths(confidence.x, directions.x ?? "both");
+  const yStrength = getSideStrengths(confidence.y, directions.y ?? "both");
+  const zStrength = getSideStrengths(confidence.z, directions.z ?? "both");
+
   const material = new THREE.ShaderMaterial({
     vertexShader: LINE_OVERLAY_VERTEX_SHADER,
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
-      uOpacity: { value: 0.78 },
-      uSpacing: { value: 8.0 },
-      uThickness: { value: 0.075 },
+      uOpacity: { value: profile.lineOpacity },
+      uSpacing: { value: profile.lineSpacing },
+      uThickness: { value: profile.lineThickness },
       uAngle: { value: Math.PI * 0.18 },
 
-      uRimStrength: { value: 0.55 },
-      uRimPower: { value: 2.2 },
+      uBaseWeight: { value: profile.baseWeight },
+      uDirectionalWeight: { value: profile.directionalWeight },
+
+      uRimStrength: { value: profile.rimStrength },
+      uRimPower: { value: profile.rimPower },
+
+      uObjectCenter: { value: measure.centerWorld.clone() },
+
+      uAxisX: { value: measure.axes.x.clone() },
+      uAxisY: { value: measure.axes.y.clone() },
+      uAxisZ: { value: measure.axes.z.clone() },
+
+      uHalfExtentX: { value: measure.halfExtents.x },
+      uHalfExtentY: { value: measure.halfExtents.y },
+      uHalfExtentZ: { value: measure.halfExtents.z },
+
+      uPositiveStrengthX: { value: xStrength.positive },
+      uNegativeStrengthX: { value: xStrength.negative },
+      uPositiveStrengthY: { value: yStrength.positive },
+      uNegativeStrengthY: { value: yStrength.negative },
+      uPositiveStrengthZ: { value: zStrength.positive },
+      uNegativeStrengthZ: { value: zStrength.negative },
     },
     transparent: true,
     depthTest: true,
@@ -217,22 +568,31 @@ function createLineOverlayMaterial() {
   return material;
 }
 
-function getGeometryOutlineWidth(geometry: THREE.BufferGeometry) {
+function getGeometryOutlineWidth(
+  geometry: THREE.BufferGeometry,
+  profile: VisualProfile,
+) {
   geometry.computeBoundingSphere();
 
   const radius = geometry.boundingSphere?.radius ?? 1;
 
-  return Math.max(radius * 0.0045, 0.0005);
+  return Math.max(radius * profile.outlineWidthRatio, 0.0005);
 }
 
-function createOuterOutlineMaterial(outlineWidth: number) {
+function createOuterOutlineMaterial({
+  outlineWidth,
+  profile,
+}: {
+  outlineWidth: number;
+  profile: VisualProfile;
+}) {
   const material = new THREE.ShaderMaterial({
     vertexShader: OUTER_OUTLINE_VERTEX_SHADER,
     fragmentShader: OUTER_OUTLINE_FRAGMENT_SHADER,
     uniforms: {
       uOutlineWidth: { value: outlineWidth },
       uOutlineColor: { value: new THREE.Color(0x111827) },
-      uOutlineOpacity: { value: 0.9 },
+      uOutlineOpacity: { value: profile.outlineOpacity },
     },
     transparent: true,
     depthTest: true,
@@ -342,7 +702,24 @@ function findTopLevelObjectsByPathKeys(
   return objects;
 }
 
-function createSelectedObjectLineOverlay(object: THREE.Object3D) {
+function createSelectedObjectLineOverlay({
+  object,
+  annotation,
+  axisFrame,
+}: {
+  object: THREE.Object3D;
+  annotation: FuzzyConfidenceAnnotation;
+  axisFrame: ConfidenceAxisFrame | undefined;
+}) {
+  const measure = measureObjectDirectionality(object, axisFrame);
+
+  if (!measure) {
+    return null;
+  }
+
+  const directions = annotation.directions ?? DEFAULT_DIRECTIONS;
+  const profile = getVisualProfile(annotation.confidence);
+
   const overlayGroup = new THREE.Group();
 
   overlayGroup.userData[FUZZY_VISUAL_CHILD] = true;
@@ -373,10 +750,12 @@ function createSelectedObjectLineOverlay(object: THREE.Object3D) {
       .clone()
       .multiply(child.matrixWorld);
 
-    // 1) 外边框 outline shell
     const outlineGeometry = sourceGeometry.clone();
-    const outlineWidth = getGeometryOutlineWidth(outlineGeometry);
-    const outlineMaterial = createOuterOutlineMaterial(outlineWidth);
+    const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
+    const outlineMaterial = createOuterOutlineMaterial({
+      outlineWidth,
+      profile,
+    });
 
     const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
 
@@ -388,9 +767,12 @@ function createSelectedObjectLineOverlay(object: THREE.Object3D) {
 
     overlayGroup.add(outlineMesh);
 
-    // 2) 内部 line overlay
     const overlayGeometry = sourceGeometry.clone();
-    const overlayMaterial = createLineOverlayMaterial();
+    const overlayMaterial = createLineOverlayMaterial({
+      measure,
+      confidence: annotation.confidence,
+      directions,
+    });
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
 
@@ -413,7 +795,7 @@ function createSelectedObjectLineOverlay(object: THREE.Object3D) {
 export function applyFuzzyConfidence(
   scene: THREE.Object3D,
   annotations: FuzzyConfidenceAnnotation[],
-  _axisFramesByPathKey?: Map<string, ConfidenceAxisFrame>,
+  axisFramesByPathKey?: Map<string, ConfidenceAxisFrame>,
 ) {
   scene.updateMatrixWorld(true);
 
@@ -424,15 +806,35 @@ export function applyFuzzyConfidence(
     return;
   }
 
+  const annotationByPathKey = new Map(
+    annotations.map((annotation) => [annotation.pathKey, annotation]),
+  );
+
   const targetObjects = findTopLevelObjectsByPathKeys(
     scene,
     annotations.map((annotation) => annotation.pathKey),
   );
 
   for (const object of targetObjects) {
+    const pathKey = object.userData?.fuzzyPathKey;
+
+    if (typeof pathKey !== "string") {
+      continue;
+    }
+
+    const annotation = annotationByPathKey.get(pathKey);
+
+    if (!annotation || !hasUncertainty(annotation.confidence)) {
+      continue;
+    }
+
     hideOriginalMaterials(object);
 
-    const overlay = createSelectedObjectLineOverlay(object);
+    const overlay = createSelectedObjectLineOverlay({
+      object,
+      annotation,
+      axisFrame: axisFramesByPathKey?.get(pathKey),
+    });
 
     if (!overlay) {
       continue;
