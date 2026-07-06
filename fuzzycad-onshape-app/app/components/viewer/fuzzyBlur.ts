@@ -287,8 +287,8 @@ return {
 
   // 端部强化层：更密、更黑
   endLineOpacity: 0.95,
-  endLineSpacing: 4,
-  endLineThickness: 0.56,
+  endLineSpacing: 4.2,
+  endLineThickness: 0.06,
 
   // 渐变更早开始，而且更长一些
   endZoneStart: 0.38,
@@ -297,8 +297,8 @@ return {
   baseWeight: 1.0,
   directionalWeight: 1.25,
 
-  rimStrength: 0.3,
-  rimPower: 3.0,
+  rimStrength: 0.22,
+  rimPower: 2.0,
 
   outlineOpacity: 0.82,
   outlineWidthRatio: 0.0045,
