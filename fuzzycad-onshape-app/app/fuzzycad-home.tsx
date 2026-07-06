@@ -864,18 +864,18 @@ if (result.ok && result.state) {
             operation="height"
             title={
               heightCandidatePathKeys.length > 0
-                ? "Related objects found"
+                ? "Also modify related components?"
                 : "Select one object first"
             }
             description={
               heightCandidatePathKeys.length > 1
-                ? `FuzzyCAD found ${
+                ? `${
                     heightCandidatePathKeys.length - 1 === 1
-                      ? "one related object"
-                      : `${heightCandidatePathKeys.length - 1} related objects`
-                  }. You can annotate only the selected object, or apply the same size uncertainty annotation to the related objects as a group.`
+                      ? "1 similar component was"
+                      : `${heightCandidatePathKeys.length - 1} similar components were`
+                  } found. Apply this annotation to all of them, or just the selected one.`
                 : heightCandidatePathKeys.length === 1
-                  ? "FuzzyCAD did not find other similar objects. You can still annotate the selected object."
+                  ? "No similar components found. Continuing will annotate only the selected object."
                   : "Click one object in the viewer, then click Size."
             }
             suggestedObjects={
@@ -885,7 +885,7 @@ if (result.ok && result.state) {
             }
             confirmLabel={
               heightCandidatePathKeys.length > 1
-                ? "Include related"
+                ? "Apply to all"
                 : "Continue"
             }
             secondaryConfirmLabel={
