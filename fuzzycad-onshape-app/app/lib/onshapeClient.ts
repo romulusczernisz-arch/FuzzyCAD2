@@ -23,37 +23,140 @@ export type ApiResult = {
   manifest?: unknown;
   mode?: string;
   message?: string;
+annotatedSelectionStlResult?: unknown;
+assemblyOverlayResult?: unknown;
+
+  generatedGeometryResult?: unknown;
+  projectStateResult?: unknown;
+  reconstructionResult?: unknown;
+  projectState?: unknown;
 };
+
+async function parseApiResult(res: Response): Promise<ApiResult> {
+  const text = await res.text();
+
+  if (!text) {
+    return {
+      ok: res.ok,
+      status: res.status,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+
+    if (parsed && typeof parsed === "object") {
+      return {
+        ...(parsed as Record<string, unknown>),
+        ok:
+          "ok" in parsed
+            ? Boolean((parsed as { ok?: unknown }).ok)
+            : res.ok,
+        status: res.status,
+      } as ApiResult;
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      data: parsed,
+    };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      error: text,
+    };
+  }
+}
+
+export async function saveFuzzycadProject(
+  query: DocumentQuery,
+  projectState: unknown,
+  options: {
+    annotatedSelectionStl?: Blob | null;
+  } = {},
+): Promise<ApiResult> {
+  if (options.annotatedSelectionStl) {
+    const formData = new FormData();
+
+    formData.append("documentId", query.documentId);
+    formData.append("workspaceId", query.workspaceId);
+    formData.append("server", query.server);
+    formData.append("projectState", JSON.stringify(projectState));
+    formData.append(
+      "annotatedSelectionStl",
+      options.annotatedSelectionStl,
+      "fuzzycad-annotated-selection.stl",
+    );
+
+    const res = await fetch("/api/fuzzycad/save-project", {
+      method: "POST",
+      body: formData,
+    });
+
+    return parseApiResult(res);
+  }
+
+  const res = await fetch("/api/fuzzycad/save-project", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentId: query.documentId,
+      workspaceId: query.workspaceId,
+      server: query.server,
+      projectState,
+    }),
+  });
+
+  return parseApiResult(res);
+}
 
 type DocumentQuery = {
   documentId: string;
   workspaceId: string;
   server: string;
+  force?: boolean;
 };
 
 type AssemblyQuery = DocumentQuery & {
   assemblyElementId: string;
 };
 
+function appendOptionalParams(
+  params: URLSearchParams,
+  query: { force?: boolean },
+) {
+  if (query.force) {
+    params.set("force", "1");
+  }
+
+  return params;
+}
+
 function makeDocumentParams(query: DocumentQuery) {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     documentId: query.documentId,
     workspaceId: query.workspaceId,
     server: query.server,
   });
+
+  return appendOptionalParams(params, query);
 }
 
 function makeAssemblyParams(query: AssemblyQuery) {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     documentId: query.documentId,
     workspaceId: query.workspaceId,
     assemblyElementId: query.assemblyElementId,
     server: query.server,
   });
+
+  return appendOptionalParams(params, query);
 }
 
 export async function fetchOnshapeElements(
-  query: DocumentQuery
+  query: DocumentQuery,
 ): Promise<ApiResult> {
   const params = makeDocumentParams(query);
   const res = await fetch(`/api/onshape/elements?${params.toString()}`);
@@ -62,7 +165,7 @@ export async function fetchOnshapeElements(
 }
 
 export async function fetchOnshapeAssembly(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(`/api/onshape/assembly?${params.toString()}`);
@@ -77,15 +180,10 @@ export async function fetchOnshapeAssemblyGltf(query: AssemblyQuery) {
 }
 
 export async function fetchOnshapeAssemblyZipManifest(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
-  const params = new URLSearchParams({
-    documentId: query.documentId,
-    workspaceId: query.workspaceId,
-    assemblyElementId: query.assemblyElementId,
-    server: query.server,
-    debugZip: "1",
-  });
+  const params = makeAssemblyParams(query);
+  params.set("debugZip", "1");
 
   const res = await fetch(`/api/onshape/assembly-gltf?${params.toString()}`);
 
@@ -93,22 +191,22 @@ export async function fetchOnshapeAssemblyZipManifest(
 }
 
 export async function fetchFuzzycadAssemblySummary(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(
-    `/api/fuzzycad/assembly-summary?${params.toString()}`
+    `/api/fuzzycad/assembly-summary?${params.toString()}`,
   );
 
   return res.json() as Promise<ApiResult>;
 }
 
 export async function fetchFuzzycadRelationshipGraph(
-  query: AssemblyQuery
+  query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
   const res = await fetch(
-    `/api/fuzzycad/relationship-graph?${params.toString()}`
+    `/api/fuzzycad/relationship-graph?${params.toString()}`,
   );
 
   return res.json() as Promise<ApiResult>;
@@ -123,7 +221,7 @@ export type OccurrenceUpdate = {
 
 export async function applyOnshapeOccurrenceTransforms(
   query: AssemblyQuery,
-  occurrences: OccurrenceUpdate[]
+  occurrences: OccurrenceUpdate[],
 ): Promise<ApiResult> {
   const res = await fetch("/api/onshape/assembly-transforms", {
     method: "POST",

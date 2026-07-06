@@ -1,9 +1,325 @@
 import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
+import {
+  onshapeFetch,
+  shouldForceRefresh,
+} from "../../../lib/server/onshapeApi";
+import { getCachedElements } from "../../../lib/server/onshapeElementsCache";
 
 export const runtime = "nodejs";
 
 type UnknownRecord = Record<string, unknown>;
+type GeometryCacheEntry = {
+  expiresAt: number;
+  body: ArrayBuffer | string;
+  contentType: string;
+  headers: Record<string, string>;
+  rawBuffer: ArrayBuffer;
+  context: {
+    exportEndpoint: string;
+    translationHref?: string | null;
+    downloadEndpoint?: string | null;
+    downloadContentType?: string;
+  };
+};
+
+const GEOMETRY_CACHE_TTL_MS = 5 * 60 * 1000;
+const SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME =
+  "fuzzycad-source-assembly-gltf-snapshot.bin";
+
+const geometryCache = new Map<string, GeometryCacheEntry>();
+
+function makeGeometryCacheKey(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+}) {
+  return [
+    input.server,
+    input.documentId,
+    input.workspaceId,
+    input.assemblyElementId,
+  ].join("|");
+}
+
+function headersToRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+
+  headers.forEach((value, key) => {
+    record[key] = value;
+  });
+
+  return record;
+}
+
+function getElementName(element: UnknownRecord) {
+  const name = element.name;
+  return typeof name === "string" ? name : "";
+}
+
+function getElementId(element: UnknownRecord) {
+  const id = element.id;
+  return typeof id === "string" ? id : null;
+}
+
+function findLatestElementByName(elements: unknown, name: string) {
+  if (!Array.isArray(elements)) {
+    return null;
+  }
+
+  const matched = elements
+    .filter(isRecord)
+    .filter((element) => getElementName(element) === name);
+
+  const latest = matched[matched.length - 1];
+
+  if (!latest) {
+    return null;
+  }
+
+  const id = getElementId(latest);
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    element: latest,
+  };
+}
+
+async function getSourceAssemblySnapshotBuffer(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+}) {
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/onshape/assembly-gltf",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements-for-source-snapshot",
+      elementsResult,
+    };
+  }
+
+  const snapshotElement = findLatestElementByName(
+    elementsResult.data,
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+
+  if (!snapshotElement) {
+    return {
+      ok: false,
+      mode: "missing-source-assembly-gltf-snapshot",
+    };
+  }
+
+  const endpoint = `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}/e/${snapshotElement.id}`;
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept:
+          "application/octet-stream, application/zip, model/gltf-binary, model/gltf+json, */*",
+      },
+    },
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "read-source-assembly-gltf-snapshot",
+    },
+  );
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      mode: "failed-to-read-source-assembly-gltf-snapshot",
+      status: res.status,
+      endpoint,
+      data: await parseResponse(res),
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "read-source-assembly-gltf-snapshot",
+    status: res.status,
+    endpoint,
+    contentType: res.headers.get("content-type") || "application/octet-stream",
+    rawBuffer: await res.arrayBuffer(),
+  };
+}
+
+function isSourceSnapshotReadSuccess(value: unknown): value is {
+  ok: true;
+  mode: string;
+  status: number;
+  endpoint: string;
+  contentType: string;
+  rawBuffer: ArrayBuffer;
+} {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    typeof value.mode === "string" &&
+    typeof value.status === "number" &&
+    typeof value.endpoint === "string" &&
+    typeof value.contentType === "string" &&
+    value.rawBuffer instanceof ArrayBuffer
+  );
+}
+
+async function upsertSourceAssemblySnapshotBuffer(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  rawBuffer: ArrayBuffer;
+}) {
+  const elementsResult = await getCachedElements({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    accessToken: input.accessToken,
+    route: "/api/onshape/assembly-gltf",
+    force: true,
+  });
+
+  if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
+    return {
+      ok: false,
+      mode: "failed-to-read-elements-before-saving-source-snapshot",
+      elementsResult,
+    };
+  }
+
+  const existingElement = findLatestElementByName(
+    elementsResult.data,
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+
+  const endpoint = existingElement
+    ? `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}/e/${existingElement.id}`
+    : `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}`;
+
+  const bytes = new Uint8Array(input.rawBuffer.byteLength);
+  bytes.set(new Uint8Array(input.rawBuffer));
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([bytes], { type: "application/octet-stream" }),
+    SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME,
+  );
+  formData.append("encodedFilename", SOURCE_ASSEMBLY_GLTF_SNAPSHOT_FILENAME);
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+      },
+      body: formData,
+    },
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: existingElement
+        ? "update-source-assembly-gltf-snapshot"
+        : "create-source-assembly-gltf-snapshot",
+    },
+  );
+
+  return {
+    ok: res.ok,
+    mode: existingElement
+      ? "updated-source-assembly-gltf-snapshot"
+      : "created-source-assembly-gltf-snapshot",
+    status: res.status,
+    endpoint,
+    data: await parseResponse(res),
+  };
+}
+
+async function responseFromGeometryCache(
+  entry: GeometryCacheEntry,
+  debugZip: boolean,
+) {
+  if (debugZip) {
+    const response = await handleGeometryBuffer(entry.rawBuffer, true, {
+      ...entry.context,
+      downloadContentType: entry.context.downloadContentType,
+    });
+
+    response.headers.set("X-FuzzyCAD-Geometry-Cache", "hit");
+
+    return response;
+  }
+
+  return new NextResponse(entry.body, {
+    status: 200,
+    headers: {
+      ...entry.headers,
+      "Content-Type": entry.contentType,
+      "Cache-Control": "no-store",
+      "X-FuzzyCAD-Geometry-Cache": "hit",
+    },
+  });
+}
+
+async function cacheGeometryResponse(input: {
+  cacheKey: string;
+  response: NextResponse;
+  rawBuffer: ArrayBuffer;
+  context: GeometryCacheEntry["context"];
+  enabled: boolean;
+}) {
+  if (!input.enabled || !input.response.ok) {
+    return input.response;
+  }
+
+  const contentType =
+    input.response.headers.get("content-type") || "application/octet-stream";
+
+  const cloned = input.response.clone();
+
+  const body =
+    contentType.includes("model/gltf+json") ||
+    contentType.includes("application/json") ||
+    contentType.includes("text/")
+      ? await cloned.text()
+      : await cloned.arrayBuffer();
+
+  const headers = headersToRecord(input.response.headers);
+  headers["X-FuzzyCAD-Geometry-Cache"] = "miss";
+
+  geometryCache.set(input.cacheKey, {
+    expiresAt: Date.now() + GEOMETRY_CACHE_TTL_MS,
+    body,
+    contentType,
+    headers,
+    rawBuffer: input.rawBuffer,
+    context: input.context,
+  });
+
+  input.response.headers.set("X-FuzzyCAD-Geometry-Cache", "miss");
+
+  return input.response;
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
@@ -126,138 +442,275 @@ async function zipFileToDataUri(zip: JSZip, filePath: string): Promise<string> {
   return `data:${mime};base64,${base64}`;
 }
 
-type GltfDoc = Record<string, any>;
+type GltfDoc = UnknownRecord;
+
+type MutableGltfDoc = GltfDoc & {
+  buffers: UnknownRecord[];
+  bufferViews: UnknownRecord[];
+  accessors: UnknownRecord[];
+  images: UnknownRecord[];
+  samplers: UnknownRecord[];
+  textures: UnknownRecord[];
+  materials: UnknownRecord[];
+  meshes: UnknownRecord[];
+  nodes: UnknownRecord[];
+  scenes: UnknownRecord[];
+};
+
+function getRecordArray(record: UnknownRecord, key: string): UnknownRecord[] {
+  const value = record[key];
+
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function cloneGltfRecord(record: UnknownRecord): GltfDoc {
+  return JSON.parse(JSON.stringify(record)) as GltfDoc;
+}
+
+function offsetNumberField(record: UnknownRecord, key: string, offset: number) {
+  const value = record[key];
+
+  if (typeof value === "number") {
+    record[key] = value + offset;
+  }
+}
 
 async function embedGltfBuffers(zip: JSZip, gltfName: string, gltf: GltfDoc) {
-  for (const buffer of Array.isArray(gltf.buffers) ? gltf.buffers : []) {
-    if (!isRecord(buffer)) continue;
+  for (const buffer of getRecordArray(gltf, "buffers")) {
     const uri = getStringField(buffer, ["uri"]);
-    if (!uri || uri.startsWith("data:")) continue;
+
+    if (!uri || uri.startsWith("data:")) {
+      continue;
+    }
+
     buffer.uri = await zipFileToDataUri(zip, resolveGltfUri(gltfName, uri));
   }
-  for (const image of Array.isArray(gltf.images) ? gltf.images : []) {
-    if (!isRecord(image)) continue;
+
+  for (const image of getRecordArray(gltf, "images")) {
     const uri = getStringField(image, ["uri"]);
-    if (!uri || uri.startsWith("data:")) continue;
+
+    if (!uri || uri.startsWith("data:")) {
+      continue;
+    }
+
     image.uri = await zipFileToDataUri(zip, resolveGltfUri(gltfName, uri));
   }
 }
 
 function remapMaterial(m: GltfDoc, texOff: number): GltfDoc {
-  const c: GltfDoc = JSON.parse(JSON.stringify(m));
-  const bump = (t: any) => {
-    if (t && typeof t.index === "number") t.index += texOff;
+  const c = cloneGltfRecord(m);
+
+  const bump = (target: unknown) => {
+    if (isRecord(target)) {
+      offsetNumberField(target, "index", texOff);
+    }
   };
-  if (c.pbrMetallicRoughness) {
-    bump(c.pbrMetallicRoughness.baseColorTexture);
-    bump(c.pbrMetallicRoughness.metallicRoughnessTexture);
+
+  const pbr = c.pbrMetallicRoughness;
+
+  if (isRecord(pbr)) {
+    bump(pbr.baseColorTexture);
+    bump(pbr.metallicRoughnessTexture);
   }
+
   bump(c.normalTexture);
   bump(c.occlusionTexture);
   bump(c.emissiveTexture);
+
   return c;
 }
 
-function remapPrimitive(p: GltfDoc, accOff: number, matOff: number): GltfDoc {
-  const c: GltfDoc = { ...p };
-  if (p.attributes) {
-    c.attributes = {};
-    for (const [k, v] of Object.entries(p.attributes))
-      c.attributes[k] = (v as number) + accOff;
+function remapPrimitive(
+  primitive: GltfDoc,
+  accOff: number,
+  matOff: number,
+): GltfDoc {
+  const c: GltfDoc = { ...primitive };
+
+  if (isRecord(primitive.attributes)) {
+    const remappedAttributes: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(primitive.attributes)) {
+      remappedAttributes[key] =
+        typeof value === "number" ? value + accOff : value;
+    }
+
+    c.attributes = remappedAttributes;
   }
-  if (typeof p.indices === "number") c.indices = p.indices + accOff;
-  if (typeof p.material === "number") c.material = p.material + matOff;
-  if (Array.isArray(p.targets)) {
-    c.targets = p.targets.map((t: Record<string, number>) => {
-      const nt: Record<string, number> = {};
-      for (const [k, v] of Object.entries(t)) nt[k] = v + accOff;
-      return nt;
+
+  if (typeof primitive.indices === "number") {
+    c.indices = primitive.indices + accOff;
+  }
+
+  if (typeof primitive.material === "number") {
+    c.material = primitive.material + matOff;
+  }
+
+  const targets = Array.isArray(primitive.targets)
+    ? primitive.targets.filter(isRecord)
+    : [];
+
+  if (targets.length > 0) {
+    c.targets = targets.map((target) => {
+      const remappedTarget: Record<string, unknown> = {};
+
+      for (const [key, value] of Object.entries(target)) {
+        remappedTarget[key] =
+          typeof value === "number" ? value + accOff : value;
+      }
+
+      return remappedTarget;
     });
   }
+
   return c;
 }
 
 function mergeGltfDocuments(docs: GltfDoc[]): GltfDoc {
-  const merged: GltfDoc = {
+  const merged: MutableGltfDoc = {
     asset: { version: "2.0", generator: "FuzzyCAD-merge" },
-    buffers: [], bufferViews: [], accessors: [],
-    images: [], samplers: [], textures: [],
-    materials: [], meshes: [], nodes: [], scenes: [],
+    buffers: [],
+    bufferViews: [],
+    accessors: [],
+    images: [],
+    samplers: [],
+    textures: [],
+    materials: [],
+    meshes: [],
+    nodes: [],
+    scenes: [],
   };
+
   const rootNodes: number[] = [];
 
   for (const doc of docs) {
-    const arr = (k: string): any[] => (Array.isArray(doc[k]) ? doc[k] : []);
     const off = {
-      buffer: merged.buffers.length, bufferView: merged.bufferViews.length,
-      accessor: merged.accessors.length, image: merged.images.length,
-      sampler: merged.samplers.length, texture: merged.textures.length,
-      material: merged.materials.length, mesh: merged.meshes.length,
+      buffer: merged.buffers.length,
+      bufferView: merged.bufferViews.length,
+      accessor: merged.accessors.length,
+      image: merged.images.length,
+      sampler: merged.samplers.length,
+      texture: merged.textures.length,
+      material: merged.materials.length,
+      mesh: merged.meshes.length,
       node: merged.nodes.length,
     };
 
-    for (const b of arr("buffers")) merged.buffers.push({ ...b });
-    for (const bv of arr("bufferViews"))
-      merged.bufferViews.push({ ...bv, buffer: bv.buffer + off.buffer });
+    for (const buffer of getRecordArray(doc, "buffers")) {
+      merged.buffers.push({ ...buffer });
+    }
 
-    for (const acc of arr("accessors")) {
-      const c: GltfDoc = { ...acc };
-      if (typeof c.bufferView === "number") c.bufferView += off.bufferView;
-      if (c.sparse) {
-        c.sparse = JSON.parse(JSON.stringify(c.sparse));
-        if (c.sparse.indices) c.sparse.indices.bufferView += off.bufferView;
-        if (c.sparse.values) c.sparse.values.bufferView += off.bufferView;
+    for (const bufferView of getRecordArray(doc, "bufferViews")) {
+      const c: GltfDoc = { ...bufferView };
+      offsetNumberField(c, "buffer", off.buffer);
+      merged.bufferViews.push(c);
+    }
+
+    for (const accessor of getRecordArray(doc, "accessors")) {
+      const c = cloneGltfRecord(accessor);
+      offsetNumberField(c, "bufferView", off.bufferView);
+
+      const sparse = c.sparse;
+
+      if (isRecord(sparse)) {
+        const sparseClone = cloneGltfRecord(sparse);
+        const indices = sparseClone.indices;
+        const values = sparseClone.values;
+
+        if (isRecord(indices)) {
+          offsetNumberField(indices, "bufferView", off.bufferView);
+        }
+
+        if (isRecord(values)) {
+          offsetNumberField(values, "bufferView", off.bufferView);
+        }
+
+        c.sparse = sparseClone;
       }
+
       merged.accessors.push(c);
     }
 
-    for (const img of arr("images")) {
-      const c: GltfDoc = { ...img };
-      if (typeof c.bufferView === "number") c.bufferView += off.bufferView;
+    for (const image of getRecordArray(doc, "images")) {
+      const c: GltfDoc = { ...image };
+      offsetNumberField(c, "bufferView", off.bufferView);
       merged.images.push(c);
     }
-    for (const s of arr("samplers")) merged.samplers.push({ ...s });
 
-    for (const t of arr("textures")) {
-      const c: GltfDoc = { ...t };
-      if (typeof c.source === "number") c.source += off.image;
-      if (typeof c.sampler === "number") c.sampler += off.sampler;
+    for (const sampler of getRecordArray(doc, "samplers")) {
+      merged.samplers.push({ ...sampler });
+    }
+
+    for (const texture of getRecordArray(doc, "textures")) {
+      const c: GltfDoc = { ...texture };
+      offsetNumberField(c, "source", off.image);
+      offsetNumberField(c, "sampler", off.sampler);
       merged.textures.push(c);
     }
 
-    for (const m of arr("materials"))
-      merged.materials.push(remapMaterial(m, off.texture));
+    for (const material of getRecordArray(doc, "materials")) {
+      merged.materials.push(remapMaterial(material, off.texture));
+    }
 
-    for (const mesh of arr("meshes"))
+    for (const mesh of getRecordArray(doc, "meshes")) {
+      const primitives = getRecordArray(mesh, "primitives");
+
       merged.meshes.push({
         ...mesh,
-        primitives: (mesh.primitives || []).map((p: GltfDoc) =>
-          remapPrimitive(p, off.accessor, off.material)
+        primitives: primitives.map((primitive) =>
+          remapPrimitive(primitive, off.accessor, off.material),
         ),
       });
+    }
 
-    for (const n of arr("nodes")) {
-      const c: GltfDoc = { ...n };
-      if (typeof c.mesh === "number") c.mesh += off.mesh;
-      if (Array.isArray(c.children))
-        c.children = c.children.map((x: number) => x + off.node);
+    for (const node of getRecordArray(doc, "nodes")) {
+      const c: GltfDoc = { ...node };
+      offsetNumberField(c, "mesh", off.mesh);
+
+      if (Array.isArray(c.children)) {
+        c.children = c.children
+          .filter((child): child is number => typeof child === "number")
+          .map((child) => child + off.node);
+      }
+
       merged.nodes.push(c);
     }
 
-    const scenes = arr("scenes");
-    const scene = scenes[typeof doc.scene === "number" ? doc.scene : 0] || scenes[0];
+    const scenes = getRecordArray(doc, "scenes");
+    const sceneIndex = typeof doc.scene === "number" ? doc.scene : 0;
+    const scene = scenes[sceneIndex] || scenes[0];
+
     if (scene && Array.isArray(scene.nodes)) {
-      for (const idx of scene.nodes) rootNodes.push(idx + off.node);
+      for (const nodeIndex of scene.nodes) {
+        if (typeof nodeIndex === "number") {
+          rootNodes.push(nodeIndex + off.node);
+        }
+      }
     } else {
-      for (let i = 0; i < arr("nodes").length; i++) rootNodes.push(i + off.node);
+      for (let i = 0; i < getRecordArray(doc, "nodes").length; i += 1) {
+        rootNodes.push(i + off.node);
+      }
     }
   }
 
   merged.scene = 0;
   merged.scenes = [{ nodes: rootNodes }];
-  for (const k of ["images", "samplers", "textures", "materials"])
-    if (merged[k].length === 0) delete merged[k];
-  return merged;
+
+  const result: GltfDoc = merged;
+  const optionalArrayKeys = [
+    "images",
+    "samplers",
+    "textures",
+    "materials",
+  ] as const;
+
+  for (const key of optionalArrayKeys) {
+    if (merged[key].length === 0) {
+      delete result[key];
+    }
+  }
+
+  return result;
 }
 
 function countArrayField(record: UnknownRecord, key: string): number {
@@ -288,7 +741,7 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
   const zip = await JSZip.loadAsync(arrayBuffer);
 
   const fileNames = Object.keys(zip.files).filter(
-    (name) => !zip.files[name].dir
+    (name) => !zip.files[name].dir,
   );
 
   const extensionCounts: Record<string, number> = {};
@@ -331,13 +784,13 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
         asset: gltf.asset ?? null,
         nodeNames: nodes
           .map((node) =>
-            isRecord(node) && typeof node.name === "string" ? node.name : ""
+            isRecord(node) && typeof node.name === "string" ? node.name : "",
           )
           .filter(Boolean)
           .slice(0, 80),
         meshNames: meshes
           .map((mesh) =>
-            isRecord(mesh) && typeof mesh.name === "string" ? mesh.name : ""
+            isRecord(mesh) && typeof mesh.name === "string" ? mesh.name : "",
           )
           .filter(Boolean)
           .slice(0, 80),
@@ -345,12 +798,12 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
           .map((buffer) =>
             isRecord(buffer) && typeof buffer.uri === "string"
               ? buffer.uri
-              : ""
+              : "",
           )
           .filter(Boolean),
         imageUris: images
           .map((image) =>
-            isRecord(image) && typeof image.uri === "string" ? image.uri : ""
+            isRecord(image) && typeof image.uri === "string" ? image.uri : "",
           )
           .filter(Boolean),
       });
@@ -381,12 +834,12 @@ async function inspectGltfZip(arrayBuffer: ArrayBuffer) {
 }
 
 async function unpackZipToLoadableGltf(
-  arrayBuffer: ArrayBuffer
+  arrayBuffer: ArrayBuffer,
 ): Promise<NextResponse> {
   const zip = await JSZip.loadAsync(arrayBuffer);
 
   const fileNames = Object.keys(zip.files).filter(
-    (name) => !zip.files[name].dir
+    (name) => !zip.files[name].dir,
   );
 
   const glbName = fileNames.find((name) => name.toLowerCase().endsWith(".glb"));
@@ -410,7 +863,7 @@ async function unpackZipToLoadableGltf(
   }
 
   const gltfNames = fileNames.filter((name) =>
-    name.toLowerCase().endsWith(".gltf")
+    name.toLowerCase().endsWith(".gltf"),
   );
 
   if (gltfNames.length === 0) {
@@ -420,7 +873,7 @@ async function unpackZipToLoadableGltf(
         error: "ZIP did not contain a .glb or .gltf file.",
         files: fileNames,
       },
-      { status: 415 }
+      { status: 415 },
     );
   }
 
@@ -468,13 +921,13 @@ async function unpackZipToLoadableGltf(
         gltfNames,
         files: fileNames,
       },
-      { status: 415 }
+      { status: 415 },
     );
   }
 
   candidates.sort((a, b) => b.score - a.score);
 
- for (const candidate of candidates) {
+  for (const candidate of candidates) {
     await embedGltfBuffers(zip, candidate.name, candidate.gltf as GltfDoc);
   }
 
@@ -492,10 +945,10 @@ async function unpackZipToLoadableGltf(
         candidates.length === 1 ? "embedded-gltf" : "merged-gltf",
       "X-FuzzyCAD-Gltf-Candidates": String(candidates.length),
       "X-FuzzyCAD-Merged-Nodes": String(
-        Array.isArray(mergedGltf.nodes) ? mergedGltf.nodes.length : 0
+        Array.isArray(mergedGltf.nodes) ? mergedGltf.nodes.length : 0,
       ),
       "X-FuzzyCAD-Merged-Meshes": String(
-        Array.isArray(mergedGltf.meshes) ? mergedGltf.meshes.length : 0
+        Array.isArray(mergedGltf.meshes) ? mergedGltf.meshes.length : 0,
       ),
     },
   });
@@ -503,23 +956,30 @@ async function unpackZipToLoadableGltf(
 
 async function getTranslationStatus(
   href: string,
-  accessToken: string
+  accessToken: string,
 ): Promise<UnknownRecord> {
-  const res = await fetch(href, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
+  const res = await onshapeFetch(
+    href,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
     },
-  });
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "get-translation-status",
+    },
+  );
 
   const data = await parseResponse(res);
 
   if (!res.ok || !isRecord(data)) {
     throw new Error(
       `Failed to fetch translation status: ${res.status} ${JSON.stringify(
-        data
-      )}`
+        data,
+      )}`,
     );
   }
 
@@ -534,7 +994,7 @@ async function handleGeometryBuffer(
     translationHref?: string | null;
     downloadEndpoint?: string | null;
     downloadContentType?: string;
-  }
+  },
 ): Promise<NextResponse> {
   if (isZip(downloadedBuffer)) {
     if (debugZip) {
@@ -566,7 +1026,7 @@ async function handleGeometryBuffer(
           error: "Failed to unpack ZIP glTF package.",
           details: error instanceof Error ? error.message : String(error),
         },
-        { status: 500 }
+        { status: 500 },
       );
     }
   }
@@ -593,7 +1053,7 @@ async function handleGeometryBuffer(
       firstBytes: Array.from(new Uint8Array(downloadedBuffer.slice(0, 12))),
       error: "Downloaded result was not ZIP and not GLB.",
     },
-    { status: 415 }
+    { status: 415 },
   );
 }
 
@@ -605,6 +1065,7 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get("workspaceId");
   const assemblyElementId = searchParams.get("assemblyElementId");
   const debugZip = searchParams.get("debugZip") === "1";
+  const force = shouldForceRefresh(searchParams);
 
   const accessToken = req.cookies.get("onshape_access_token")?.value;
 
@@ -613,7 +1074,7 @@ export async function GET(req: NextRequest) {
       {
         error: "Missing documentId, workspaceId, or assemblyElementId",
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -623,25 +1084,86 @@ export async function GET(req: NextRequest) {
         error: "Not connected to Onshape yet",
         action: "Click Connect Onshape first",
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   const exportEndpoint = `${server}/api/assemblies/d/${documentId}/w/${workspaceId}/e/${assemblyElementId}/export/gltf`;
 
-  const exportRes = await fetch(exportEndpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept:
-        "application/json, model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      storeInDocument: false,
-      formatName: "GLTF",
-    }),
+  const cacheKey = makeGeometryCacheKey({
+    server,
+    documentId,
+    workspaceId,
+    assemblyElementId,
   });
+
+  const liveSource = searchParams.get("liveSource") === "1";
+
+ if (!liveSource && !debugZip) {
+  const snapshotResult = await getSourceAssemblySnapshotBuffer({
+    server,
+    documentId,
+    workspaceId,
+    accessToken,
+  });
+
+  if (isSourceSnapshotReadSuccess(snapshotResult)) {
+    const snapshotRawBuffer = snapshotResult.rawBuffer;
+
+    const response = await handleGeometryBuffer(
+      snapshotRawBuffer,
+      false,
+      {
+        exportEndpoint,
+        downloadEndpoint: snapshotResult.endpoint,
+        downloadContentType: snapshotResult.contentType,
+      },
+    );
+
+    response.headers.set("X-FuzzyCAD-Source-Snapshot", "hit");
+
+    return cacheGeometryResponse({
+      cacheKey,
+      response,
+      rawBuffer: snapshotRawBuffer,
+      context: {
+        exportEndpoint,
+        downloadEndpoint: snapshotResult.endpoint,
+        downloadContentType: snapshotResult.contentType,
+      },
+      enabled: true,
+    });
+  }
+}
+
+  if (!force) {
+    const cached = geometryCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      return responseFromGeometryCache(cached, debugZip);
+    }
+  }
+
+  const exportRes = await onshapeFetch(
+    exportEndpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept:
+          "application/json, model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        storeInDocument: false,
+        formatName: "GLTF",
+      }),
+    },
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "start-gltf-export",
+    },
+  );
 
   const exportContentType = exportRes.headers.get("content-type") || "";
 
@@ -657,7 +1179,7 @@ export async function GET(req: NextRequest) {
         error: "Failed to start assembly glTF export",
         details: errorData,
       },
-      { status: exportRes.status }
+      { status: exportRes.status },
     );
   }
 
@@ -668,9 +1190,35 @@ export async function GET(req: NextRequest) {
   ) {
     const directBuffer = await exportRes.arrayBuffer();
 
-    return handleGeometryBuffer(directBuffer, debugZip, {
+    const sourceSnapshotResult = !debugZip
+      ? await upsertSourceAssemblySnapshotBuffer({
+          server,
+          documentId,
+          workspaceId,
+          accessToken,
+          rawBuffer: directBuffer,
+        })
+      : null;
+
+    const response = await handleGeometryBuffer(directBuffer, debugZip, {
       exportEndpoint,
       downloadContentType: exportContentType,
+    });
+
+    response.headers.set(
+      "X-FuzzyCAD-Source-Snapshot",
+      sourceSnapshotResult?.ok ? "saved" : "not-saved",
+    );
+
+    return cacheGeometryResponse({
+      cacheKey,
+      response,
+      rawBuffer: directBuffer,
+      context: {
+        exportEndpoint,
+        downloadContentType: exportContentType,
+      },
+      enabled: !debugZip,
     });
   }
 
@@ -686,7 +1234,7 @@ export async function GET(req: NextRequest) {
         error: "Unexpected export response",
         details: initialData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -702,20 +1250,22 @@ export async function GET(req: NextRequest) {
         error: "Export returned JSON but no translation href",
         data: initialData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   let statusData: UnknownRecord = initialData;
 
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const pollDelaysMs = [5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
+
+  for (const delayMs of pollDelaysMs) {
     const state = getStringField(statusData, ["requestState"]);
 
     if (state === "DONE" || state === "FAILED") {
       break;
     }
 
-    await sleep(1000);
+    await sleep(delayMs);
     statusData = await getTranslationStatus(translationHref, accessToken);
   }
 
@@ -733,7 +1283,7 @@ export async function GET(req: NextRequest) {
         requestState: finalState,
         data: statusData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -767,23 +1317,31 @@ export async function GET(req: NextRequest) {
         error: "Translation is DONE, but no resultExternalDataId was found.",
         data: statusData,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   const resultDocumentId =
-    getStringField(statusData, ["resultDocumentId", "documentId"]) || documentId;
+    getStringField(statusData, ["resultDocumentId", "documentId"]) ||
+    documentId;
 
   const downloadEndpoint = `${server}/api/documents/d/${resultDocumentId}/externaldata/${externalDataId}`;
 
-  const downloadRes = await fetch(downloadEndpoint, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept:
-        "model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+  const downloadRes = await onshapeFetch(
+    downloadEndpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept:
+          "model/gltf-binary, model/gltf+json, application/octet-stream, application/zip",
+      },
     },
-  });
+    {
+      route: "/api/onshape/assembly-gltf",
+      operation: "download-gltf-result",
+    },
+  );
 
   const downloadContentType =
     downloadRes.headers.get("content-type") || "application/octet-stream";
@@ -801,11 +1359,21 @@ export async function GET(req: NextRequest) {
         error: "Failed to download translated external data.",
         details: errorData,
       },
-      { status: downloadRes.status }
+      { status: downloadRes.status },
     );
   }
 
   const downloadedBuffer = await downloadRes.arrayBuffer();
+
+  const sourceSnapshotResult = !debugZip
+    ? await upsertSourceAssemblySnapshotBuffer({
+        server,
+        documentId,
+        workspaceId,
+        accessToken,
+        rawBuffer: downloadedBuffer,
+      })
+    : null;
 
   const response = await handleGeometryBuffer(downloadedBuffer, debugZip, {
     exportEndpoint,
@@ -814,8 +1382,24 @@ export async function GET(req: NextRequest) {
     downloadContentType,
   });
 
+  response.headers.set(
+    "X-FuzzyCAD-Source-Snapshot",
+    sourceSnapshotResult?.ok ? "saved" : "not-saved",
+  );
+
   response.headers.set("X-FuzzyCAD-Translation-Id", translationId || "");
   response.headers.set("X-FuzzyCAD-External-Data-Id", externalDataId);
 
-  return response;
+  return cacheGeometryResponse({
+    cacheKey,
+    response,
+    rawBuffer: downloadedBuffer,
+    context: {
+      exportEndpoint,
+      translationHref,
+      downloadEndpoint,
+      downloadContentType,
+    },
+    enabled: !debugZip,
+  });
 }
