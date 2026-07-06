@@ -1112,11 +1112,11 @@ const shellLineMaterial = createLineOverlayMaterial({
   directions,
   overrides: {
     // shell 不要完全 ghost，但要比主体略轻，避免糊成黑块
-    opacity: profile.lineOpacity * 0.82,
+    opacity: profile.lineOpacity * 0.2,
 
     // shell 线稍微密一点，让它像外推 boundary
     spacing: Math.max(profile.lineSpacing * 0.72, 5.0),
-    thickness: profile.lineThickness * 1.15,
+    thickness: profile.lineThickness * 0.2,
 
     // 端部强化也保留，但稍微弱一点，不然和主体端部叠黑
     endOpacity: profile.endLineOpacity * 0.72,
@@ -1128,10 +1128,10 @@ const shellLineMaterial = createLineOverlayMaterial({
 
     // shell rim 更强，让 shell 自己的边界被读出来
     rimStrength: 0.95,
-    rimPower: 1.65,
+    rimPower: 1,
 
     // shell 的 directional end density 不要太重
-    directionalWeight: profile.directionalWeight * 0.72,
+    directionalWeight: profile.directionalWeight * 0.2,
   },
 });
 
