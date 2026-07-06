@@ -43,10 +43,19 @@ type VisualProfile = {
   lineOpacity: number;
   lineSpacing: number;
   lineThickness: number;
+
+  endLineOpacity: number;
+  endLineSpacing: number;
+  endLineThickness: number;
+  endZoneStart: number;
+  endZoneFeather: number;
+
   baseWeight: number;
   directionalWeight: number;
+
   rimStrength: number;
   rimPower: number;
+
   outlineOpacity: number;
   outlineWidthRatio: number;
 };
@@ -68,9 +77,17 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
 
   uniform vec3 uLineColor;
+
   uniform float uOpacity;
   uniform float uSpacing;
   uniform float uThickness;
+
+  uniform float uEndOpacity;
+  uniform float uEndSpacing;
+  uniform float uEndThickness;
+  uniform float uEndZoneStart;
+  uniform float uEndZoneFeather;
+
   uniform float uAngle;
 
   uniform float uBaseWeight;
@@ -103,22 +120,43 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
     return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453123);
   }
 
-  float sideMask(
+  float stripeMask(float projected, float spacing, float thickness) {
+    float stripe = fract(projected / spacing);
+    float distanceToLine = abs(stripe - 0.5);
+
+    return 1.0 - smoothstep(
+      thickness,
+      thickness + 0.055,
+      distanceToLine
+    );
+  }
+
+  float axisEndZoneMask(
     vec3 axis,
     float halfExtent,
     float positiveStrength,
     float negativeStrength
   ) {
-    float coord = dot(vWorldPosition - uObjectCenter, normalize(axis));
+    vec3 axisDir = normalize(axis);
+    float coord = dot(vWorldPosition - uObjectCenter, axisDir);
     float normalizedCoord = coord / max(halfExtent, 0.0001);
 
-    float positiveMask = smoothstep(0.05, 0.95, normalizedCoord);
-    float negativeMask = smoothstep(0.05, 0.95, -normalizedCoord);
-
-    return max(
-      positiveMask * positiveStrength,
-      negativeMask * negativeStrength
+    float positiveZone = smoothstep(
+      uEndZoneStart - uEndZoneFeather,
+      uEndZoneStart + uEndZoneFeather,
+      normalizedCoord
     );
+
+    float negativeZone = smoothstep(
+      uEndZoneStart - uEndZoneFeather,
+      uEndZoneStart + uEndZoneFeather,
+      -normalizedCoord
+    );
+
+    float positiveContribution = positiveZone * positiveStrength;
+    float negativeContribution = negativeZone * negativeStrength;
+
+    return max(positiveContribution, negativeContribution);
   }
 
   void main() {
@@ -126,68 +164,70 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
     vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
     vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
-    float projected = dot(gl_FragCoord.xy, direction);
-    float stripe = fract(projected / uSpacing);
-    float distanceToLine = abs(stripe - 0.5);
 
-    float line = 1.0 - smoothstep(
-      uThickness,
-      uThickness + 0.055,
-      distanceToLine
-    );
+    float projected = dot(gl_FragCoord.xy, direction);
+
+    float baseLine = stripeMask(projected, uSpacing, uThickness);
+    float endLine = stripeMask(projected, uEndSpacing, uEndThickness);
 
     float paperNoise = random(floor(gl_FragCoord.xy / 4.0));
-    float brokenLine = mix(0.76, 1.0, paperNoise);
+    float brokenLine = mix(0.78, 1.0, paperNoise);
 
     vec3 lightDirection = normalize(vec3(0.25, 0.7, 0.45));
     float facing = dot(normal, lightDirection) * 0.5 + 0.5;
-    float shadeWeight = mix(0.78, 1.0, 1.0 - facing);
+    float shadeWeight = mix(0.8, 1.0, 1.0 - facing);
 
-    float xMask = sideMask(
+    float endMaskX = axisEndZoneMask(
       uAxisX,
       uHalfExtentX,
       uPositiveStrengthX,
       uNegativeStrengthX
     );
 
-    float yMask = sideMask(
+    float endMaskY = axisEndZoneMask(
       uAxisY,
       uHalfExtentY,
       uPositiveStrengthY,
       uNegativeStrengthY
     );
 
-    float zMask = sideMask(
+    float endMaskZ = axisEndZoneMask(
       uAxisZ,
       uHalfExtentZ,
       uPositiveStrengthZ,
       uNegativeStrengthZ
     );
 
-    float directionalMask = max(max(xMask, yMask), zMask);
-
-    float directionWeight = clamp(
-      uBaseWeight + directionalMask * uDirectionalWeight,
-      0.0,
-      1.35
-    );
+    float endMask = max(max(endMaskX, endMaskY), endMaskZ);
 
     float rim = pow(1.0 - abs(dot(normal, viewDir)), uRimPower);
-    float rimBoost = 1.0 + rim * (uRimStrength + directionalMask * 0.35);
+    float baseRimBoost = 1.0 + rim * uRimStrength;
+    float endRimBoost = 1.0 + rim * (uRimStrength + 0.25);
 
-    float alpha =
-      line *
+    float baseAlpha =
+      baseLine *
       brokenLine *
       shadeWeight *
-      directionWeight *
-      rimBoost *
+      uBaseWeight *
+      baseRimBoost *
       uOpacity;
+
+    float endAlpha =
+      endLine *
+      brokenLine *
+      shadeWeight *
+      endMask *
+      uDirectionalWeight *
+      endRimBoost *
+      uEndOpacity;
+
+    float alpha = baseAlpha + endAlpha;
 
     if (alpha < 0.015) {
       discard;
     }
 
-    gl_FragColor = vec4(uLineColor, alpha);
+    gl_FragColor = vec4(uLineColor, min(alpha, 1.0));
   }
 `;
 
@@ -240,27 +280,49 @@ function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
 
   if (maxUncertainty >= 1.0) {
     return {
-      lineOpacity: 0.78,
-      lineSpacing: 7.0,
-      lineThickness: 0.075,
-      baseWeight: 0.48,
-      directionalWeight: 0.82,
-      rimStrength: 0.42,
+      // 基础层：整根都有，但更淡一些
+      lineOpacity: 0.24,
+      lineSpacing: 12.0,
+      lineThickness: 0.04,
+
+      // 端部强化层：更密、更明显
+      endLineOpacity: 0.72,
+      endLineSpacing: 5.8,
+      endLineThickness: 0.055,
+      endZoneStart: 0.58,
+      endZoneFeather: 0.08,
+
+      baseWeight: 1.0,
+      directionalWeight: 1.0,
+
+      rimStrength: 0.22,
       rimPower: 2.0,
-      outlineOpacity: 0.9,
-      outlineWidthRatio: 0.0048,
+
+      outlineOpacity: 0.82,
+      outlineWidthRatio: 0.0045,
     };
   }
 
   return {
-    lineOpacity: 0.56,
-    lineSpacing: 10.5,
-    lineThickness: 0.048,
-    baseWeight: 0.24,
-    directionalWeight: 0.58,
-    rimStrength: 0.25,
+    // medium：整体更轻
+    lineOpacity: 0.18,
+    lineSpacing: 13.5,
+    lineThickness: 0.035,
+
+    // medium 端部也增强，但弱一些
+    endLineOpacity: 0.46,
+    endLineSpacing: 7.0,
+    endLineThickness: 0.045,
+    endZoneStart: 0.6,
+    endZoneFeather: 0.08,
+
+    baseWeight: 1.0,
+    directionalWeight: 0.72,
+
+    rimStrength: 0.16,
     rimPower: 2.2,
-    outlineOpacity: 0.58,
+
+    outlineOpacity: 0.55,
     outlineWidthRatio: 0.0036,
   };
 }
@@ -526,9 +588,17 @@ function createLineOverlayMaterial({
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
+
       uOpacity: { value: profile.lineOpacity },
       uSpacing: { value: profile.lineSpacing },
       uThickness: { value: profile.lineThickness },
+
+      uEndOpacity: { value: profile.endLineOpacity },
+      uEndSpacing: { value: profile.endLineSpacing },
+      uEndThickness: { value: profile.endLineThickness },
+      uEndZoneStart: { value: profile.endZoneStart },
+      uEndZoneFeather: { value: profile.endZoneFeather },
+
       uAngle: { value: Math.PI * 0.18 },
 
       uBaseWeight: { value: profile.baseWeight },
