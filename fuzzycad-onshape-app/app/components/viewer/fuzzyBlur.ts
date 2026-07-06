@@ -364,8 +364,6 @@ function getDirectionSigns(direction: ConfidenceDirection): number[] {
   return [-1, 1];
 }
 
-
-
 function normalizeAxisFrame(
   axisFrame: ConfidenceAxisFrame | undefined,
 ): Record<ConfidenceAxis, THREE.Vector3> {
@@ -421,9 +419,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
       return;
     }
 
-    const originalMaterials = object.userData[
-      FUZZY_ORIGINAL_MATERIALS
-    ] as THREE.Material[] | undefined;
+    const originalMaterials = object.userData[FUZZY_ORIGINAL_MATERIALS] as
+      | THREE.Material[]
+      | undefined;
 
     if (!originalMaterials) {
       return;
@@ -440,9 +438,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
     object.material =
       originalMaterials.length === 1 ? originalMaterials[0] : originalMaterials;
 
-    const originalRenderOrder = object.userData[
-      FUZZY_ORIGINAL_RENDER_ORDER
-    ] as number | undefined;
+    const originalRenderOrder = object.userData[FUZZY_ORIGINAL_RENDER_ORDER] as
+      | number
+      | undefined;
 
     if (typeof originalRenderOrder === "number") {
       object.renderOrder = originalRenderOrder;
@@ -695,8 +693,6 @@ function createLineOverlayMaterial({
   return material;
 }
 
-
-
 function getGeometryOutlineWidth(
   geometry: THREE.BufferGeometry,
   profile: { outlineWidthRatio: number },
@@ -706,6 +702,24 @@ function getGeometryOutlineWidth(
   const radius = geometry.boundingSphere?.radius ?? 1;
 
   return Math.max(radius * profile.outlineWidthRatio, 0.0005);
+}
+
+function createScaleAroundPointMatrix(center: THREE.Vector3, scale: number) {
+  const toOrigin = new THREE.Matrix4().makeTranslation(
+    -center.x,
+    -center.y,
+    -center.z,
+  );
+
+  const scaleMatrix = new THREE.Matrix4().makeScale(scale, scale, scale);
+
+  const backToCenter = new THREE.Matrix4().makeTranslation(
+    center.x,
+    center.y,
+    center.z,
+  );
+
+  return backToCenter.multiply(scaleMatrix).multiply(toOrigin);
 }
 
 function createInvisibleDepthMaterial() {
@@ -892,16 +906,17 @@ function createSelectedObjectLineOverlay({
       .multiply(child.matrixWorld);
 
     const outlineGeometry = sourceGeometry.clone();
-const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile) * 1.25;
-const shellOutlineProfile = {
-  ...profile,
-  outlineOpacity: Math.min(profile.outlineOpacity * 1.15, 1.0),
-};
+    const outlineWidth =
+      getGeometryOutlineWidth(outlineGeometry, profile) * 1.25;
+    const shellOutlineProfile = {
+      ...profile,
+      outlineOpacity: Math.min(profile.outlineOpacity * 1.15, 1.0),
+    };
 
-const outlineMaterial = createOuterOutlineMaterial({
-  outlineWidth,
-  profile: shellOutlineProfile,
-});
+    const outlineMaterial = createOuterOutlineMaterial({
+      outlineWidth,
+      profile: shellOutlineProfile,
+    });
 
     const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
     outlineMesh.matrixAutoUpdate = false;
@@ -912,16 +927,16 @@ const outlineMaterial = createOuterOutlineMaterial({
     overlayGroup.add(outlineMesh);
 
     const overlayGeometry = sourceGeometry.clone();
-const overlayMaterial = createLineOverlayMaterial({
-  measure,
-  confidence: annotation.confidence,
-  directions,
-  overrides: {
-    rimStrength: 0.16,
-    rimPower: 2.5,
-    angleOffset: 0,
-  },
-});
+    const overlayMaterial = createLineOverlayMaterial({
+      measure,
+      confidence: annotation.confidence,
+      directions,
+      overrides: {
+        rimStrength: 0.16,
+        rimPower: 2.5,
+        angleOffset: 0,
+      },
+    });
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
     overlayMesh.matrixAutoUpdate = false;
@@ -968,6 +983,10 @@ function createDirectionalGhostShells({
   const objectWorldQuaternion = new THREE.Quaternion();
   object.getWorldQuaternion(objectWorldQuaternion);
 
+  const centerLocal = measure.centerWorld
+    .clone()
+    .applyMatrix4(objectWorldInverse);
+
   const worldToObjectQuaternion = objectWorldQuaternion.clone().invert();
 
   type AxisConfig = {
@@ -978,45 +997,45 @@ function createDirectionalGhostShells({
     halfExtent: number;
   };
 
-const axisConfigs = [
-  {
-    axis: "x",
-    level: annotation.confidence.x,
-    direction: directions.x ?? "both",
-    worldAxis: axesWorld.x,
-    halfExtent: measure.halfExtents.x,
-  },
-  {
-    axis: "y",
-    level: annotation.confidence.y,
-    direction: directions.y ?? "both",
-    worldAxis: axesWorld.y,
-    halfExtent: measure.halfExtents.y,
-  },
-  {
-    axis: "z",
-    level: annotation.confidence.z,
-    direction: directions.z ?? "both",
-    worldAxis: axesWorld.z,
-    halfExtent: measure.halfExtents.z,
-  },
-] satisfies AxisConfig[];
+  const axisConfigs = [
+    {
+      axis: "x",
+      level: annotation.confidence.x,
+      direction: directions.x ?? "both",
+      worldAxis: axesWorld.x,
+      halfExtent: measure.halfExtents.x,
+    },
+    {
+      axis: "y",
+      level: annotation.confidence.y,
+      direction: directions.y ?? "both",
+      worldAxis: axesWorld.y,
+      halfExtent: measure.halfExtents.y,
+    },
+    {
+      axis: "z",
+      level: annotation.confidence.z,
+      direction: directions.z ?? "both",
+      worldAxis: axesWorld.z,
+      halfExtent: measure.halfExtents.z,
+    },
+  ] satisfies AxisConfig[];
 
-const activeAxisConfigs = axisConfigs.filter(
-  (item) => confidenceToStrength(item.level) > 0,
-);
+  const activeAxisConfigs = axisConfigs.filter(
+    (item) => confidenceToStrength(item.level) > 0,
+  );
 
-if (activeAxisConfigs.length === 0) {
-  return null;
-}
+  if (activeAxisConfigs.length === 0) {
+    return null;
+  }
 
-const maxStrength = Math.max(
-  ...activeAxisConfigs.map((item) => confidenceToStrength(item.level)),
-);
+  const maxStrength = Math.max(
+    ...activeAxisConfigs.map((item) => confidenceToStrength(item.level)),
+  );
 
-const primaryAxisConfigs = activeAxisConfigs
-  .filter((item) => confidenceToStrength(item.level) === maxStrength)
-  .slice(0, 1);
+  const primaryAxisConfigs = activeAxisConfigs
+    .filter((item) => confidenceToStrength(item.level) === maxStrength)
+    .slice(0, 1);
 
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
@@ -1039,7 +1058,7 @@ const primaryAxisConfigs = activeAxisConfigs
       .clone()
       .multiply(child.matrixWorld);
 
-for (const axisConfig of primaryAxisConfigs) {
+    for (const axisConfig of primaryAxisConfigs) {
       const layerCount = getGhostShellLayerCount(axisConfig.level);
 
       if (layerCount <= 0) {
@@ -1053,10 +1072,10 @@ for (const axisConfig of primaryAxisConfigs) {
 
       const signs = getDirectionSigns(axisConfig.direction);
 
-const stepDistance = Math.max(
-  axisConfig.halfExtent * 0.32,
-  measure.objectSize * 0.075,
-);
+      const stepDistance = Math.max(
+        axisConfig.halfExtent * 0.32,
+        measure.objectSize * 0.075,
+      );
 
       for (let layer = 1; layer <= layerCount; layer += 1) {
         for (const sign of signs) {
@@ -1070,72 +1089,90 @@ const stepDistance = Math.max(
             translationLocal.z,
           );
 
+          const layerRatio =
+            layerCount <= 1 ? 0 : (layer - 1) / Math.max(layerCount - 1, 1);
+
+          // layer 1 稍微小一点，layer 2 更小一点
+          const shellScale = THREE.MathUtils.lerp(0.92, 0.82, layerRatio);
+
+          const scaleAroundCenterMatrix = createScaleAroundPointMatrix(
+            centerLocal,
+            shellScale,
+          );
+
           const shellMatrix = translationMatrix
             .clone()
+            .multiply(scaleAroundCenterMatrix)
             .multiply(childToObjectMatrix);
 
-// 0) shell depth mask：不可见，但先写 depth，避免 outline 变成黑色实体块
-const depthGeometry = sourceGeometry.clone();
-const depthMaterial = createInvisibleDepthMaterial();
-const depthMesh = new THREE.Mesh(depthGeometry, depthMaterial);
+          // 0) shell depth mask：不可见，但先写 depth，避免 outline 变成黑色实体块
+          const depthGeometry = sourceGeometry.clone();
+          const depthMaterial = createInvisibleDepthMaterial();
+          const depthMesh = new THREE.Mesh(depthGeometry, depthMaterial);
 
-depthMesh.matrixAutoUpdate = false;
-depthMesh.matrix.copy(shellMatrix);
-depthMesh.renderOrder = 1460;
-depthMesh.frustumCulled = false;
-depthMesh.userData[FUZZY_VISUAL_CHILD] = true;
+          depthMesh.matrixAutoUpdate = false;
+          depthMesh.matrix.copy(shellMatrix);
+          depthMesh.renderOrder = 1460;
+          depthMesh.frustumCulled = false;
+          depthMesh.userData[FUZZY_VISUAL_CHILD] = true;
 
-shellGroup.add(depthMesh);
+          shellGroup.add(depthMesh);
 
-// 1) shell outline：和主体一样的 outline profile
-const outlineGeometry = sourceGeometry.clone();
-const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
-const outlineMaterial = createOuterOutlineMaterial({
-  outlineWidth,
-  profile,
-});
+          // 1) shell outline：和主体一样的 outline profile
+          const outlineGeometry = sourceGeometry.clone();
+          const outlineWidth = getGeometryOutlineWidth(
+            outlineGeometry,
+            profile,
+          );
+          const outlineMaterial = createOuterOutlineMaterial({
+            outlineWidth,
+            profile,
+          });
 
-const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
-outlineMesh.matrixAutoUpdate = false;
-outlineMesh.matrix.copy(shellMatrix);
-outlineMesh.renderOrder = 1480;
-outlineMesh.frustumCulled = false;
-outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+          const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
+          outlineMesh.matrixAutoUpdate = false;
+          outlineMesh.matrix.copy(shellMatrix);
+          outlineMesh.renderOrder = 1480;
+          outlineMesh.frustumCulled = false;
+          outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
 
-shellGroup.add(outlineMesh);
+          shellGroup.add(outlineMesh);
 
           // 2) shell line：和主体一样的 line profile
           const shellGeometry = sourceGeometry.clone();
-const shellLineMaterial = createLineOverlayMaterial({
-  measure,
-  confidence: annotation.confidence,
-  directions,
-  overrides: {
-    // shell 不要完全 ghost，但要比主体略轻，避免糊成黑块
-    opacity: profile.lineOpacity * 0.2,
+          const shellLineMaterial = createLineOverlayMaterial({
+            measure,
+            confidence: annotation.confidence,
+            directions,
+            overrides: {
+              // shell 不要完全 ghost，但要比主体略轻，避免糊成黑块
+              opacity: profile.lineOpacity * 0.2,
 
-    // shell 线稍微密一点，让它像外推 boundary
-    spacing: Math.max(profile.lineSpacing * 0.72, 5.0),
-    thickness: profile.lineThickness * 0.2,
+              // shell 线稍微密一点，让它像外推 boundary
+              spacing: Math.max(profile.lineSpacing * 0.72, 5.0),
+              thickness: profile.lineThickness * 0.2,
 
-    // 端部强化也保留，但稍微弱一点，不然和主体端部叠黑
-    endOpacity: profile.endLineOpacity * 0.72,
-    endSpacing: Math.max(profile.endLineSpacing * 0.9, 4.0),
-    endThickness: profile.endLineThickness * 1.05,
+              // 端部强化也保留，但稍微弱一点，不然和主体端部叠黑
+              endOpacity: profile.endLineOpacity * 0.72,
+              endSpacing: Math.max(profile.endLineSpacing * 0.9, 4.0),
+              endThickness: profile.endLineThickness * 1.05,
 
-    // 最关键：角度错开一点，避免 hatch 完全套在一起
-    angleOffset: 0.28,
+              // 最关键：角度错开一点，避免 hatch 完全套在一起
+              angleOffset: 0.28,
 
-    // shell rim 更强，让 shell 自己的边界被读出来
-    rimStrength: 0.2,
-    rimPower: 0.5,
+              // shell rim 更强，让 shell 自己的边界被读出来
+              rimStrength: 0.2,
+              rimPower: 0.5,
 
-    // shell 的 directional end density 不要太重
-    directionalWeight: profile.directionalWeight * 0.2,
-  },
-});
+              // shell 的 directional end density 不要太重
+              directionalWeight: profile.directionalWeight * 0.2,
+            },
+          });
 
-          const shellLineMesh = new THREE.Mesh(shellGeometry, shellLineMaterial);
+          const shellLineMesh = new THREE.Mesh(
+            shellGeometry,
+            shellLineMaterial,
+          );
           shellLineMesh.matrixAutoUpdate = false;
           shellLineMesh.matrix.copy(shellMatrix);
           shellLineMesh.renderOrder = 1500;
