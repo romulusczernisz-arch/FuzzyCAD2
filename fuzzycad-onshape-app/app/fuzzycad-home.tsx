@@ -864,7 +864,7 @@ if (result.ok && result.state) {
             operation="height"
             title={
               heightCandidatePathKeys.length > 0
-                ? "Also modify related components?"
+                ? "Modify related components?"
                 : "Select one object first"
             }
             description={

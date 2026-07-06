@@ -96,12 +96,9 @@ export default function OperationPreviewPanel({
 
       {suggestedObjects && suggestedObjects.length > 0 ? (
         <div className={styles.suggestionList}>
-          <div className={styles.configLabel}>Related components</div>
-          {suggestedObjects.map((item) => (
-            <div key={item} className={styles.suggestionItem}>
-              {item}
-            </div>
-          ))}
+          <div className={styles.configLabel}>
+            {suggestedObjects.length} related component{suggestedObjects.length !== 1 ? "s" : ""} found
+          </div>
         </div>
       ) : null}
 
