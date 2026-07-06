@@ -1127,8 +1127,8 @@ const shellLineMaterial = createLineOverlayMaterial({
     angleOffset: 0.28,
 
     // shell rim 更强，让 shell 自己的边界被读出来
-    rimStrength: 0.95,
-    rimPower: 1,
+    rimStrength: 0.2,
+    rimPower: 0.5,
 
     // shell 的 directional end density 不要太重
     directionalWeight: profile.directionalWeight * 0.2,
