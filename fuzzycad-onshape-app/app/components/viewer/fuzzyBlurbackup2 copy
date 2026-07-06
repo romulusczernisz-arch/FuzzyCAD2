@@ -60,20 +60,22 @@ type VisualProfile = {
   outlineWidthRatio: number;
 };
 
-type EnvelopeProfile = {
-  start: number;
-  feather: number;
-  offsetRatio: number;
-  minOffsetRatio: number;
-  tipScale: number;
+type LineMaterialOverrides = {
+  opacity?: number;
+  spacing?: number;
+  thickness?: number;
 
-  opacity: number;
-  spacing: number;
-  thickness: number;
-  angleOffset: number;
+  endOpacity?: number;
+  endSpacing?: number;
+  endThickness?: number;
 
-  rimStrength: number;
-  rimPower: number;
+  angleOffset?: number;
+
+  baseWeight?: number;
+  directionalWeight?: number;
+
+  rimStrength?: number;
+  rimPower?: number;
 };
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
@@ -169,10 +171,10 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
       -normalizedCoord
     );
 
-    return max(
-      positiveZone * positiveStrength,
-      negativeZone * negativeStrength
-    );
+    float positiveContribution = positiveZone * positiveStrength;
+    float negativeContribution = negativeZone * negativeStrength;
+
+    return max(positiveContribution, negativeContribution);
   }
 
   void main() {
@@ -246,129 +248,6 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-const ENVELOPE_VERTEX_SHADER = /* glsl */ `
-  precision highp float;
-
-  uniform vec3 uObjectCenter;
-  uniform vec3 uAxis;
-  uniform float uHalfExtent;
-  uniform float uDirectionSign;
-
-  uniform float uStart;
-  uniform float uFeather;
-  uniform float uOffset;
-  uniform float uTipScale;
-
-  varying vec3 vWorldNormal;
-  varying vec3 vWorldPosition;
-  varying float vEnvelopeMask;
-
-  void main() {
-    vec4 worldPosition4 = modelMatrix * vec4(position, 1.0);
-    vec3 worldPosition = worldPosition4.xyz;
-
-    vec3 axis = normalize(uAxis);
-    vec3 fromCenter = worldPosition - uObjectCenter;
-
-    float axisCoord = dot(fromCenter, axis);
-    float normalizedCoord = axisCoord / max(uHalfExtent, 0.0001);
-    float sideCoord = normalizedCoord * uDirectionSign;
-
-    float envelopeMask = smoothstep(
-      uStart - uFeather,
-      uStart + uFeather,
-      sideCoord
-    );
-
-    envelopeMask = clamp(envelopeMask, 0.0, 1.0);
-
-    vec3 axial = axis * axisCoord;
-    vec3 radial = fromCenter - axial;
-
-    float radialScale = mix(1.0, uTipScale, envelopeMask);
-
-    vec3 transformedWorldPosition =
-      uObjectCenter +
-      axial +
-      radial * radialScale +
-      axis * uDirectionSign * uOffset * envelopeMask;
-
-    vWorldPosition = transformedWorldPosition;
-    vWorldNormal = normalize(mat3(modelMatrix) * normal);
-    vEnvelopeMask = envelopeMask;
-
-    gl_Position = projectionMatrix * viewMatrix * vec4(transformedWorldPosition, 1.0);
-  }
-`;
-
-const ENVELOPE_FRAGMENT_SHADER = /* glsl */ `
-  precision highp float;
-
-  uniform vec3 uLineColor;
-
-  uniform float uOpacity;
-  uniform float uSpacing;
-  uniform float uThickness;
-  uniform float uAngle;
-
-  uniform float uRimStrength;
-  uniform float uRimPower;
-
-  varying vec3 vWorldNormal;
-  varying vec3 vWorldPosition;
-  varying float vEnvelopeMask;
-
-  float random(vec2 value) {
-    return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453123);
-  }
-
-  float stripeMask(float projected, float spacing, float thickness) {
-    float stripe = fract(projected / spacing);
-    float distanceToLine = abs(stripe - 0.5);
-
-    return 1.0 - smoothstep(
-      thickness,
-      thickness + 0.055,
-      distanceToLine
-    );
-  }
-
-  void main() {
-    if (vEnvelopeMask < 0.025) {
-      discard;
-    }
-
-    vec3 normal = normalize(vWorldNormal);
-    vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-
-    vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
-    float projected = dot(gl_FragCoord.xy, direction);
-
-    float line = stripeMask(projected, uSpacing, uThickness);
-
-    float paperNoise = random(floor(gl_FragCoord.xy / 4.0));
-    float brokenLine = mix(0.76, 1.0, paperNoise);
-
-    float rim = pow(1.0 - abs(dot(normal, viewDir)), uRimPower);
-
-    float maskAlpha = smoothstep(0.04, 0.42, vEnvelopeMask);
-    float rimAlpha = rim * uRimStrength * 0.18;
-
-    float alpha =
-      maskAlpha *
-      (
-        line * brokenLine * uOpacity +
-        rimAlpha
-      );
-
-    if (alpha < 0.014) {
-      discard;
-    }
-
-    gl_FragColor = vec4(uLineColor, min(alpha, 1.0));
-  }
-`;
-
 const OUTER_OUTLINE_VERTEX_SHADER = /* glsl */ `
   uniform float uOutlineWidth;
 
@@ -418,50 +297,50 @@ function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
 
   if (maxUncertainty >= 1.0) {
     return {
-      lineOpacity: 0.14,
+      lineOpacity: 0.16,
       lineSpacing: 13.0,
       lineThickness: 0.035,
 
-      endLineOpacity: 0.88,
-      endLineSpacing: 4.4,
+      endLineOpacity: 0.92,
+      endLineSpacing: 4.5,
       endLineThickness: 0.06,
-      endZoneStart: 0.38,
-      endZoneFeather: 0.18,
+      endZoneStart: 0.4,
+      endZoneFeather: 0.16,
 
       baseWeight: 1.0,
-      directionalWeight: 1.15,
+      directionalWeight: 1.18,
 
-      rimStrength: 0.18,
-      rimPower: 2.4,
+      rimStrength: 0.22,
+      rimPower: 2.0,
 
-      outlineOpacity: 0.82,
+      outlineOpacity: 0.85,
       outlineWidthRatio: 0.0045,
     };
   }
 
   return {
-    lineOpacity: 0.1,
+    lineOpacity: 0.12,
     lineSpacing: 14.0,
     lineThickness: 0.03,
 
-    endLineOpacity: 0.52,
-    endLineSpacing: 5.8,
+    endLineOpacity: 0.55,
+    endLineSpacing: 6.2,
     endLineThickness: 0.05,
     endZoneStart: 0.42,
-    endZoneFeather: 0.16,
+    endZoneFeather: 0.15,
 
     baseWeight: 1.0,
-    directionalWeight: 0.9,
+    directionalWeight: 0.88,
 
-    rimStrength: 0.14,
-    rimPower: 2.5,
+    rimStrength: 0.16,
+    rimPower: 2.2,
 
-    outlineOpacity: 0.55,
+    outlineOpacity: 0.6,
     outlineWidthRatio: 0.0036,
   };
 }
 
-function getEnvelopeLayerCount(level: ConfidenceLevel) {
+function getGhostShellLayerCount(level: ConfidenceLevel) {
   if (level === "low") {
     return 2;
   }
@@ -471,56 +350,6 @@ function getEnvelopeLayerCount(level: ConfidenceLevel) {
   }
 
   return 0;
-}
-
-function getEnvelopeProfile({
-  level,
-  layerIndex,
-  layerCount,
-}: {
-  level: ConfidenceLevel;
-  layerIndex: number;
-  layerCount: number;
-}): EnvelopeProfile {
-  const t = layerCount <= 1 ? 0 : layerIndex / Math.max(layerCount - 1, 1);
-
-  if (level === "low") {
-    return {
-      start: 0.34,
-      feather: 0.22,
-
-      offsetRatio: THREE.MathUtils.lerp(0.24, 0.42, t),
-      minOffsetRatio: THREE.MathUtils.lerp(0.06, 0.1, t),
-
-      tipScale: THREE.MathUtils.lerp(0.88, 0.74, t),
-
-      opacity: THREE.MathUtils.lerp(0.54, 0.38, t),
-      spacing: THREE.MathUtils.lerp(6.2, 5.2, t),
-      thickness: THREE.MathUtils.lerp(0.052, 0.045, t),
-      angleOffset: THREE.MathUtils.lerp(0.28, 0.42, t),
-
-      rimStrength: THREE.MathUtils.lerp(0.95, 0.7, t),
-      rimPower: 1.65,
-    };
-  }
-
-  return {
-    start: 0.42,
-    feather: 0.18,
-
-    offsetRatio: 0.22,
-    minOffsetRatio: 0.055,
-
-    tipScale: 0.88,
-
-    opacity: 0.38,
-    spacing: 6.8,
-    thickness: 0.045,
-    angleOffset: 0.28,
-
-    rimStrength: 0.75,
-    rimPower: 1.8,
-  };
 }
 
 function getDirectionSigns(direction: ConfidenceDirection): number[] {
@@ -590,9 +419,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
       return;
     }
 
-    const originalMaterials = object.userData[
-      FUZZY_ORIGINAL_MATERIALS
-    ] as THREE.Material[] | undefined;
+    const originalMaterials = object.userData[FUZZY_ORIGINAL_MATERIALS] as
+      | THREE.Material[]
+      | undefined;
 
     if (!originalMaterials) {
       return;
@@ -609,9 +438,9 @@ function restoreOriginalMaterials(scene: THREE.Object3D) {
     object.material =
       originalMaterials.length === 1 ? originalMaterials[0] : originalMaterials;
 
-    const originalRenderOrder = object.userData[
-      FUZZY_ORIGINAL_RENDER_ORDER
-    ] as number | undefined;
+    const originalRenderOrder = object.userData[FUZZY_ORIGINAL_RENDER_ORDER] as
+      | number
+      | undefined;
 
     if (typeof originalRenderOrder === "number") {
       object.renderOrder = originalRenderOrder;
@@ -692,7 +521,6 @@ function collectObjectWorldPoints(object: THREE.Object3D) {
       worldPoint
         .fromBufferAttribute(position, index)
         .applyMatrix4(child.matrixWorld);
-
       points.push(worldPoint.clone());
     }
   });
@@ -783,10 +611,12 @@ function createLineOverlayMaterial({
   measure,
   confidence,
   directions,
+  overrides,
 }: {
   measure: DirectionalMeasure;
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
+  overrides?: LineMaterialOverrides;
 }) {
   const profile = getVisualProfile(confidence);
 
@@ -794,29 +624,43 @@ function createLineOverlayMaterial({
   const yStrength = getSideStrengths(confidence.y, directions.y ?? "both");
   const zStrength = getSideStrengths(confidence.z, directions.z ?? "both");
 
+  const baseAngle = Math.PI * 0.18;
+
   const material = new THREE.ShaderMaterial({
     vertexShader: LINE_OVERLAY_VERTEX_SHADER,
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
 
-      uOpacity: { value: profile.lineOpacity },
-      uSpacing: { value: profile.lineSpacing },
-      uThickness: { value: profile.lineThickness },
+      uOpacity: { value: overrides?.opacity ?? profile.lineOpacity },
+      uSpacing: { value: overrides?.spacing ?? profile.lineSpacing },
+      uThickness: { value: overrides?.thickness ?? profile.lineThickness },
 
-      uEndOpacity: { value: profile.endLineOpacity },
-      uEndSpacing: { value: profile.endLineSpacing },
-      uEndThickness: { value: profile.endLineThickness },
+      uEndOpacity: {
+        value: overrides?.endOpacity ?? profile.endLineOpacity,
+      },
+      uEndSpacing: {
+        value: overrides?.endSpacing ?? profile.endLineSpacing,
+      },
+      uEndThickness: {
+        value: overrides?.endThickness ?? profile.endLineThickness,
+      },
       uEndZoneStart: { value: profile.endZoneStart },
       uEndZoneFeather: { value: profile.endZoneFeather },
 
-      uAngle: { value: Math.PI * 0.18 },
+      uAngle: { value: baseAngle + (overrides?.angleOffset ?? 0) },
 
-      uBaseWeight: { value: profile.baseWeight },
-      uDirectionalWeight: { value: profile.directionalWeight },
+      uBaseWeight: { value: overrides?.baseWeight ?? profile.baseWeight },
+      uDirectionalWeight: {
+        value: overrides?.directionalWeight ?? profile.directionalWeight,
+      },
 
-      uRimStrength: { value: profile.rimStrength },
-      uRimPower: { value: profile.rimPower },
+      uRimStrength: {
+        value: overrides?.rimStrength ?? profile.rimStrength,
+      },
+      uRimPower: {
+        value: overrides?.rimPower ?? profile.rimPower,
+      },
 
       uObjectCenter: { value: measure.centerWorld.clone() },
 
@@ -849,59 +693,6 @@ function createLineOverlayMaterial({
   return material;
 }
 
-function createEnvelopeMaterial({
-  measure,
-  axis,
-  halfExtent,
-  directionSign,
-  profile,
-  layerOffset,
-}: {
-  measure: DirectionalMeasure;
-  axis: THREE.Vector3;
-  halfExtent: number;
-  directionSign: number;
-  profile: EnvelopeProfile;
-  layerOffset: number;
-}) {
-  const material = new THREE.ShaderMaterial({
-    vertexShader: ENVELOPE_VERTEX_SHADER,
-    fragmentShader: ENVELOPE_FRAGMENT_SHADER,
-    uniforms: {
-      uLineColor: { value: new THREE.Color(0x111827) },
-
-      uObjectCenter: { value: measure.centerWorld.clone() },
-      uAxis: { value: axis.clone().normalize() },
-      uHalfExtent: { value: halfExtent },
-      uDirectionSign: { value: directionSign },
-
-      uStart: { value: profile.start },
-      uFeather: { value: profile.feather },
-      uOffset: { value: layerOffset },
-      uTipScale: { value: profile.tipScale },
-
-      uOpacity: { value: profile.opacity },
-      uSpacing: { value: profile.spacing },
-      uThickness: { value: profile.thickness },
-      uAngle: { value: Math.PI * 0.18 + profile.angleOffset },
-
-      uRimStrength: { value: profile.rimStrength },
-      uRimPower: { value: profile.rimPower },
-    },
-    transparent: true,
-    depthTest: true,
-    depthWrite: false,
-    side: THREE.FrontSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1.5,
-    polygonOffsetUnits: -1.5,
-  });
-
-  material.userData[FUZZY_VISUAL_CHILD] = true;
-
-  return material;
-}
-
 function getGeometryOutlineWidth(
   geometry: THREE.BufferGeometry,
   profile: { outlineWidthRatio: number },
@@ -911,6 +702,39 @@ function getGeometryOutlineWidth(
   const radius = geometry.boundingSphere?.radius ?? 1;
 
   return Math.max(radius * profile.outlineWidthRatio, 0.0005);
+}
+
+function createScaleAroundPointMatrix(center: THREE.Vector3, scale: number) {
+  const toOrigin = new THREE.Matrix4().makeTranslation(
+    -center.x,
+    -center.y,
+    -center.z,
+  );
+
+  const scaleMatrix = new THREE.Matrix4().makeScale(scale, scale, scale);
+
+  const backToCenter = new THREE.Matrix4().makeTranslation(
+    center.x,
+    center.y,
+    center.z,
+  );
+
+  return backToCenter.multiply(scaleMatrix).multiply(toOrigin);
+}
+
+function createInvisibleDepthMaterial() {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    depthTest: true,
+    depthWrite: true,
+    colorWrite: false,
+  });
+
+  material.userData[FUZZY_ACTIVE_MATERIAL] = true;
+  material.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return material;
 }
 
 function createOuterOutlineMaterial({
@@ -935,7 +759,6 @@ function createOuterOutlineMaterial({
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
-
   return material;
 }
 
@@ -1055,12 +878,10 @@ function createSelectedObjectLineOverlay({
   const profile = getVisualProfile(annotation.confidence);
 
   const overlayGroup = new THREE.Group();
-
   overlayGroup.userData[FUZZY_VISUAL_CHILD] = true;
   overlayGroup.renderOrder = 1600;
 
   object.updateWorldMatrix(true, true);
-
   const objectWorldInverse = object.matrixWorld.clone().invert();
 
   object.traverse((child) => {
@@ -1085,20 +906,24 @@ function createSelectedObjectLineOverlay({
       .multiply(child.matrixWorld);
 
     const outlineGeometry = sourceGeometry.clone();
-    const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
+    const outlineWidth =
+      getGeometryOutlineWidth(outlineGeometry, profile) * 1.25;
+    const shellOutlineProfile = {
+      ...profile,
+      outlineOpacity: Math.min(profile.outlineOpacity * 1.15, 1.0),
+    };
+
     const outlineMaterial = createOuterOutlineMaterial({
       outlineWidth,
-      profile,
+      profile: shellOutlineProfile,
     });
 
     const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
-
     outlineMesh.matrixAutoUpdate = false;
     outlineMesh.matrix.copy(childToObjectMatrix);
     outlineMesh.renderOrder = 1550;
     outlineMesh.frustumCulled = false;
     outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
     overlayGroup.add(outlineMesh);
 
     const overlayGeometry = sourceGeometry.clone();
@@ -1106,16 +931,19 @@ function createSelectedObjectLineOverlay({
       measure,
       confidence: annotation.confidence,
       directions,
+      overrides: {
+        rimStrength: 0.16,
+        rimPower: 2.5,
+        angleOffset: 0,
+      },
     });
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
-
     overlayMesh.matrixAutoUpdate = false;
     overlayMesh.matrix.copy(childToObjectMatrix);
     overlayMesh.renderOrder = 1600;
     overlayMesh.frustumCulled = false;
     overlayMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
     overlayGroup.add(overlayMesh);
   });
 
@@ -1126,7 +954,7 @@ function createSelectedObjectLineOverlay({
   return overlayGroup;
 }
 
-function createDirectionalEnvelope({
+function createDirectionalGhostShells({
   object,
   annotation,
   axisFrame,
@@ -1143,11 +971,23 @@ function createDirectionalEnvelope({
 
   const directions = annotation.directions ?? DEFAULT_DIRECTIONS;
   const axesWorld = normalizeAxisFrame(axisFrame);
+  const profile = getVisualProfile(annotation.confidence);
 
-  const envelopeGroup = new THREE.Group();
+  const shellGroup = new THREE.Group();
+  shellGroup.userData[FUZZY_VISUAL_CHILD] = true;
+  shellGroup.renderOrder = 1500;
 
-  envelopeGroup.userData[FUZZY_VISUAL_CHILD] = true;
-  envelopeGroup.renderOrder = 1500;
+  object.updateWorldMatrix(true, true);
+
+  const objectWorldInverse = object.matrixWorld.clone().invert();
+  const objectWorldQuaternion = new THREE.Quaternion();
+  object.getWorldQuaternion(objectWorldQuaternion);
+
+  const centerLocal = measure.centerWorld
+    .clone()
+    .applyMatrix4(objectWorldInverse);
+
+  const worldToObjectQuaternion = objectWorldQuaternion.clone().invert();
 
   type AxisConfig = {
     axis: ConfidenceAxis;
@@ -1157,29 +997,29 @@ function createDirectionalEnvelope({
     halfExtent: number;
   };
 
-  const axisConfigs: AxisConfig[] = [
+  const axisConfigs = [
     {
-      axis: "x" as ConfidenceAxis,
+      axis: "x",
       level: annotation.confidence.x,
       direction: directions.x ?? "both",
       worldAxis: axesWorld.x,
       halfExtent: measure.halfExtents.x,
     },
     {
-      axis: "y" as ConfidenceAxis,
+      axis: "y",
       level: annotation.confidence.y,
       direction: directions.y ?? "both",
       worldAxis: axesWorld.y,
       halfExtent: measure.halfExtents.y,
     },
     {
-      axis: "z" as ConfidenceAxis,
+      axis: "z",
       level: annotation.confidence.z,
       direction: directions.z ?? "both",
       worldAxis: axesWorld.z,
       halfExtent: measure.halfExtents.z,
     },
-  ];
+  ] satisfies AxisConfig[];
 
   const activeAxisConfigs = axisConfigs.filter(
     (item) => confidenceToStrength(item.level) > 0,
@@ -1189,26 +1029,13 @@ function createDirectionalEnvelope({
     return null;
   }
 
-  const specificallyDirectedConfigs = activeAxisConfigs.filter(
-    (item) => item.direction !== "both",
-  );
-
-  const candidateAxisConfigs =
-    specificallyDirectedConfigs.length > 0
-      ? specificallyDirectedConfigs
-      : activeAxisConfigs;
-
   const maxStrength = Math.max(
-    ...candidateAxisConfigs.map((item) => confidenceToStrength(item.level)),
+    ...activeAxisConfigs.map((item) => confidenceToStrength(item.level)),
   );
 
-  const primaryAxisConfigs = candidateAxisConfigs
+  const primaryAxisConfigs = activeAxisConfigs
     .filter((item) => confidenceToStrength(item.level) === maxStrength)
     .slice(0, 1);
-
-  object.updateWorldMatrix(true, true);
-
-  const objectWorldInverse = object.matrixWorld.clone().invert();
 
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
@@ -1232,59 +1059,137 @@ function createDirectionalEnvelope({
       .multiply(child.matrixWorld);
 
     for (const axisConfig of primaryAxisConfigs) {
-      const layerCount = getEnvelopeLayerCount(axisConfig.level);
+      const layerCount = getGhostShellLayerCount(axisConfig.level);
 
       if (layerCount <= 0) {
         continue;
       }
 
+      const localAxis = axisConfig.worldAxis
+        .clone()
+        .applyQuaternion(worldToObjectQuaternion)
+        .normalize();
+
       const signs = getDirectionSigns(axisConfig.direction);
 
-      for (let layer = 0; layer < layerCount; layer += 1) {
-        const envelopeProfile = getEnvelopeProfile({
-          level: axisConfig.level,
-          layerIndex: layer,
-          layerCount,
-        });
+      const stepDistance = Math.max(
+        axisConfig.halfExtent * 0.32,
+        measure.objectSize * 0.075,
+      );
 
-        const offsetDistance = Math.max(
-          axisConfig.halfExtent * envelopeProfile.offsetRatio,
-          measure.objectSize * envelopeProfile.minOffsetRatio,
-        );
-
+      for (let layer = 1; layer <= layerCount; layer += 1) {
         for (const sign of signs) {
-          const envelopeGeometry = sourceGeometry.clone();
-          const envelopeMaterial = createEnvelopeMaterial({
-            measure,
-            axis: axisConfig.worldAxis,
-            halfExtent: axisConfig.halfExtent,
-            directionSign: sign,
-            profile: envelopeProfile,
-            layerOffset: offsetDistance,
-          });
+          const translationLocal = localAxis
+            .clone()
+            .multiplyScalar(sign * stepDistance * layer);
 
-          const envelopeMesh = new THREE.Mesh(
-            envelopeGeometry,
-            envelopeMaterial,
+          const translationMatrix = new THREE.Matrix4().makeTranslation(
+            translationLocal.x,
+            translationLocal.y,
+            translationLocal.z,
           );
 
-          envelopeMesh.matrixAutoUpdate = false;
-          envelopeMesh.matrix.copy(childToObjectMatrix);
-          envelopeMesh.renderOrder = 1510 + layer;
-          envelopeMesh.frustumCulled = false;
-          envelopeMesh.userData[FUZZY_VISUAL_CHILD] = true;
+          const layerRatio =
+            layerCount <= 1 ? 0 : (layer - 1) / Math.max(layerCount - 1, 1);
 
-          envelopeGroup.add(envelopeMesh);
+          // layer 1 稍微小一点，layer 2 更小一点
+          const shellScale = THREE.MathUtils.lerp(0.92, 0.82, layerRatio);
+
+          const scaleAroundCenterMatrix = createScaleAroundPointMatrix(
+            centerLocal,
+            shellScale,
+          );
+
+          const shellMatrix = translationMatrix
+            .clone()
+            .multiply(scaleAroundCenterMatrix)
+            .multiply(childToObjectMatrix);
+
+          // 0) shell depth mask：不可见，但先写 depth，避免 outline 变成黑色实体块
+          const depthGeometry = sourceGeometry.clone();
+          const depthMaterial = createInvisibleDepthMaterial();
+          const depthMesh = new THREE.Mesh(depthGeometry, depthMaterial);
+
+          depthMesh.matrixAutoUpdate = false;
+          depthMesh.matrix.copy(shellMatrix);
+          depthMesh.renderOrder = 1460;
+          depthMesh.frustumCulled = false;
+          depthMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
+          shellGroup.add(depthMesh);
+
+          // 1) shell outline：和主体一样的 outline profile
+          const outlineGeometry = sourceGeometry.clone();
+          const outlineWidth = getGeometryOutlineWidth(
+            outlineGeometry,
+            profile,
+          );
+          const outlineMaterial = createOuterOutlineMaterial({
+            outlineWidth,
+            profile,
+          });
+
+          const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
+          outlineMesh.matrixAutoUpdate = false;
+          outlineMesh.matrix.copy(shellMatrix);
+          outlineMesh.renderOrder = 1480;
+          outlineMesh.frustumCulled = false;
+          outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
+          shellGroup.add(outlineMesh);
+
+          // 2) shell line：和主体一样的 line profile
+          const shellGeometry = sourceGeometry.clone();
+          const shellLineMaterial = createLineOverlayMaterial({
+            measure,
+            confidence: annotation.confidence,
+            directions,
+            overrides: {
+              // shell 不要完全 ghost，但要比主体略轻，避免糊成黑块
+              opacity: profile.lineOpacity * 0.2,
+
+              // shell 线稍微密一点，让它像外推 boundary
+              spacing: Math.max(profile.lineSpacing * 0.72, 5.0),
+              thickness: profile.lineThickness * 0.2,
+
+              // 端部强化也保留，但稍微弱一点，不然和主体端部叠黑
+              endOpacity: profile.endLineOpacity * 0.72,
+              endSpacing: Math.max(profile.endLineSpacing * 0.9, 4.0),
+              endThickness: profile.endLineThickness * 1.05,
+
+              // 最关键：角度错开一点，避免 hatch 完全套在一起
+              angleOffset: 0.28,
+
+              // shell rim 更强，让 shell 自己的边界被读出来
+              rimStrength: 0.2,
+              rimPower: 0.5,
+
+              // shell 的 directional end density 不要太重
+              directionalWeight: profile.directionalWeight * 0.2,
+            },
+          });
+
+          const shellLineMesh = new THREE.Mesh(
+            shellGeometry,
+            shellLineMaterial,
+          );
+          shellLineMesh.matrixAutoUpdate = false;
+          shellLineMesh.matrix.copy(shellMatrix);
+          shellLineMesh.renderOrder = 1500;
+          shellLineMesh.frustumCulled = false;
+          shellLineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
+          shellGroup.add(shellLineMesh);
         }
       }
     }
   });
 
-  if (envelopeGroup.children.length === 0) {
+  if (shellGroup.children.length === 0) {
     return null;
   }
 
-  return envelopeGroup;
+  return shellGroup;
 }
 
 export function applyFuzzyConfidence(
@@ -1325,14 +1230,14 @@ export function applyFuzzyConfidence(
 
     hideOriginalMaterials(object);
 
-    const envelope = createDirectionalEnvelope({
+    const shell = createDirectionalGhostShells({
       object,
       annotation,
       axisFrame: axisFramesByPathKey?.get(pathKey),
     });
 
-    if (envelope) {
-      object.add(envelope);
+    if (shell) {
+      object.add(shell);
     }
 
     const overlay = createSelectedObjectLineOverlay({
