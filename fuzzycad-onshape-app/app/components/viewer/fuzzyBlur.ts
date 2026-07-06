@@ -60,20 +60,35 @@ type VisualProfile = {
   outlineWidthRatio: number;
 };
 
-type EnvelopeProfile = {
-  start: number;
-  feather: number;
-  offsetRatio: number;
-  minOffsetRatio: number;
-  tipScale: number;
+type RangeSectionProfile = {
+  sectionCount: number;
+  rangeRatio: number;
+  minRangeRatio: number;
+  firstScale: number;
+  lastScale: number;
+  contourOpacity: number;
+  connectorOpacity: number;
+  connectorCount: number;
+  binCount: number;
+};
 
-  opacity: number;
-  spacing: number;
-  thickness: number;
-  angleOffset: number;
+type AxisConfig = {
+  axis: ConfidenceAxis;
+  level: ConfidenceLevel;
+  direction: ConfidenceDirection;
+  worldAxis: THREE.Vector3;
+  halfExtent: number;
+};
 
-  rimStrength: number;
-  rimPower: number;
+type ContourTemplate = {
+  capCenter: THREE.Vector3;
+  basePoints: THREE.Vector3[];
+  halfExtent: number;
+};
+
+type SectionGeometryData = {
+  contourPositions: number[];
+  connectorPositions: number[];
 };
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
@@ -246,129 +261,6 @@ const LINE_OVERLAY_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-const ENVELOPE_VERTEX_SHADER = /* glsl */ `
-  precision highp float;
-
-  uniform vec3 uObjectCenter;
-  uniform vec3 uAxis;
-  uniform float uHalfExtent;
-  uniform float uDirectionSign;
-
-  uniform float uStart;
-  uniform float uFeather;
-  uniform float uOffset;
-  uniform float uTipScale;
-
-  varying vec3 vWorldNormal;
-  varying vec3 vWorldPosition;
-  varying float vEnvelopeMask;
-
-  void main() {
-    vec4 worldPosition4 = modelMatrix * vec4(position, 1.0);
-    vec3 worldPosition = worldPosition4.xyz;
-
-    vec3 axis = normalize(uAxis);
-    vec3 fromCenter = worldPosition - uObjectCenter;
-
-    float axisCoord = dot(fromCenter, axis);
-    float normalizedCoord = axisCoord / max(uHalfExtent, 0.0001);
-    float sideCoord = normalizedCoord * uDirectionSign;
-
-    float envelopeMask = smoothstep(
-      uStart - uFeather,
-      uStart + uFeather,
-      sideCoord
-    );
-
-    envelopeMask = clamp(envelopeMask, 0.0, 1.0);
-
-    vec3 axial = axis * axisCoord;
-    vec3 radial = fromCenter - axial;
-
-    float radialScale = mix(1.0, uTipScale, envelopeMask);
-
-    vec3 transformedWorldPosition =
-      uObjectCenter +
-      axial +
-      radial * radialScale +
-      axis * uDirectionSign * uOffset * envelopeMask;
-
-    vWorldPosition = transformedWorldPosition;
-    vWorldNormal = normalize(mat3(modelMatrix) * normal);
-    vEnvelopeMask = envelopeMask;
-
-    gl_Position = projectionMatrix * viewMatrix * vec4(transformedWorldPosition, 1.0);
-  }
-`;
-
-const ENVELOPE_FRAGMENT_SHADER = /* glsl */ `
-  precision highp float;
-
-  uniform vec3 uLineColor;
-
-  uniform float uOpacity;
-  uniform float uSpacing;
-  uniform float uThickness;
-  uniform float uAngle;
-
-  uniform float uRimStrength;
-  uniform float uRimPower;
-
-  varying vec3 vWorldNormal;
-  varying vec3 vWorldPosition;
-  varying float vEnvelopeMask;
-
-  float random(vec2 value) {
-    return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453123);
-  }
-
-  float stripeMask(float projected, float spacing, float thickness) {
-    float stripe = fract(projected / spacing);
-    float distanceToLine = abs(stripe - 0.5);
-
-    return 1.0 - smoothstep(
-      thickness,
-      thickness + 0.055,
-      distanceToLine
-    );
-  }
-
-  void main() {
-    if (vEnvelopeMask < 0.025) {
-      discard;
-    }
-
-    vec3 normal = normalize(vWorldNormal);
-    vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-
-    vec2 direction = normalize(vec2(cos(uAngle), sin(uAngle)));
-    float projected = dot(gl_FragCoord.xy, direction);
-
-    float line = stripeMask(projected, uSpacing, uThickness);
-
-    float paperNoise = random(floor(gl_FragCoord.xy / 4.0));
-    float brokenLine = mix(0.76, 1.0, paperNoise);
-
-    float rim = pow(1.0 - abs(dot(normal, viewDir)), uRimPower);
-
-    float maskAlpha = smoothstep(0.04, 0.42, vEnvelopeMask);
-    float rimAlpha = rim * uRimStrength * 0.18;
-
-    float alpha =
-      maskAlpha *
-      (
-        line * brokenLine * uOpacity +
-        rimAlpha
-      );
-
-    if (alpha < 0.014) {
-      discard;
-    }
-
-    gl_FragColor = vec4(uLineColor, min(alpha, 1.0));
-  }
-`;
-
 const OUTER_OUTLINE_VERTEX_SHADER = /* glsl */ `
   uniform float uOutlineWidth;
 
@@ -461,65 +353,45 @@ function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
   };
 }
 
-function getEnvelopeLayerCount(level: ConfidenceLevel) {
+function getRangeSectionProfile(level: ConfidenceLevel): RangeSectionProfile {
   if (level === "low") {
-    return 2;
+    return {
+      sectionCount: 4,
+      rangeRatio: 0.46,
+      minRangeRatio: 0.085,
+      firstScale: 0.96,
+      lastScale: 0.74,
+      contourOpacity: 0.78,
+      connectorOpacity: 0.44,
+      connectorCount: 6,
+      binCount: 32,
+    };
   }
 
   if (level === "medium") {
-    return 1;
-  }
-
-  return 0;
-}
-
-function getEnvelopeProfile({
-  level,
-  layerIndex,
-  layerCount,
-}: {
-  level: ConfidenceLevel;
-  layerIndex: number;
-  layerCount: number;
-}): EnvelopeProfile {
-  const t = layerCount <= 1 ? 0 : layerIndex / Math.max(layerCount - 1, 1);
-
-  if (level === "low") {
     return {
-      start: 0.34,
-      feather: 0.22,
-
-      offsetRatio: THREE.MathUtils.lerp(0.24, 0.42, t),
-      minOffsetRatio: THREE.MathUtils.lerp(0.06, 0.1, t),
-
-      tipScale: THREE.MathUtils.lerp(0.88, 0.74, t),
-
-      opacity: THREE.MathUtils.lerp(0.54, 0.38, t),
-      spacing: THREE.MathUtils.lerp(6.2, 5.2, t),
-      thickness: THREE.MathUtils.lerp(0.052, 0.045, t),
-      angleOffset: THREE.MathUtils.lerp(0.28, 0.42, t),
-
-      rimStrength: THREE.MathUtils.lerp(0.95, 0.7, t),
-      rimPower: 1.65,
+      sectionCount: 2,
+      rangeRatio: 0.26,
+      minRangeRatio: 0.055,
+      firstScale: 0.97,
+      lastScale: 0.86,
+      contourOpacity: 0.58,
+      connectorOpacity: 0.32,
+      connectorCount: 4,
+      binCount: 28,
     };
   }
 
   return {
-    start: 0.42,
-    feather: 0.18,
-
-    offsetRatio: 0.22,
-    minOffsetRatio: 0.055,
-
-    tipScale: 0.88,
-
-    opacity: 0.38,
-    spacing: 6.8,
-    thickness: 0.045,
-    angleOffset: 0.28,
-
-    rimStrength: 0.75,
-    rimPower: 1.8,
+    sectionCount: 0,
+    rangeRatio: 0,
+    minRangeRatio: 0,
+    firstScale: 1,
+    lastScale: 1,
+    contourOpacity: 0,
+    connectorOpacity: 0,
+    connectorCount: 0,
+    binCount: 24,
   };
 }
 
@@ -719,6 +591,47 @@ function collectObjectWorldPoints(object: THREE.Object3D) {
   ];
 }
 
+function collectObjectLocalPoints(object: THREE.Object3D) {
+  const points: THREE.Vector3[] = [];
+  const localPoint = new THREE.Vector3();
+
+  object.updateWorldMatrix(true, true);
+
+  const objectWorldInverse = object.matrixWorld.clone().invert();
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
+      return;
+    }
+
+    const position = child.geometry.getAttribute("position");
+
+    if (!position) {
+      return;
+    }
+
+    child.updateWorldMatrix(true, false);
+
+    const childToObjectMatrix = objectWorldInverse
+      .clone()
+      .multiply(child.matrixWorld);
+
+    for (let index = 0; index < position.count; index += 1) {
+      localPoint
+        .fromBufferAttribute(position, index)
+        .applyMatrix4(childToObjectMatrix);
+
+      points.push(localPoint.clone());
+    }
+  });
+
+  return points;
+}
+
 function measureObjectDirectionality(
   object: THREE.Object3D,
   axisFrame: ConfidenceAxisFrame | undefined,
@@ -849,59 +762,6 @@ function createLineOverlayMaterial({
   return material;
 }
 
-function createEnvelopeMaterial({
-  measure,
-  axis,
-  halfExtent,
-  directionSign,
-  profile,
-  layerOffset,
-}: {
-  measure: DirectionalMeasure;
-  axis: THREE.Vector3;
-  halfExtent: number;
-  directionSign: number;
-  profile: EnvelopeProfile;
-  layerOffset: number;
-}) {
-  const material = new THREE.ShaderMaterial({
-    vertexShader: ENVELOPE_VERTEX_SHADER,
-    fragmentShader: ENVELOPE_FRAGMENT_SHADER,
-    uniforms: {
-      uLineColor: { value: new THREE.Color(0x111827) },
-
-      uObjectCenter: { value: measure.centerWorld.clone() },
-      uAxis: { value: axis.clone().normalize() },
-      uHalfExtent: { value: halfExtent },
-      uDirectionSign: { value: directionSign },
-
-      uStart: { value: profile.start },
-      uFeather: { value: profile.feather },
-      uOffset: { value: layerOffset },
-      uTipScale: { value: profile.tipScale },
-
-      uOpacity: { value: profile.opacity },
-      uSpacing: { value: profile.spacing },
-      uThickness: { value: profile.thickness },
-      uAngle: { value: Math.PI * 0.18 + profile.angleOffset },
-
-      uRimStrength: { value: profile.rimStrength },
-      uRimPower: { value: profile.rimPower },
-    },
-    transparent: true,
-    depthTest: true,
-    depthWrite: false,
-    side: THREE.FrontSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1.5,
-    polygonOffsetUnits: -1.5,
-  });
-
-  material.userData[FUZZY_VISUAL_CHILD] = true;
-
-  return material;
-}
-
 function getGeometryOutlineWidth(
   geometry: THREE.BufferGeometry,
   profile: { outlineWidthRatio: number },
@@ -937,6 +797,253 @@ function createOuterOutlineMaterial({
   material.userData[FUZZY_VISUAL_CHILD] = true;
 
   return material;
+}
+
+function createRangeLineMaterial(opacity: number) {
+  const material = new THREE.LineBasicMaterial({
+    color: 0x111827,
+    transparent: true,
+    opacity,
+    depthTest: false,
+    depthWrite: false,
+  });
+
+  material.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return material;
+}
+
+function createLineSegmentsObject({
+  positions,
+  opacity,
+  renderOrder,
+}: {
+  positions: number[];
+  opacity: number;
+  renderOrder: number;
+}) {
+  if (positions.length === 0) {
+    return null;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+
+  const material = createRangeLineMaterial(opacity);
+  const line = new THREE.LineSegments(geometry, material);
+
+  line.renderOrder = renderOrder;
+  line.frustumCulled = false;
+  line.userData[FUZZY_VISUAL_CHILD] = true;
+
+  return line;
+}
+
+function getPerpendicularBasis(axis: THREE.Vector3) {
+  const normalizedAxis = axis.clone().normalize();
+  const reference =
+    Math.abs(normalizedAxis.dot(new THREE.Vector3(0, 1, 0))) > 0.85
+      ? new THREE.Vector3(1, 0, 0)
+      : new THREE.Vector3(0, 1, 0);
+
+  const u = new THREE.Vector3()
+    .crossVectors(normalizedAxis, reference)
+    .normalize();
+  const v = new THREE.Vector3().crossVectors(normalizedAxis, u).normalize();
+
+  return { u, v };
+}
+
+function pushSegment(
+  positions: number[],
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+) {
+  positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+}
+
+function buildContourTemplate({
+  points,
+  centerLocal,
+  axisLocal,
+  sign,
+  binCount,
+}: {
+  points: THREE.Vector3[];
+  centerLocal: THREE.Vector3;
+  axisLocal: THREE.Vector3;
+  sign: number;
+  binCount: number;
+}): ContourTemplate | null {
+  if (points.length === 0) {
+    return null;
+  }
+
+  const axis = axisLocal.clone().normalize();
+  const { u, v } = getPerpendicularBasis(axis);
+
+  let minCoord = Infinity;
+  let maxCoord = -Infinity;
+
+  const coords = points.map((point) => {
+    const coord = point.clone().sub(centerLocal).dot(axis);
+
+    minCoord = Math.min(minCoord, coord);
+    maxCoord = Math.max(maxCoord, coord);
+
+    return coord;
+  });
+
+  if (!Number.isFinite(minCoord) || !Number.isFinite(maxCoord)) {
+    return null;
+  }
+
+  const halfExtent = Math.max((maxCoord - minCoord) / 2, 0.0001);
+  const capCoord = sign > 0 ? maxCoord : minCoord;
+  const capCenter = centerLocal.clone().add(axis.clone().multiplyScalar(capCoord));
+  const sideMax = sign * capCoord;
+  const sideWindow = Math.max(halfExtent * 0.42, 0.0001);
+
+  const bins: { radial: THREE.Vector3; radius: number }[] = Array.from(
+    { length: binCount },
+    () => ({ radial: new THREE.Vector3(), radius: -Infinity }),
+  );
+
+  const observedRadii: number[] = [];
+
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const coord = coords[index];
+    const sideCoord = sign * coord;
+
+    if (sideMax - sideCoord > sideWindow) {
+      continue;
+    }
+
+    const axialPoint = centerLocal.clone().add(axis.clone().multiplyScalar(coord));
+    const radial = point.clone().sub(axialPoint);
+    const x = radial.dot(u);
+    const y = radial.dot(v);
+    const radius = Math.sqrt(x * x + y * y);
+
+    if (radius <= 0.00001) {
+      continue;
+    }
+
+    let angle = Math.atan2(y, x);
+
+    if (angle < 0) {
+      angle += Math.PI * 2;
+    }
+
+    const binIndex = Math.min(
+      binCount - 1,
+      Math.floor((angle / (Math.PI * 2)) * binCount),
+    );
+
+    if (radius > bins[binIndex].radius) {
+      bins[binIndex] = {
+        radial: u.clone().multiplyScalar(x).add(v.clone().multiplyScalar(y)),
+        radius,
+      };
+    }
+
+    observedRadii.push(radius);
+  }
+
+  const averageRadius =
+    observedRadii.length > 0
+      ? observedRadii.reduce((sum, radius) => sum + radius, 0) /
+        observedRadii.length
+      : Math.max(halfExtent * 0.08, 0.001);
+
+  const basePoints = bins.map((bin, index) => {
+    if (bin.radius > 0) {
+      return capCenter.clone().add(bin.radial);
+    }
+
+    const angle = (index / binCount) * Math.PI * 2;
+    const fallbackRadial = u
+      .clone()
+      .multiplyScalar(Math.cos(angle) * averageRadius)
+      .add(v.clone().multiplyScalar(Math.sin(angle) * averageRadius));
+
+    return capCenter.clone().add(fallbackRadial);
+  });
+
+  return {
+    capCenter,
+    basePoints,
+    halfExtent,
+  };
+}
+
+function buildSectionGeometryData({
+  template,
+  axisLocal,
+  sign,
+  profile,
+  rangeDistance,
+}: {
+  template: ContourTemplate;
+  axisLocal: THREE.Vector3;
+  sign: number;
+  profile: RangeSectionProfile;
+  rangeDistance: number;
+}): SectionGeometryData {
+  const contourPositions: number[] = [];
+  const connectorPositions: number[] = [];
+  const axis = axisLocal.clone().normalize();
+  const pointCount = template.basePoints.length;
+  const sectionLayers: THREE.Vector3[][] = [];
+
+  for (let sectionIndex = 0; sectionIndex < profile.sectionCount; sectionIndex += 1) {
+    const t = (sectionIndex + 1) / profile.sectionCount;
+    const sectionOffset = rangeDistance * t;
+    const sectionScale = THREE.MathUtils.lerp(
+      profile.firstScale,
+      profile.lastScale,
+      t,
+    );
+    const sectionCenter = template.capCenter
+      .clone()
+      .add(axis.clone().multiplyScalar(sign * sectionOffset));
+
+    const sectionPoints = template.basePoints.map((basePoint) => {
+      const radial = basePoint.clone().sub(template.capCenter);
+
+      return sectionCenter.clone().add(radial.multiplyScalar(sectionScale));
+    });
+
+    for (let index = 0; index < pointCount; index += 1) {
+      const current = sectionPoints[index];
+      const next = sectionPoints[(index + 1) % pointCount];
+
+      pushSegment(contourPositions, current, next);
+    }
+
+    sectionLayers.push(sectionPoints);
+  }
+
+  if (sectionLayers.length === 0) {
+    return { contourPositions, connectorPositions };
+  }
+
+  const finalLayer = sectionLayers[sectionLayers.length - 1];
+  const connectorCount = Math.max(profile.connectorCount, 1);
+  const connectorStep = Math.max(Math.floor(pointCount / connectorCount), 1);
+
+  for (let index = 0; index < pointCount; index += connectorStep) {
+    const basePoint = template.basePoints[index];
+    const finalPoint = finalLayer[index];
+
+    pushSegment(connectorPositions, basePoint, finalPoint);
+  }
+
+  return { contourPositions, connectorPositions };
 }
 
 function disposeObjectVisual(object: THREE.Object3D) {
@@ -1036,6 +1143,67 @@ function findTopLevelObjectsByPathKeys(
   return objects;
 }
 
+function getPrimaryAxisConfigs({
+  confidence,
+  directions,
+  axesWorld,
+  measure,
+}: {
+  confidence: AxisConfidenceMap;
+  directions: AxisDirectionMap;
+  axesWorld: Record<ConfidenceAxis, THREE.Vector3>;
+  measure: DirectionalMeasure;
+}) {
+  const axisConfigs = [
+    {
+      axis: "x",
+      level: confidence.x,
+      direction: directions.x ?? "both",
+      worldAxis: axesWorld.x,
+      halfExtent: measure.halfExtents.x,
+    },
+    {
+      axis: "y",
+      level: confidence.y,
+      direction: directions.y ?? "both",
+      worldAxis: axesWorld.y,
+      halfExtent: measure.halfExtents.y,
+    },
+    {
+      axis: "z",
+      level: confidence.z,
+      direction: directions.z ?? "both",
+      worldAxis: axesWorld.z,
+      halfExtent: measure.halfExtents.z,
+    },
+  ] satisfies AxisConfig[];
+
+  const activeAxisConfigs = axisConfigs.filter(
+    (item) => confidenceToStrength(item.level) > 0,
+  );
+
+  if (activeAxisConfigs.length === 0) {
+    return [];
+  }
+
+  const specificallyDirectedConfigs = activeAxisConfigs.filter(
+    (item) => item.direction !== "both",
+  );
+
+  const candidateAxisConfigs =
+    specificallyDirectedConfigs.length > 0
+      ? specificallyDirectedConfigs
+      : activeAxisConfigs;
+
+  const maxStrength = Math.max(
+    ...candidateAxisConfigs.map((item) => confidenceToStrength(item.level)),
+  );
+
+  return candidateAxisConfigs
+    .filter((item) => confidenceToStrength(item.level) === maxStrength)
+    .slice(0, 1);
+}
+
 function createSelectedObjectLineOverlay({
   object,
   annotation,
@@ -1126,7 +1294,7 @@ function createSelectedObjectLineOverlay({
   return overlayGroup;
 }
 
-function createDirectionalEnvelope({
+function createSectionedRangeEnvelope({
   object,
   annotation,
   axisFrame,
@@ -1143,142 +1311,99 @@ function createDirectionalEnvelope({
 
   const directions = annotation.directions ?? DEFAULT_DIRECTIONS;
   const axesWorld = normalizeAxisFrame(axisFrame);
+  const primaryAxisConfigs = getPrimaryAxisConfigs({
+    confidence: annotation.confidence,
+    directions,
+    axesWorld,
+    measure,
+  });
 
-  const envelopeGroup = new THREE.Group();
-
-  envelopeGroup.userData[FUZZY_VISUAL_CHILD] = true;
-  envelopeGroup.renderOrder = 1500;
-
-  type AxisConfig = {
-    axis: ConfidenceAxis;
-    level: ConfidenceLevel;
-    direction: ConfidenceDirection;
-    worldAxis: THREE.Vector3;
-    halfExtent: number;
-  };
-
-  const axisConfigs: AxisConfig[] = [
-    {
-      axis: "x" as ConfidenceAxis,
-      level: annotation.confidence.x,
-      direction: directions.x ?? "both",
-      worldAxis: axesWorld.x,
-      halfExtent: measure.halfExtents.x,
-    },
-    {
-      axis: "y" as ConfidenceAxis,
-      level: annotation.confidence.y,
-      direction: directions.y ?? "both",
-      worldAxis: axesWorld.y,
-      halfExtent: measure.halfExtents.y,
-    },
-    {
-      axis: "z" as ConfidenceAxis,
-      level: annotation.confidence.z,
-      direction: directions.z ?? "both",
-      worldAxis: axesWorld.z,
-      halfExtent: measure.halfExtents.z,
-    },
-  ];
-
-  const activeAxisConfigs = axisConfigs.filter(
-    (item) => confidenceToStrength(item.level) > 0,
-  );
-
-  if (activeAxisConfigs.length === 0) {
+  if (primaryAxisConfigs.length === 0) {
     return null;
   }
-
-  const specificallyDirectedConfigs = activeAxisConfigs.filter(
-    (item) => item.direction !== "both",
-  );
-
-  const candidateAxisConfigs =
-    specificallyDirectedConfigs.length > 0
-      ? specificallyDirectedConfigs
-      : activeAxisConfigs;
-
-  const maxStrength = Math.max(
-    ...candidateAxisConfigs.map((item) => confidenceToStrength(item.level)),
-  );
-
-  const primaryAxisConfigs = candidateAxisConfigs
-    .filter((item) => confidenceToStrength(item.level) === maxStrength)
-    .slice(0, 1);
 
   object.updateWorldMatrix(true, true);
 
   const objectWorldInverse = object.matrixWorld.clone().invert();
+  const objectWorldQuaternion = new THREE.Quaternion();
+  object.getWorldQuaternion(objectWorldQuaternion);
 
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) {
-      return;
+  const worldToObjectQuaternion = objectWorldQuaternion.clone().invert();
+  const centerLocal = measure.centerWorld
+    .clone()
+    .applyMatrix4(objectWorldInverse);
+  const localPoints = collectObjectLocalPoints(object);
+
+  if (localPoints.length === 0) {
+    return null;
+  }
+
+  const envelopeGroup = new THREE.Group();
+
+  envelopeGroup.userData[FUZZY_VISUAL_CHILD] = true;
+  envelopeGroup.renderOrder = 1700;
+
+  for (const axisConfig of primaryAxisConfigs) {
+    const profile = getRangeSectionProfile(axisConfig.level);
+
+    if (profile.sectionCount <= 0) {
+      continue;
     }
 
-    if (child.userData?.[FUZZY_VISUAL_CHILD]) {
-      return;
-    }
-
-    const sourceGeometry = child.geometry;
-
-    if (!sourceGeometry) {
-      return;
-    }
-
-    child.updateWorldMatrix(true, false);
-
-    const childToObjectMatrix = objectWorldInverse
+    const localAxis = axisConfig.worldAxis
       .clone()
-      .multiply(child.matrixWorld);
+      .applyQuaternion(worldToObjectQuaternion)
+      .normalize();
 
-    for (const axisConfig of primaryAxisConfigs) {
-      const layerCount = getEnvelopeLayerCount(axisConfig.level);
+    const signs = getDirectionSigns(axisConfig.direction);
 
-      if (layerCount <= 0) {
+    for (const sign of signs) {
+      const template = buildContourTemplate({
+        points: localPoints,
+        centerLocal,
+        axisLocal: localAxis,
+        sign,
+        binCount: profile.binCount,
+      });
+
+      if (!template) {
         continue;
       }
 
-      const signs = getDirectionSigns(axisConfig.direction);
+      const rangeDistance = Math.max(
+        template.halfExtent * profile.rangeRatio,
+        measure.objectSize * profile.minRangeRatio,
+      );
 
-      for (let layer = 0; layer < layerCount; layer += 1) {
-        const envelopeProfile = getEnvelopeProfile({
-          level: axisConfig.level,
-          layerIndex: layer,
-          layerCount,
-        });
+      const geometryData = buildSectionGeometryData({
+        template,
+        axisLocal: localAxis,
+        sign,
+        profile,
+        rangeDistance,
+      });
 
-        const offsetDistance = Math.max(
-          axisConfig.halfExtent * envelopeProfile.offsetRatio,
-          measure.objectSize * envelopeProfile.minOffsetRatio,
-        );
+      const contourLines = createLineSegmentsObject({
+        positions: geometryData.contourPositions,
+        opacity: profile.contourOpacity,
+        renderOrder: 1710,
+      });
 
-        for (const sign of signs) {
-          const envelopeGeometry = sourceGeometry.clone();
-          const envelopeMaterial = createEnvelopeMaterial({
-            measure,
-            axis: axisConfig.worldAxis,
-            halfExtent: axisConfig.halfExtent,
-            directionSign: sign,
-            profile: envelopeProfile,
-            layerOffset: offsetDistance,
-          });
+      if (contourLines) {
+        envelopeGroup.add(contourLines);
+      }
 
-          const envelopeMesh = new THREE.Mesh(
-            envelopeGeometry,
-            envelopeMaterial,
-          );
+      const connectorLines = createLineSegmentsObject({
+        positions: geometryData.connectorPositions,
+        opacity: profile.connectorOpacity,
+        renderOrder: 1705,
+      });
 
-          envelopeMesh.matrixAutoUpdate = false;
-          envelopeMesh.matrix.copy(childToObjectMatrix);
-          envelopeMesh.renderOrder = 1510 + layer;
-          envelopeMesh.frustumCulled = false;
-          envelopeMesh.userData[FUZZY_VISUAL_CHILD] = true;
-
-          envelopeGroup.add(envelopeMesh);
-        }
+      if (connectorLines) {
+        envelopeGroup.add(connectorLines);
       }
     }
-  });
+  }
 
   if (envelopeGroup.children.length === 0) {
     return null;
@@ -1325,7 +1450,7 @@ export function applyFuzzyConfidence(
 
     hideOriginalMaterials(object);
 
-    const envelope = createDirectionalEnvelope({
+    const envelope = createSectionedRangeEnvelope({
       object,
       annotation,
       axisFrame: axisFramesByPathKey?.get(pathKey),
