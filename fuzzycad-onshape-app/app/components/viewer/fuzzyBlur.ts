@@ -279,52 +279,56 @@ function getVisualProfile(confidence: AxisConfidenceMap): VisualProfile {
   const maxUncertainty = getMaxUncertainty(confidence);
 
   if (maxUncertainty >= 1.0) {
-    return {
-      // 基础层：整根都有，但更淡一些
-      lineOpacity: 0.24,
-      lineSpacing: 12.0,
-      lineThickness: 0.04,
+return {
+  // 基础层：更淡一点，给端部让出对比
+  lineOpacity: 0.14,
+  lineSpacing: 13.0,
+  lineThickness: 0.035,
 
-      // 端部强化层：更密、更明显
-      endLineOpacity: 0.72,
-      endLineSpacing: 5.8,
-      endLineThickness: 0.055,
-      endZoneStart: 0.58,
-      endZoneFeather: 0.08,
+  // 端部强化层：更密、更黑
+  endLineOpacity: 0.95,
+  endLineSpacing: 2,
+  endLineThickness: 0.06,
 
-      baseWeight: 1.0,
-      directionalWeight: 1.0,
+  // 渐变更早开始，而且更长一些
+  endZoneStart: 0.38,
+  endZoneFeather: 0.18,
 
-      rimStrength: 0.22,
-      rimPower: 2.0,
+  baseWeight: 1.0,
+  directionalWeight: 1.25,
 
-      outlineOpacity: 0.82,
-      outlineWidthRatio: 0.0045,
-    };
+  rimStrength: 0.3,
+  rimPower: 3.0,
+
+  outlineOpacity: 0.82,
+  outlineWidthRatio: 0.0045,
+};
   }
 
-  return {
-    // medium：整体更轻
-    lineOpacity: 0.18,
-    lineSpacing: 13.5,
-    lineThickness: 0.035,
+return {
+  // 基础层更轻
+  lineOpacity: 0.1,
+  lineSpacing: 14.0,
+  lineThickness: 0.03,
 
-    // medium 端部也增强，但弱一些
-    endLineOpacity: 0.46,
-    endLineSpacing: 7.0,
-    endLineThickness: 0.045,
-    endZoneStart: 0.6,
-    endZoneFeather: 0.08,
+  // 端部有强化，但比 low 弱
+  endLineOpacity: 0.58,
+  endLineSpacing: 5.6,
+  endLineThickness: 0.05,
 
-    baseWeight: 1.0,
-    directionalWeight: 0.72,
+  // 也保留明显一点的渐变
+  endZoneStart: 0.42,
+  endZoneFeather: 0.16,
 
-    rimStrength: 0.16,
-    rimPower: 2.2,
+  baseWeight: 1.0,
+  directionalWeight: 0.95,
 
-    outlineOpacity: 0.55,
-    outlineWidthRatio: 0.0036,
-  };
+  rimStrength: 0.16,
+  rimPower: 2.2,
+
+  outlineOpacity: 0.55,
+  outlineWidthRatio: 0.0036,
+};
 }
 
 function normalizeAxisFrame(
