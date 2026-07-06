@@ -288,7 +288,7 @@ return {
   // 端部强化层：更密、更黑
   endLineOpacity: 0.95,
   endLineSpacing: 4,
-  endLineThickness: 1.06,
+  endLineThickness: 0.56,
 
   // 渐变更早开始，而且更长一些
   endZoneStart: 0.38,
