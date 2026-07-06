@@ -60,7 +60,23 @@ type VisualProfile = {
   outlineWidthRatio: number;
 };
 
+type LineMaterialOverrides = {
+  opacity?: number;
+  spacing?: number;
+  thickness?: number;
 
+  endOpacity?: number;
+  endSpacing?: number;
+  endThickness?: number;
+
+  angleOffset?: number;
+
+  baseWeight?: number;
+  directionalWeight?: number;
+
+  rimStrength?: number;
+  rimPower?: number;
+};
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldNormal;
@@ -597,10 +613,12 @@ function createLineOverlayMaterial({
   measure,
   confidence,
   directions,
+  overrides,
 }: {
   measure: DirectionalMeasure;
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
+  overrides?: LineMaterialOverrides;
 }) {
   const profile = getVisualProfile(confidence);
 
@@ -608,29 +626,43 @@ function createLineOverlayMaterial({
   const yStrength = getSideStrengths(confidence.y, directions.y ?? "both");
   const zStrength = getSideStrengths(confidence.z, directions.z ?? "both");
 
+  const baseAngle = Math.PI * 0.18;
+
   const material = new THREE.ShaderMaterial({
     vertexShader: LINE_OVERLAY_VERTEX_SHADER,
     fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
     uniforms: {
       uLineColor: { value: new THREE.Color(0x111827) },
 
-      uOpacity: { value: profile.lineOpacity },
-      uSpacing: { value: profile.lineSpacing },
-      uThickness: { value: profile.lineThickness },
+      uOpacity: { value: overrides?.opacity ?? profile.lineOpacity },
+      uSpacing: { value: overrides?.spacing ?? profile.lineSpacing },
+      uThickness: { value: overrides?.thickness ?? profile.lineThickness },
 
-      uEndOpacity: { value: profile.endLineOpacity },
-      uEndSpacing: { value: profile.endLineSpacing },
-      uEndThickness: { value: profile.endLineThickness },
+      uEndOpacity: {
+        value: overrides?.endOpacity ?? profile.endLineOpacity,
+      },
+      uEndSpacing: {
+        value: overrides?.endSpacing ?? profile.endLineSpacing,
+      },
+      uEndThickness: {
+        value: overrides?.endThickness ?? profile.endLineThickness,
+      },
       uEndZoneStart: { value: profile.endZoneStart },
       uEndZoneFeather: { value: profile.endZoneFeather },
 
-      uAngle: { value: Math.PI * 0.18 },
+      uAngle: { value: baseAngle + (overrides?.angleOffset ?? 0) },
 
-      uBaseWeight: { value: profile.baseWeight },
-      uDirectionalWeight: { value: profile.directionalWeight },
+      uBaseWeight: { value: overrides?.baseWeight ?? profile.baseWeight },
+      uDirectionalWeight: {
+        value: overrides?.directionalWeight ?? profile.directionalWeight,
+      },
 
-      uRimStrength: { value: profile.rimStrength },
-      uRimPower: { value: profile.rimPower },
+      uRimStrength: {
+        value: overrides?.rimStrength ?? profile.rimStrength,
+      },
+      uRimPower: {
+        value: overrides?.rimPower ?? profile.rimPower,
+      },
 
       uObjectCenter: { value: measure.centerWorld.clone() },
 
@@ -659,6 +691,7 @@ function createLineOverlayMaterial({
   });
 
   material.userData[FUZZY_VISUAL_CHILD] = true;
+
   return material;
 }
 
@@ -859,11 +892,16 @@ function createSelectedObjectLineOverlay({
       .multiply(child.matrixWorld);
 
     const outlineGeometry = sourceGeometry.clone();
-    const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
-    const outlineMaterial = createOuterOutlineMaterial({
-      outlineWidth,
-      profile,
-    });
+const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile) * 1.25;
+const shellOutlineProfile = {
+  ...profile,
+  outlineOpacity: Math.min(profile.outlineOpacity * 1.15, 1.0),
+};
+
+const outlineMaterial = createOuterOutlineMaterial({
+  outlineWidth,
+  profile: shellOutlineProfile,
+});
 
     const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
     outlineMesh.matrixAutoUpdate = false;
@@ -874,11 +912,16 @@ function createSelectedObjectLineOverlay({
     overlayGroup.add(outlineMesh);
 
     const overlayGeometry = sourceGeometry.clone();
-    const overlayMaterial = createLineOverlayMaterial({
-      measure,
-      confidence: annotation.confidence,
-      directions,
-    });
+const overlayMaterial = createLineOverlayMaterial({
+  measure,
+  confidence: annotation.confidence,
+  directions,
+  overrides: {
+    rimStrength: 0.16,
+    rimPower: 2.5,
+    angleOffset: 0,
+  },
+});
 
     const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
     overlayMesh.matrixAutoUpdate = false;
@@ -967,6 +1010,14 @@ if (activeAxisConfigs.length === 0) {
   return null;
 }
 
+const maxStrength = Math.max(
+  ...activeAxisConfigs.map((item) => confidenceToStrength(item.level)),
+);
+
+const primaryAxisConfigs = activeAxisConfigs
+  .filter((item) => confidenceToStrength(item.level) === maxStrength)
+  .slice(0, 1);
+
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
       return;
@@ -988,7 +1039,7 @@ if (activeAxisConfigs.length === 0) {
       .clone()
       .multiply(child.matrixWorld);
 
-for (const axisConfig of activeAxisConfigs) {
+for (const axisConfig of primaryAxisConfigs) {
       const layerCount = getGhostShellLayerCount(axisConfig.level);
 
       if (layerCount <= 0) {
@@ -1002,10 +1053,10 @@ for (const axisConfig of activeAxisConfigs) {
 
       const signs = getDirectionSigns(axisConfig.direction);
 
-      const stepDistance = Math.max(
-        axisConfig.halfExtent * 0.18,
-        measure.objectSize * 0.035,
-      );
+const stepDistance = Math.max(
+  axisConfig.halfExtent * 0.32,
+  measure.objectSize * 0.075,
+);
 
       for (let layer = 1; layer <= layerCount; layer += 1) {
         for (const sign of signs) {
@@ -1055,11 +1106,34 @@ shellGroup.add(outlineMesh);
 
           // 2) shell line：和主体一样的 line profile
           const shellGeometry = sourceGeometry.clone();
-          const shellLineMaterial = createLineOverlayMaterial({
-            measure,
-            confidence: annotation.confidence,
-            directions,
-          });
+const shellLineMaterial = createLineOverlayMaterial({
+  measure,
+  confidence: annotation.confidence,
+  directions,
+  overrides: {
+    // shell 不要完全 ghost，但要比主体略轻，避免糊成黑块
+    opacity: profile.lineOpacity * 0.82,
+
+    // shell 线稍微密一点，让它像外推 boundary
+    spacing: Math.max(profile.lineSpacing * 0.72, 5.0),
+    thickness: profile.lineThickness * 1.15,
+
+    // 端部强化也保留，但稍微弱一点，不然和主体端部叠黑
+    endOpacity: profile.endLineOpacity * 0.72,
+    endSpacing: Math.max(profile.endLineSpacing * 0.9, 4.0),
+    endThickness: profile.endLineThickness * 1.05,
+
+    // 最关键：角度错开一点，避免 hatch 完全套在一起
+    angleOffset: 0.28,
+
+    // shell rim 更强，让 shell 自己的边界被读出来
+    rimStrength: 0.95,
+    rimPower: 1.65,
+
+    // shell 的 directional end density 不要太重
+    directionalWeight: profile.directionalWeight * 0.72,
+  },
+});
 
           const shellLineMesh = new THREE.Mesh(shellGeometry, shellLineMaterial);
           shellLineMesh.matrixAutoUpdate = false;
