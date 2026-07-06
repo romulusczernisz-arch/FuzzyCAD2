@@ -60,15 +60,7 @@ type VisualProfile = {
   outlineWidthRatio: number;
 };
 
-type GhostShellProfile = {
-  lineOpacity: number;
-  lineSpacing: number;
-  lineThickness: number;
-  outlineOpacity: number;
-  outlineWidthRatio: number;
-  rimStrength: number;
-  rimPower: number;
-};
+
 
 const LINE_OVERLAY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldNormal;
@@ -356,35 +348,7 @@ function getDirectionSigns(direction: ConfidenceDirection): number[] {
   return [-1, 1];
 }
 
-function getGhostShellProfile(
-  level: ConfidenceLevel,
-  layerIndex: number,
-  layerCount: number,
-): GhostShellProfile {
-  const t = layerCount <= 1 ? 0 : layerIndex / (layerCount - 1);
 
-  if (level === "low") {
-    return {
-      lineOpacity: THREE.MathUtils.lerp(0.22, 0.12, t),
-      lineSpacing: THREE.MathUtils.lerp(8.5, 7.2, t),
-      lineThickness: THREE.MathUtils.lerp(0.04, 0.033, t),
-      outlineOpacity: THREE.MathUtils.lerp(0.34, 0.18, t),
-      outlineWidthRatio: THREE.MathUtils.lerp(0.0038, 0.0032, t),
-      rimStrength: THREE.MathUtils.lerp(0.18, 0.1, t),
-      rimPower: 2.2,
-    };
-  }
-
-  return {
-    lineOpacity: 0.12,
-    lineSpacing: 9.5,
-    lineThickness: 0.034,
-    outlineOpacity: 0.2,
-    outlineWidthRatio: 0.003,
-    rimStrength: 0.1,
-    rimPower: 2.3,
-  };
-}
 
 function normalizeAxisFrame(
   axisFrame: ConfidenceAxisFrame | undefined,
@@ -698,66 +662,7 @@ function createLineOverlayMaterial({
   return material;
 }
 
-function createGhostShellLineMaterial({
-  measure,
-  profile,
-}: {
-  measure: DirectionalMeasure;
-  profile: GhostShellProfile;
-}) {
-  const material = new THREE.ShaderMaterial({
-    vertexShader: LINE_OVERLAY_VERTEX_SHADER,
-    fragmentShader: LINE_OVERLAY_FRAGMENT_SHADER,
-    uniforms: {
-      uLineColor: { value: new THREE.Color(0x111827) },
 
-      uOpacity: { value: profile.lineOpacity },
-      uSpacing: { value: profile.lineSpacing },
-      uThickness: { value: profile.lineThickness },
-
-      uEndOpacity: { value: 0.0 },
-      uEndSpacing: { value: profile.lineSpacing },
-      uEndThickness: { value: profile.lineThickness },
-      uEndZoneStart: { value: 1.0 },
-      uEndZoneFeather: { value: 0.01 },
-
-      uAngle: { value: Math.PI * 0.18 },
-
-      uBaseWeight: { value: 1.0 },
-      uDirectionalWeight: { value: 0.0 },
-
-      uRimStrength: { value: profile.rimStrength },
-      uRimPower: { value: profile.rimPower },
-
-      uObjectCenter: { value: measure.centerWorld.clone() },
-
-      uAxisX: { value: measure.axes.x.clone() },
-      uAxisY: { value: measure.axes.y.clone() },
-      uAxisZ: { value: measure.axes.z.clone() },
-
-      uHalfExtentX: { value: measure.halfExtents.x },
-      uHalfExtentY: { value: measure.halfExtents.y },
-      uHalfExtentZ: { value: measure.halfExtents.z },
-
-      uPositiveStrengthX: { value: 0.0 },
-      uNegativeStrengthX: { value: 0.0 },
-      uPositiveStrengthY: { value: 0.0 },
-      uNegativeStrengthY: { value: 0.0 },
-      uPositiveStrengthZ: { value: 0.0 },
-      uNegativeStrengthZ: { value: 0.0 },
-    },
-    transparent: true,
-    depthTest: true,
-    depthWrite: false,
-    side: THREE.FrontSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1.2,
-    polygonOffsetUnits: -1.2,
-  });
-
-  material.userData[FUZZY_VISUAL_CHILD] = true;
-  return material;
-}
 
 function getGeometryOutlineWidth(
   geometry: THREE.BufferGeometry,
@@ -993,6 +898,7 @@ function createDirectionalGhostShells({
 
   const directions = annotation.directions ?? DEFAULT_DIRECTIONS;
   const axesWorld = normalizeAxisFrame(axisFrame);
+  const profile = getVisualProfile(annotation.confidence);
 
   const shellGroup = new THREE.Group();
   shellGroup.userData[FUZZY_VISUAL_CHILD] = true;
@@ -1003,43 +909,48 @@ function createDirectionalGhostShells({
   const objectWorldInverse = object.matrixWorld.clone().invert();
   const objectWorldQuaternion = new THREE.Quaternion();
   object.getWorldQuaternion(objectWorldQuaternion);
+
   const worldToObjectQuaternion = objectWorldQuaternion.clone().invert();
 
- const axisConfigs = (
-  [
-    {
-      axis: "x" as ConfidenceAxis,
-      level: annotation.confidence.x,
-      direction: directions.x ?? "both",
-      worldAxis: axesWorld.x,
-      halfExtent: measure.halfExtents.x,
-    },
-    {
-      axis: "y" as ConfidenceAxis,
-      level: annotation.confidence.y,
-      direction: directions.y ?? "both",
-      worldAxis: axesWorld.y,
-      halfExtent: measure.halfExtents.y,
-    },
-    {
-      axis: "z" as ConfidenceAxis,
-      level: annotation.confidence.z,
-      direction: directions.z ?? "both",
-      worldAxis: axesWorld.z,
-      halfExtent: measure.halfExtents.z,
-    },
-  ] satisfies {
+  type AxisConfig = {
     axis: ConfidenceAxis;
     level: ConfidenceLevel;
     direction: ConfidenceDirection;
     worldAxis: THREE.Vector3;
     halfExtent: number;
-  }[]
-).filter((item) => confidenceToStrength(item.level) > 0);
+  };
 
-  if (axisConfigs.length === 0) {
-    return null;
-  }
+const axisConfigs = [
+  {
+    axis: "x",
+    level: annotation.confidence.x,
+    direction: directions.x ?? "both",
+    worldAxis: axesWorld.x,
+    halfExtent: measure.halfExtents.x,
+  },
+  {
+    axis: "y",
+    level: annotation.confidence.y,
+    direction: directions.y ?? "both",
+    worldAxis: axesWorld.y,
+    halfExtent: measure.halfExtents.y,
+  },
+  {
+    axis: "z",
+    level: annotation.confidence.z,
+    direction: directions.z ?? "both",
+    worldAxis: axesWorld.z,
+    halfExtent: measure.halfExtents.z,
+  },
+] satisfies AxisConfig[];
+
+const activeAxisConfigs = axisConfigs.filter(
+  (item) => confidenceToStrength(item.level) > 0,
+);
+
+if (activeAxisConfigs.length === 0) {
+  return null;
+}
 
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
@@ -1062,7 +973,7 @@ function createDirectionalGhostShells({
       .clone()
       .multiply(child.matrixWorld);
 
-    for (const axisConfig of axisConfigs) {
+for (const axisConfig of activeAxisConfigs) {
       const layerCount = getGhostShellLayerCount(axisConfig.level);
 
       if (layerCount <= 0) {
@@ -1082,12 +993,6 @@ function createDirectionalGhostShells({
       );
 
       for (let layer = 1; layer <= layerCount; layer += 1) {
-        const shellProfile = getGhostShellProfile(
-          axisConfig.level,
-          layer - 1,
-          layerCount,
-        );
-
         for (const sign of signs) {
           const translationLocal = localAxis
             .clone()
@@ -1103,14 +1008,12 @@ function createDirectionalGhostShells({
             .clone()
             .multiply(childToObjectMatrix);
 
+          // 1) shell outline：和主体一样的 outline profile
           const outlineGeometry = sourceGeometry.clone();
-          const outlineWidth = getGeometryOutlineWidth(
-            outlineGeometry,
-            shellProfile,
-          );
+          const outlineWidth = getGeometryOutlineWidth(outlineGeometry, profile);
           const outlineMaterial = createOuterOutlineMaterial({
             outlineWidth,
-            profile: shellProfile,
+            profile,
           });
 
           const outlineMesh = new THREE.Mesh(outlineGeometry, outlineMaterial);
@@ -1119,23 +1022,24 @@ function createDirectionalGhostShells({
           outlineMesh.renderOrder = 1480;
           outlineMesh.frustumCulled = false;
           outlineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
           shellGroup.add(outlineMesh);
 
+          // 2) shell line：和主体一样的 line profile
           const shellGeometry = sourceGeometry.clone();
-          const shellLineMaterial = createGhostShellLineMaterial({
+          const shellLineMaterial = createLineOverlayMaterial({
             measure,
-            profile: shellProfile,
+            confidence: annotation.confidence,
+            directions,
           });
 
-          const shellLineMesh = new THREE.Mesh(
-            shellGeometry,
-            shellLineMaterial,
-          );
+          const shellLineMesh = new THREE.Mesh(shellGeometry, shellLineMaterial);
           shellLineMesh.matrixAutoUpdate = false;
           shellLineMesh.matrix.copy(shellMatrix);
           shellLineMesh.renderOrder = 1490;
           shellLineMesh.frustumCulled = false;
           shellLineMesh.userData[FUZZY_VISUAL_CHILD] = true;
+
           shellGroup.add(shellLineMesh);
         }
       }
