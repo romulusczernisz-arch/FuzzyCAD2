@@ -1099,7 +1099,7 @@ export async function GET(req: NextRequest) {
 
   const liveSource = searchParams.get("liveSource") === "1";
 
- if (!liveSource && !debugZip) {
+ if (!liveSource && !debugZip && !force) {
   const snapshotResult = await getSourceAssemblySnapshotBuffer({
     server,
     documentId,
