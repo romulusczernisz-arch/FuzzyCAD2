@@ -678,6 +678,9 @@ function UncertaintyLegendOverlay() {
  * - Blue arc: sweeps from line 1 to line 2, at 35% of `radius`
  * - θ label: shown at the arc midpoint
  * - Drag handle: circle at line 2 endpoint; dragging rotates it around the pivot
+ *
+ * Uses imperative BufferGeometry creation to avoid R3F declarative
+ * bufferAttribute quirks.
  */
 function AngleArcOverlay({
   pivot,
@@ -697,62 +700,71 @@ function AngleArcOverlay({
   const { camera, gl } = useThree();
   const [dragging, setDragging] = useState(false);
 
-  const { line1Positions, line2Positions, arcPositions, line2End, thetaPos } =
-    useMemo(() => {
-      // line2Dir = line1Dir rotated by angleDeg around normalAxis
-      const q = new THREE.Quaternion().setFromAxisAngle(
+  const { line1Geo, line2Geo, arcGeo, line2End, thetaPos } = useMemo(() => {
+    // line2Dir = line1Dir rotated by angleDeg around normalAxis
+    const q = new THREE.Quaternion().setFromAxisAngle(
+      normalAxis,
+      (angleDeg * Math.PI) / 180,
+    );
+    const dir2 = line1Dir.clone().applyQuaternion(q).normalize();
+
+    const end1 = pivot.clone().add(line1Dir.clone().multiplyScalar(radius));
+    const end2 = pivot.clone().add(dir2.clone().multiplyScalar(radius));
+
+    // Arc: 48 steps from line1Dir toward line2Dir at 35% radius
+    const ARC_STEPS = 48;
+    const arcPoints: THREE.Vector3[] = [];
+    for (let i = 0; i <= ARC_STEPS; i++) {
+      const t = i / ARC_STEPS;
+      const qStep = new THREE.Quaternion().setFromAxisAngle(
         normalAxis,
-        (angleDeg * Math.PI) / 180,
+        (t * angleDeg * Math.PI) / 180,
       );
-      const dir2 = line1Dir.clone().applyQuaternion(q).normalize();
-
-      const end1 = pivot.clone().add(line1Dir.clone().multiplyScalar(radius));
-      const end2 = pivot.clone().add(dir2.clone().multiplyScalar(radius));
-
-      // Arc: sweep from line1Dir to line2Dir in 48 steps at 35% radius
-      const ARC_STEPS = 48;
-      const arcArr = new Float32Array((ARC_STEPS + 1) * 3);
-      for (let i = 0; i <= ARC_STEPS; i++) {
-        const t = i / ARC_STEPS;
-        const qStep = new THREE.Quaternion().setFromAxisAngle(
-          normalAxis,
-          (t * angleDeg * Math.PI) / 180,
-        );
-        const pt = pivot
+      arcPoints.push(
+        pivot
           .clone()
           .add(
-            line1Dir.clone().applyQuaternion(qStep).normalize().multiplyScalar(radius * 0.35),
-          );
-        arcArr[i * 3] = pt.x;
-        arcArr[i * 3 + 1] = pt.y;
-        arcArr[i * 3 + 2] = pt.z;
-      }
-
-      // θ label at the arc midpoint
-      const qMid = new THREE.Quaternion().setFromAxisAngle(
-        normalAxis,
-        ((angleDeg / 2) * Math.PI) / 180,
+            line1Dir
+              .clone()
+              .applyQuaternion(qStep)
+              .normalize()
+              .multiplyScalar(radius * 0.35),
+          ),
       );
-      const labelPos = pivot
-        .clone()
-        .add(
-          line1Dir.clone().applyQuaternion(qMid).normalize().multiplyScalar(radius * 0.52),
-        );
+    }
 
-      return {
-        line1Positions: new Float32Array([
-          pivot.x, pivot.y, pivot.z,
-          end1.x, end1.y, end1.z,
-        ]),
-        line2Positions: new Float32Array([
-          pivot.x, pivot.y, pivot.z,
-          end2.x, end2.y, end2.z,
-        ]),
-        arcPositions: arcArr,
-        line2End: end2,
-        thetaPos: labelPos,
-      };
-    }, [pivot, line1Dir, normalAxis, angleDeg, radius]);
+    // θ label at arc midpoint
+    const qMid = new THREE.Quaternion().setFromAxisAngle(
+      normalAxis,
+      ((angleDeg / 2) * Math.PI) / 180,
+    );
+    const thetaPosition = pivot
+      .clone()
+      .add(
+        line1Dir
+          .clone()
+          .applyQuaternion(qMid)
+          .normalize()
+          .multiplyScalar(radius * 0.52),
+      );
+
+    return {
+      line1Geo: new THREE.BufferGeometry().setFromPoints([pivot.clone(), end1]),
+      line2Geo: new THREE.BufferGeometry().setFromPoints([pivot.clone(), end2]),
+      arcGeo: new THREE.BufferGeometry().setFromPoints(arcPoints),
+      line2End: end2,
+      thetaPos: thetaPosition,
+    };
+  }, [pivot, line1Dir, normalAxis, angleDeg, radius]);
+
+  // Dispose geometries when they are no longer needed
+  useEffect(() => {
+    return () => {
+      line1Geo.dispose();
+      line2Geo.dispose();
+      arcGeo.dispose();
+    };
+  }, [line1Geo, line2Geo, arcGeo]);
 
   function handlePointerDown(event: React.PointerEvent) {
     event.stopPropagation();
@@ -771,7 +783,10 @@ function AngleArcOverlay({
     const startDeg = angleDeg;
 
     const onMove = (me: PointerEvent) => {
-      const a = Math.atan2(me.clientY - pivotClientY, me.clientX - pivotClientX);
+      const a = Math.atan2(
+        me.clientY - pivotClientY,
+        me.clientX - pivotClientX,
+      );
       const delta = ((a - startScreenAngle) * 180) / Math.PI;
       onDrag(Math.max(0, Math.min(179, startDeg + delta)));
     };
@@ -790,37 +805,13 @@ function AngleArcOverlay({
   return (
     <>
       {/* Line 1 — gray reference */}
-      <line>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[line1Positions, 3]}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#94a3b8" />
-      </line>
+      <primitive object={new THREE.Line(line1Geo, new THREE.LineBasicMaterial({ color: "#94a3b8" }))} />
 
       {/* Line 2 — blue adjustable */}
-      <line>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[line2Positions, 3]}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#2b6cff" />
-      </line>
+      <primitive object={new THREE.Line(line2Geo, new THREE.LineBasicMaterial({ color: "#2b6cff" }))} />
 
       {/* Arc between the two lines */}
-      <line>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[arcPositions, 3]}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#2b6cff" />
-      </line>
+      <primitive object={new THREE.Line(arcGeo, new THREE.LineBasicMaterial({ color: "#2b6cff" }))} />
 
       {/* Drag handle at end of line 2 */}
       <Html
