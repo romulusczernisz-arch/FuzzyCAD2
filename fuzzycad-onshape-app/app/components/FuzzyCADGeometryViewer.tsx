@@ -844,15 +844,17 @@ function AngleArcOverlay({
       >
         <div
           style={{
-            fontFamily: "Georgia, 'Times New Roman', serif",
-            fontSize: 13,
-            fontStyle: "italic",
-            fontWeight: 600,
+            fontFamily: "Arial, sans-serif",
+            fontSize: 12,
+            fontWeight: 700,
             color: "#172033",
             pointerEvents: "none",
             userSelect: "none",
-            textShadow:
-              "0 0 6px rgba(255,255,255,1), 0 0 3px rgba(255,255,255,1)",
+            background: "rgba(255,255,255,0.88)",
+            padding: "2px 7px",
+            borderRadius: 6,
+            border: "1px solid rgba(43,108,255,0.35)",
+            boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
           }}
         >
           θ = {Math.abs(angleDeg).toFixed(1)}°
@@ -1004,14 +1006,30 @@ function Model({
     onObjectLassoSelection?.(pathKeys);
   }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
 
+  // ── Angle tool two-part selection ──────────────────────────────────────
+  // Declared here (before the highlight useEffect) so the effect can reference them.
+  const [angleLine1PathKey, setAngleLine1PathKey] = useState<string | null>(null);
+  const [angleLine2PathKey, setAngleLine2PathKey] = useState<string | null>(null);
+  const [angleArcDeg, setAngleArcDeg] = useState<number>(45);
+
   useEffect(() => {
+    // When the angle tool is active, highlight whichever parts have been selected
+    // for the angle measurement so it's clear what's being compared.
+    if (activeTool === "angle") {
+      const angleKeys = [angleLine1PathKey, angleLine2PathKey].filter(
+        (k): k is string => k !== null,
+      );
+      applyPathHighlight(scene, angleKeys.length > 0 ? angleKeys : null);
+      return;
+    }
+
     const activeHighlights =
       selectedPathKeys && selectedPathKeys.length > 0
         ? selectedPathKeys
         : highlightedPathKey;
 
     applyPathHighlight(scene, activeHighlights);
-  }, [scene, highlightedPathKey, selectedPathKeys]);
+  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleLine1PathKey, angleLine2PathKey]);
 
   useEffect(() => {
     applyFuzzyConfidence(
@@ -1253,10 +1271,7 @@ function Model({
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
-  // ── Angle tool two-part selection ──────────────────────────────────────
-  const [angleLine1PathKey, setAngleLine1PathKey] = useState<string | null>(null);
-  const [angleLine2PathKey, setAngleLine2PathKey] = useState<string | null>(null);
-  const [angleArcDeg, setAngleArcDeg] = useState<number>(45);
+  // ── Angle tool two-part selection (state declared above near highlight effect) ──
 
   // Reset selection when leaving angle tool
   useEffect(() => {
