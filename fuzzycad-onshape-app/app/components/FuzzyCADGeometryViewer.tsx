@@ -34,6 +34,7 @@ import { buildObjectSummaries } from "./viewer/objectSummary";
 import type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
 import {
   findObjectsByPathKeys,
+  projectToScreen,
   rotateObjectsAroundWorldAxis,
   translateObjectsWorld,
 } from "./viewer/manipulation";
@@ -669,6 +670,207 @@ function UncertaintyLegendOverlay() {
   );
 }
 
+/**
+ * Renders the two-line + arc angle visualization for the Angle tool.
+ *
+ * - Gray line: fixed reference direction (line 1)
+ * - Blue line: adjustable direction (line 2), rotated by `angleDeg` from line 1
+ * - Blue arc: sweeps from line 1 to line 2, at 35% of `radius`
+ * - θ label: shown at the arc midpoint
+ * - Drag handle: circle at line 2 endpoint; dragging rotates it around the pivot
+ */
+function AngleArcOverlay({
+  pivot,
+  line1Dir,
+  normalAxis,
+  angleDeg,
+  radius,
+  onDrag,
+}: {
+  pivot: THREE.Vector3;
+  line1Dir: THREE.Vector3;
+  normalAxis: THREE.Vector3;
+  angleDeg: number;
+  radius: number;
+  onDrag: (deg: number) => void;
+}) {
+  const { camera, gl } = useThree();
+  const [dragging, setDragging] = useState(false);
+
+  const { line1Positions, line2Positions, arcPositions, line2End, thetaPos } =
+    useMemo(() => {
+      // line2Dir = line1Dir rotated by angleDeg around normalAxis
+      const q = new THREE.Quaternion().setFromAxisAngle(
+        normalAxis,
+        (angleDeg * Math.PI) / 180,
+      );
+      const dir2 = line1Dir.clone().applyQuaternion(q).normalize();
+
+      const end1 = pivot.clone().add(line1Dir.clone().multiplyScalar(radius));
+      const end2 = pivot.clone().add(dir2.clone().multiplyScalar(radius));
+
+      // Arc: sweep from line1Dir to line2Dir in 48 steps at 35% radius
+      const ARC_STEPS = 48;
+      const arcArr = new Float32Array((ARC_STEPS + 1) * 3);
+      for (let i = 0; i <= ARC_STEPS; i++) {
+        const t = i / ARC_STEPS;
+        const qStep = new THREE.Quaternion().setFromAxisAngle(
+          normalAxis,
+          (t * angleDeg * Math.PI) / 180,
+        );
+        const pt = pivot
+          .clone()
+          .add(
+            line1Dir.clone().applyQuaternion(qStep).normalize().multiplyScalar(radius * 0.35),
+          );
+        arcArr[i * 3] = pt.x;
+        arcArr[i * 3 + 1] = pt.y;
+        arcArr[i * 3 + 2] = pt.z;
+      }
+
+      // θ label at the arc midpoint
+      const qMid = new THREE.Quaternion().setFromAxisAngle(
+        normalAxis,
+        ((angleDeg / 2) * Math.PI) / 180,
+      );
+      const labelPos = pivot
+        .clone()
+        .add(
+          line1Dir.clone().applyQuaternion(qMid).normalize().multiplyScalar(radius * 0.52),
+        );
+
+      return {
+        line1Positions: new Float32Array([
+          pivot.x, pivot.y, pivot.z,
+          end1.x, end1.y, end1.z,
+        ]),
+        line2Positions: new Float32Array([
+          pivot.x, pivot.y, pivot.z,
+          end2.x, end2.y, end2.z,
+        ]),
+        arcPositions: arcArr,
+        line2End: end2,
+        thetaPos: labelPos,
+      };
+    }, [pivot, line1Dir, normalAxis, angleDeg, radius]);
+
+  function handlePointerDown(event: React.PointerEvent) {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const rect = gl.domElement.getBoundingClientRect();
+    const pivotScreen = projectToScreen(pivot, camera, rect);
+    if (!pivotScreen) return;
+
+    const pivotClientX = rect.left + pivotScreen.x;
+    const pivotClientY = rect.top + pivotScreen.y;
+    const startScreenAngle = Math.atan2(
+      event.clientY - pivotClientY,
+      event.clientX - pivotClientX,
+    );
+    const startDeg = angleDeg;
+
+    const onMove = (me: PointerEvent) => {
+      const a = Math.atan2(me.clientY - pivotClientY, me.clientX - pivotClientX);
+      const delta = ((a - startScreenAngle) * 180) / Math.PI;
+      onDrag(Math.max(0, Math.min(179, startDeg + delta)));
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setDragging(false);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    setDragging(true);
+  }
+
+  return (
+    <>
+      {/* Line 1 — gray reference */}
+      <line>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[line1Positions, 3]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial color="#94a3b8" />
+      </line>
+
+      {/* Line 2 — blue adjustable */}
+      <line>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[line2Positions, 3]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial color="#2b6cff" />
+      </line>
+
+      {/* Arc between the two lines */}
+      <line>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[arcPositions, 3]}
+          />
+        </bufferGeometry>
+        <lineBasicMaterial color="#2b6cff" />
+      </line>
+
+      {/* Drag handle at end of line 2 */}
+      <Html
+        position={[line2End.x, line2End.y, line2End.z]}
+        center
+        distanceFactor={0.8}
+        occlude={false}
+      >
+        <div
+          onPointerDown={handlePointerDown}
+          style={{
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            background: dragging ? "#1a52d4" : "#2b6cff",
+            border: "2.5px solid white",
+            cursor: "grab",
+            boxShadow: "0 2px 8px rgba(43,108,255,0.5)",
+            pointerEvents: "auto",
+          }}
+        />
+      </Html>
+
+      {/* θ label */}
+      <Html
+        position={[thetaPos.x, thetaPos.y, thetaPos.z]}
+        center
+        distanceFactor={0.8}
+        occlude={false}
+      >
+        <div
+          style={{
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: 13,
+            fontStyle: "italic",
+            fontWeight: 600,
+            color: "#172033",
+            pointerEvents: "none",
+            userSelect: "none",
+            textShadow:
+              "0 0 6px rgba(255,255,255,1), 0 0 3px rgba(255,255,255,1)",
+          }}
+        >
+          θ = {Math.abs(angleDeg).toFixed(1)}°
+        </div>
+      </Html>
+    </>
+  );
+}
+
 function Model({
   url,
   placements,
@@ -1060,6 +1262,68 @@ function Model({
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
+  // ── Angle tool two-part selection ──────────────────────────────────────
+  const [angleLine1PathKey, setAngleLine1PathKey] = useState<string | null>(null);
+  const [angleLine2PathKey, setAngleLine2PathKey] = useState<string | null>(null);
+  const [angleArcDeg, setAngleArcDeg] = useState<number>(45);
+
+  // Reset selection when leaving angle tool
+  useEffect(() => {
+    if (activeTool !== "angle") {
+      setAngleLine1PathKey(null);
+      setAngleLine2PathKey(null);
+      setAngleArcDeg(45);
+    }
+  }, [activeTool]);
+
+  // When the second part is chosen, set initial arc angle from actual axis directions
+  useEffect(() => {
+    if (!angleLine1PathKey || !angleLine2PathKey) return;
+    const sum1 = objectSummaries.find((s) => s.pathKey === angleLine1PathKey);
+    const sum2 = objectSummaries.find((s) => s.pathKey === angleLine2PathKey);
+    if (!sum1 || !sum2) return;
+    const dir1 = new THREE.Vector3(...sum1.principalAxisWorld).normalize();
+    const dir2 = new THREE.Vector3(...sum2.principalAxisWorld).normalize();
+    const cosAngle = Math.max(-1, Math.min(1, dir1.dot(dir2)));
+    setAngleArcDeg((Math.acos(cosAngle) * 180) / Math.PI);
+  // Only fire when path keys change, not on every objectSummaries update
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [angleLine1PathKey, angleLine2PathKey]);
+
+  // Compute the 3D geometry config for the arc overlay
+  const angleOverlayConfig = useMemo(() => {
+    if (!angleLine1PathKey || !angleLine2PathKey) return null;
+    const sum1 = objectSummaries.find((s) => s.pathKey === angleLine1PathKey);
+    const sum2 = objectSummaries.find((s) => s.pathKey === angleLine2PathKey);
+    if (!sum1 || !sum2) return null;
+
+    const dir1 = new THREE.Vector3(...sum1.principalAxisWorld).normalize();
+    const dir2 = new THREE.Vector3(...sum2.principalAxisWorld).normalize();
+
+    // Pivot: endpoint of part 1 closest to part 2's center
+    const center2 = new THREE.Vector3(...sum2.aabbCenterWorld);
+    const posEnd = new THREE.Vector3(...sum1.positiveEndWorld);
+    const negEnd = new THREE.Vector3(...sum1.negativeEndWorld);
+    const pivot = posEnd.distanceTo(center2) < negEnd.distanceTo(center2) ? posEnd : negEnd;
+
+    // Rotation axis: perpendicular to both line directions
+    let normalAxis = new THREE.Vector3().crossVectors(dir1, dir2);
+    if (normalAxis.lengthSq() < 0.0001) {
+      normalAxis = Math.abs(dir1.y) < 0.9
+        ? new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir1)
+        : new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), dir1);
+    }
+    normalAxis.normalize();
+
+    const radius = Math.max(
+      sum1.axisLength * 0.5,
+      sum2.axisLength * 0.5,
+      0.05,
+    );
+
+    return { pivot, line1Dir: dir1, normalAxis, radius };
+  }, [angleLine1PathKey, angleLine2PathKey, objectSummaries]);
+
   useEffect(() => {
     appliedValueRef.current = 0;
   }, [handleConfig]);
@@ -1119,6 +1383,20 @@ function Model({
       graph.find((node) => node.nodeId === selectedObject.uuid) ?? null;
 
     const selectedPathKey = findFuzzyPathKey(selectedObject);
+
+    // Angle tool: intercept clicks for two-part selection instead of normal select
+    if (activeTool === "angle" && selectedPathKey) {
+      if (!angleLine1PathKey) {
+        setAngleLine1PathKey(selectedPathKey);
+      } else if (!angleLine2PathKey && selectedPathKey !== angleLine1PathKey) {
+        setAngleLine2PathKey(selectedPathKey);
+      } else {
+        // Third click resets selection and starts over with the new part
+        setAngleLine1PathKey(selectedPathKey);
+        setAngleLine2PathKey(null);
+      }
+      return;
+    }
 
     onSelectedNode?.(selectedNode);
     onSelectedPathKey?.(selectedPathKey);
@@ -1185,6 +1463,44 @@ function Model({
           onChange={(value) => onManipulationChange?.(value)}
           onDragStateChange={handleDragStateChange}
         />
+      ) : null}
+
+      {/* Angle tool: arc + θ label + drag handle between two selected parts */}
+      {activeTool === "angle" && angleOverlayConfig ? (
+        <AngleArcOverlay
+          pivot={angleOverlayConfig.pivot}
+          line1Dir={angleOverlayConfig.line1Dir}
+          normalAxis={angleOverlayConfig.normalAxis}
+          angleDeg={angleArcDeg}
+          radius={angleOverlayConfig.radius}
+          onDrag={setAngleArcDeg}
+        />
+      ) : null}
+
+      {/* Angle tool: prompt to pick second part */}
+      {activeTool === "angle" && angleLine1PathKey && !angleLine2PathKey ? (
+        <Html fullscreen style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              position: "absolute",
+              top: 14,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: "rgba(255,255,255,0.93)",
+              padding: "5px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              fontFamily: "Arial, sans-serif",
+              color: "#172033",
+              fontWeight: 500,
+              border: "1px solid rgba(43,108,255,0.3)",
+              boxShadow: "0 4px 14px rgba(15,23,42,0.12)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Now click a second part to measure the angle
+          </div>
+        </Html>
       ) : null}
     </>
   );
