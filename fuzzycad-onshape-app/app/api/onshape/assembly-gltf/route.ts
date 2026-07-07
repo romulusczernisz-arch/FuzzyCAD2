@@ -1097,6 +1097,11 @@ export async function GET(req: NextRequest) {
     assemblyElementId,
   });
 
+  // liveSource=1 explicitly requests a fresh export from Onshape, bypassing
+  // both the in-memory cache and the blob snapshot stored in the document.
+  // force=1 (set by the UI's "Force reload" button) also bypasses the snapshot
+  // so that stale geometry (e.g. parts added after the snapshot was saved) is
+  // always re-fetched when the user explicitly requests it.
   const liveSource = searchParams.get("liveSource") === "1";
 
  if (!liveSource && !debugZip && !force) {
