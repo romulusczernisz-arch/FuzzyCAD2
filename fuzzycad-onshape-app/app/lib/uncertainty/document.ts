@@ -18,7 +18,9 @@ export type FuzzyCADUncertaintySource = {
   server: string;
 };
 
-export type FuzzyCADUncertaintyAnnotation = SizeUncertaintyAnnotation;
+export type FuzzyCADUncertaintyAnnotation =
+  | SizeUncertaintyAnnotation
+  | AngleUncertaintyAnnotation;
 
 export type SizeUncertaintyAnnotation = {
   id: string;
@@ -30,6 +32,19 @@ export type SizeUncertaintyAnnotation = {
   };
   confidence: AxisConfidenceMap;
   directions: AxisDirectionMap;
+  comment?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AngleUncertaintyAnnotation = {
+  id: string;
+  type: "angle";
+  target: {
+    part1PathKey: string;
+    part2PathKey: string;
+  };
+  angleDeg: number;
   comment?: string;
   createdAt: string;
   updatedAt: string;
@@ -47,6 +62,13 @@ export function createEmptyUncertaintyDocument(
 
 export function makeSizeAnnotationId(pathKeys: string[]) {
   return `size:${pathKeys.slice().sort().join("|")}`;
+}
+
+export function makeAngleAnnotationId(
+  part1PathKey: string,
+  part2PathKey: string,
+) {
+  return `angle:${[part1PathKey, part2PathKey].sort().join("|")}`;
 }
 
 function normalizePathKeys(pathKeys: string[]) {
@@ -131,7 +153,10 @@ export function upsertSizeAnnotation(
   );
 
   const preservedAnnotations = document.annotations
-    .map((annotation) => removePathKeysFromSizeAnnotation(annotation, pathKeySet))
+    .map((annotation) => {
+      if (annotation.type !== "size") return annotation;
+      return removePathKeysFromSizeAnnotation(annotation, pathKeySet);
+    })
     .filter(
       (
         annotation,
@@ -160,6 +185,38 @@ export function upsertSizeAnnotation(
   };
 }
 
+export function addAngleAnnotation(
+  document: FuzzyCADUncertaintyDocument,
+  input: {
+    part1PathKey: string;
+    part2PathKey: string;
+    angleDeg: number;
+    comment?: string;
+  },
+): FuzzyCADUncertaintyDocument {
+  const now = new Date().toISOString();
+  const id = makeAngleAnnotationId(input.part1PathKey, input.part2PathKey);
+
+  const existing = document.annotations.find(
+    (a): a is AngleUncertaintyAnnotation => a.id === id && a.type === "angle",
+  );
+
+  const annotation: AngleUncertaintyAnnotation = {
+    id,
+    type: "angle",
+    target: { part1PathKey: input.part1PathKey, part2PathKey: input.part2PathKey },
+    angleDeg: input.angleDeg,
+    comment: input.comment ?? existing?.comment,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  return {
+    ...document,
+    annotations: [...document.annotations.filter((a) => a.id !== id), annotation],
+  };
+}
+
 export function removeSizeAnnotationsForPathKeys(
   document: FuzzyCADUncertaintyDocument,
   pathKeys: string[],
@@ -173,9 +230,10 @@ export function removeSizeAnnotationsForPathKeys(
   return {
     ...document,
     annotations: document.annotations
-      .map((annotation) =>
-        removePathKeysFromSizeAnnotation(annotation, pathKeySet),
-      )
+      .map((annotation) => {
+        if (annotation.type !== "size") return annotation;
+        return removePathKeysFromSizeAnnotation(annotation, pathKeySet);
+      })
       .filter(
         (
           annotation,
@@ -228,8 +286,10 @@ export function findSizeAnnotationForPathKey(
   }
 
   return (
-    document.annotations.find((annotation) =>
-      annotation.target.pathKeys.includes(pathKey),
+    document.annotations.find(
+      (annotation): annotation is SizeUncertaintyAnnotation =>
+        annotation.type === "size" &&
+        annotation.target.pathKeys.includes(pathKey),
     ) ?? null
   );
 }
@@ -237,11 +297,12 @@ export function findSizeAnnotationForPathKey(
 export function toFuzzyConfidenceAnnotations(
   document: FuzzyCADUncertaintyDocument,
 ): FuzzyConfidenceAnnotation[] {
-  return document.annotations.flatMap((annotation) =>
-    annotation.target.pathKeys.map((pathKey) => ({
+  return document.annotations.flatMap((annotation) => {
+    if (annotation.type !== "size") return [];
+    return annotation.target.pathKeys.map((pathKey) => ({
       pathKey,
       confidence: annotation.confidence,
       directions: annotation.directions,
-    })),
-  );
+    }));
+  });
 }

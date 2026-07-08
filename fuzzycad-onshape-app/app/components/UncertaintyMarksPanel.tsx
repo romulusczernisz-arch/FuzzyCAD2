@@ -1,6 +1,8 @@
 "use client";
 
 import type {
+  AngleUncertaintyAnnotation,
+  FuzzyCADUncertaintyAnnotation,
   FuzzyCADUncertaintyDocument,
   SizeUncertaintyAnnotation,
 } from "../lib/uncertainty/document";
@@ -16,11 +18,9 @@ type UncertaintyMarksPanelProps = {
   onSaveToOnshape: () => void;
 };
 
-function getAnnotationTitle(annotation: SizeUncertaintyAnnotation) {
-  if (annotation.type === "size") {
-    return "Size uncertainty";
-  }
-
+function getAnnotationTitle(annotation: FuzzyCADUncertaintyAnnotation) {
+  if (annotation.type === "size") return "Size uncertainty";
+  if (annotation.type === "angle") return "Angle uncertainty";
   return "Uncertainty";
 }
 
@@ -30,6 +30,139 @@ function getMarkCountLabel(count: number) {
   }
 
   return `${count} mark${count === 1 ? "" : "s"}`;
+}
+
+function SizeAnnotationCard({
+  annotation,
+  selected,
+  onSelect,
+  onEdit,
+  onDelete,
+  onCommentChange,
+}: {
+  annotation: SizeUncertaintyAnnotation;
+  selected: boolean;
+  onSelect: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onCommentChange: (comment: string) => void;
+}) {
+  return (
+    <article
+      className={`${styles.card} ${selected ? styles.cardSelected : ""}`}
+      onClick={onSelect}
+    >
+      <div className={styles.cardHeader}>
+        <div
+          className={`${styles.cardTitle} ${
+            selected ? styles.cardTitleSelected : ""
+          }`}
+        >
+          {getAnnotationTitle(annotation)}
+        </div>
+
+        <div
+          className={`${styles.scopeBadge} ${
+            selected ? styles.scopeBadgeSelected : ""
+          }`}
+        >
+          {annotation.target.scope}
+        </div>
+      </div>
+
+      <textarea
+        className={styles.comment}
+        value={annotation.comment ?? ""}
+        placeholder="Add a comment..."
+        onClick={(event) => event.stopPropagation()}
+        onChange={(event) => onCommentChange(event.target.value)}
+      />
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className={styles.editButton}
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+        >
+          Edit
+        </button>
+
+        <button
+          type="button"
+          className={styles.deleteButton}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function AngleAnnotationCard({
+  annotation,
+  selected,
+  onSelect,
+  onDelete,
+  onCommentChange,
+}: {
+  annotation: AngleUncertaintyAnnotation;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onCommentChange: (comment: string) => void;
+}) {
+  return (
+    <article
+      className={`${styles.card} ${selected ? styles.cardSelected : ""}`}
+      onClick={onSelect}
+    >
+      <div className={styles.cardHeader}>
+        <div
+          className={`${styles.cardTitle} ${
+            selected ? styles.cardTitleSelected : ""
+          }`}
+        >
+          {getAnnotationTitle(annotation)}
+        </div>
+
+        <div
+          className={`${styles.scopeBadge} ${
+            selected ? styles.scopeBadgeSelected : ""
+          }`}
+        >
+          θ = {Math.abs(annotation.angleDeg).toFixed(1)}°
+        </div>
+      </div>
+
+      <textarea
+        className={styles.comment}
+        value={annotation.comment ?? ""}
+        placeholder="Add a comment..."
+        onClick={(event) => event.stopPropagation()}
+        onChange={(event) => onCommentChange(event.target.value)}
+      />
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className={styles.deleteButton}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </article>
+  );
 }
 
 export default function UncertaintyMarksPanel({
@@ -77,8 +210,8 @@ export default function UncertaintyMarksPanel({
 
         {annotations.length === 0 ? (
           <div className={styles.emptyState}>
-            Use the Size tool to add an uncertainty mark. Each mark will appear
-            here as a card.
+            Use the Size or Angle tools to add an uncertainty mark. Each mark
+            will appear here as a card.
           </div>
         ) : null}
 
@@ -86,69 +219,38 @@ export default function UncertaintyMarksPanel({
           {annotations.map((annotation) => {
             const selected = annotation.id === selectedAnnotationId;
 
-            return (
-              <article
-                key={annotation.id}
-                className={`${styles.card} ${
-                  selected ? styles.cardSelected : ""
-                }`}
-                onClick={() => onSelectAnnotation(annotation.id)}
-              >
-                <div className={styles.cardHeader}>
-                  <div
-                    className={`${styles.cardTitle} ${
-                      selected ? styles.cardTitleSelected : ""
-                    }`}
-                  >
-                    {getAnnotationTitle(annotation)}
-                  </div>
-
-                  <div
-                    className={`${styles.scopeBadge} ${
-                      selected ? styles.scopeBadgeSelected : ""
-                    }`}
-                  >
-                    {annotation.target.scope}
-                  </div>
-                </div>
-
-                <textarea
-                  className={styles.comment}
-                  value={annotation.comment ?? ""}
-                  placeholder="Add a comment..."
-                  onClick={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onChange={(event) => {
-                    onCommentChange(annotation.id, event.target.value);
-                  }}
+            if (annotation.type === "size") {
+              return (
+                <SizeAnnotationCard
+                  key={annotation.id}
+                  annotation={annotation}
+                  selected={selected}
+                  onSelect={() => onSelectAnnotation(annotation.id)}
+                  onEdit={() => onEditSizeAnnotation(annotation)}
+                  onDelete={() => onDeleteAnnotation(annotation.id)}
+                  onCommentChange={(comment) =>
+                    onCommentChange(annotation.id, comment)
+                  }
                 />
+              );
+            }
 
-                <div className={styles.actions}>
-                  <button
-                    type="button"
-                    className={styles.editButton}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onEditSizeAnnotation(annotation);
-                    }}
-                  >
-                    Edit
-                  </button>
+            if (annotation.type === "angle") {
+              return (
+                <AngleAnnotationCard
+                  key={annotation.id}
+                  annotation={annotation}
+                  selected={selected}
+                  onSelect={() => onSelectAnnotation(annotation.id)}
+                  onDelete={() => onDeleteAnnotation(annotation.id)}
+                  onCommentChange={(comment) =>
+                    onCommentChange(annotation.id, comment)
+                  }
+                />
+              );
+            }
 
-                  <button
-                    type="button"
-                    className={styles.deleteButton}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDeleteAnnotation(annotation.id);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </article>
-            );
+            return null;
           })}
         </div>
       </div>

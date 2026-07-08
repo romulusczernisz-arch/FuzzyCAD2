@@ -99,6 +99,7 @@ type FuzzyCADGeometryViewerProps = {
   onSelectedPathKey?: (pathKey: string | null) => void;
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
+  onAngleSelection?: (part1PathKey: string, part2PathKey: string, angleDeg: number) => void;
 };
 
 type HandleConfig =
@@ -886,6 +887,7 @@ function Model({
   onObjectLassoSelection,
   onManipulationChange,
   onManipulationDragStateChange,
+  onAngleSelection,
 }: {
   url: string;
   placements?: PartPlacement[];
@@ -907,6 +909,7 @@ function Model({
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
   onManipulationDragStateChange?: (dragging: boolean) => void;
+  onAngleSelection?: (part1PathKey: string, part2PathKey: string, angleDeg: number) => void;
 }) {
   const gltf = useGLTF(url);
   const graphRef = useRef<MeshGraphNode[]>([]);
@@ -1020,6 +1023,7 @@ function Model({
         (k): k is string => k !== null,
       );
       applyPathHighlight(scene, angleKeys.length > 0 ? angleKeys : null);
+      invalidate();
       return;
     }
 
@@ -1029,7 +1033,8 @@ function Model({
         : highlightedPathKey;
 
     applyPathHighlight(scene, activeHighlights);
-  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleLine1PathKey, angleLine2PathKey]);
+    invalidate();
+  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleLine1PathKey, angleLine2PathKey, invalidate]);
 
   useEffect(() => {
     applyFuzzyConfidence(
@@ -1296,6 +1301,13 @@ function Model({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [angleLine1PathKey, angleLine2PathKey]);
 
+  // Notify parent when both parts are selected and angle is known
+  useEffect(() => {
+    if (angleLine1PathKey && angleLine2PathKey) {
+      onAngleSelection?.(angleLine1PathKey, angleLine2PathKey, angleArcDeg);
+    }
+  }, [angleLine1PathKey, angleLine2PathKey, angleArcDeg, onAngleSelection]);
+
   // Compute the 3D geometry config for the arc overlay
   const angleOverlayConfig = useMemo(() => {
     if (!angleLine1PathKey || !angleLine2PathKey) return null;
@@ -1483,6 +1495,51 @@ function Model({
         />
       ) : null}
 
+      {/* Angle tool: selection markers showing which parts are chosen */}
+      {activeTool === "angle" &&
+        [
+          { pathKey: angleLine1PathKey, label: "1", color: "#64748b" },
+          { pathKey: angleLine2PathKey, label: "2", color: "#2b6cff" },
+        ].map(({ pathKey, label, color }) => {
+          if (!pathKey) return null;
+          const summary = objectSummaries.find((s) => s.pathKey === pathKey);
+          if (!summary) return null;
+          const c = summary.aabbCenterWorld;
+          const halfY = summary.aabbSizeWorld[1] / 2;
+          const pos: [number, number, number] = [c[0], c[1] + halfY + 0.03, c[2]];
+          return (
+            <Html
+              key={pathKey}
+              position={pos}
+              center
+              distanceFactor={0.8}
+              occlude={false}
+            >
+              <div
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: "50%",
+                  background: color,
+                  border: "2px solid white",
+                  boxShadow: `0 2px 8px ${color}88`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontFamily: "Arial, sans-serif",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: "white",
+                  pointerEvents: "none",
+                  userSelect: "none",
+                }}
+              >
+                {label}
+              </div>
+            </Html>
+          );
+        })}
+
       {/* Angle tool: prompt to pick second part */}
       {activeTool === "angle" && angleLine1PathKey && !angleLine2PathKey ? (
         <Html fullscreen style={{ pointerEvents: "none" }}>
@@ -1531,6 +1588,7 @@ export default function FuzzyCADGeometryViewer({
   onSelectedPathKey,
   onObjectLassoSelection,
   onManipulationChange,
+  onAngleSelection,
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
   const [manipulationDragging, setManipulationDragging] = useState(false);
@@ -1593,6 +1651,7 @@ export default function FuzzyCADGeometryViewer({
                   onObjectLassoSelection={onObjectLassoSelection}
                   onManipulationChange={onManipulationChange}
                   onManipulationDragStateChange={setManipulationDragging}
+                  onAngleSelection={onAngleSelection}
                 />
               </Bounds>
             </Suspense>

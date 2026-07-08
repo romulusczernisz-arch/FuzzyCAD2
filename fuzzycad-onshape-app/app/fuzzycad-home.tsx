@@ -49,6 +49,7 @@ import {
   type ConfidenceLevel,
 } from "./lib/uncertainty/types";
 import {
+  addAngleAnnotation,
   findSizeAnnotationForPathKey,
   makeSizeAnnotationId,
   type SizeUncertaintyAnnotation,
@@ -158,6 +159,13 @@ export default function FuzzyCADHome() {
   const [dev, setDev] = useState<boolean>(() => params.get("dev") === "1");
   const [busy, setBusy] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<OperationTool>("select");
+
+  const [pendingAngle, setPendingAngle] = useState<{
+    part1PathKey: string;
+    part2PathKey: string;
+    angleDeg: number;
+  } | null>(null);
+  const [pendingAngleComment, setPendingAngleComment] = useState("");
 
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
@@ -829,6 +837,9 @@ if (result.ok && result.state) {
             setHighlightedPathKey(pathKeys[0] ?? null);
             leaveUncertaintyEditingState();
           }}
+          onAngleSelection={(part1PathKey, part2PathKey, angleDeg) => {
+            setPendingAngle({ part1PathKey, part2PathKey, angleDeg });
+          }}
         />
 
         <OperationToolbar
@@ -837,7 +848,14 @@ if (result.ok && result.state) {
           onToolChange={(tool) => {
             if (tool === "height") {
               startHeightUncertainty();
+              setPendingAngle(null);
+              setPendingAngleComment("");
               return;
+            }
+
+            if (tool !== "angle") {
+              setPendingAngle(null);
+              setPendingAngleComment("");
             }
 
             setActiveTool(tool);
