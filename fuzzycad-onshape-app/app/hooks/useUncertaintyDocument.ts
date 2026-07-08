@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  addAngleAnnotation,
   createEmptyUncertaintyDocument,
   removeSizeAnnotationsForPathKeys,
   removeUncertaintyAnnotationById,
@@ -97,6 +98,17 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     );
   }
 
+  function saveAngleMark(input: {
+    part1PathKey: string;
+    part2PathKey: string;
+    angleDeg: number;
+    comment?: string;
+  }) {
+    setUncertaintyDocument((previous) =>
+      addAngleAnnotation({ ...previous, source }, input),
+    );
+  }
+
   return {
     uncertaintyDocument,
     uncertaintyDocumentWithCurrentSource,
@@ -107,5 +119,6 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     removeSizeMarks,
     deleteAnnotation,
     updateAnnotationComment,
+    saveAngleMark,
   };
 }

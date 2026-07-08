@@ -49,7 +49,6 @@ import {
   type ConfidenceLevel,
 } from "./lib/uncertainty/types";
 import {
-  addAngleAnnotation,
   findSizeAnnotationForPathKey,
   makeSizeAnnotationId,
   type SizeUncertaintyAnnotation,
@@ -221,6 +220,7 @@ export default function FuzzyCADHome() {
     deleteAnnotation,
     replaceUncertaintyDocument,
     updateAnnotationComment,
+    saveAngleMark,
   } = useUncertaintyDocument(currentUncertaintySource);
 
   const assemblyElements = useMemo(() => {
@@ -955,6 +955,48 @@ if (result.ok && result.state) {
               setActiveTool("select");
             }}
           />
+        ) : null}
+
+        {activeTool === "angle" && pendingAngle ? (
+          <div className={styles.angleMark}>
+            <div className={styles.angleMarkTitle}>Angle uncertainty</div>
+            <div className={styles.angleMarkValue}>
+              θ = {Math.abs(pendingAngle.angleDeg).toFixed(1)}°
+            </div>
+            <textarea
+              className={styles.angleMarkComment}
+              value={pendingAngleComment}
+              placeholder="Add a comment..."
+              onChange={(e) => setPendingAngleComment(e.target.value)}
+            />
+            <div className={styles.angleMarkActions}>
+              <button
+                type="button"
+                className={styles.angleMarkSave}
+                onClick={() => {
+                  saveAngleMark({
+                    ...pendingAngle,
+                    comment: pendingAngleComment || undefined,
+                  });
+                  setPendingAngle(null);
+                  setPendingAngleComment("");
+                  setActiveTool("select");
+                }}
+              >
+                Save mark
+              </button>
+              <button
+                type="button"
+                className={styles.angleMarkCancel}
+                onClick={() => {
+                  setPendingAngle(null);
+                  setPendingAngleComment("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         ) : null}
       </div>
 

@@ -341,3 +341,104 @@
   stroke-dasharray: 7 5;
   filter: drop-shadow(0 0 6px rgba(43, 108, 255, 0.55));
 }
+.angleMark {
+  position: absolute;
+  bottom: 20px;
+  right: 288px; /* sit to the left of the UncertaintyMarksPanel */
+  z-index: 12;
+  width: 256px;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid rgba(104, 165, 255, 0.42);
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.96),
+      rgba(241, 247, 255, 0.92)
+    );
+  box-shadow:
+    0 18px 44px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+  backdrop-filter: blur(18px);
+  color: #172033;
+  font-family: Arial, sans-serif;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.angleMarkTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2b6cff;
+}
+
+.angleMarkValue {
+  font-size: 20px;
+  font-weight: 700;
+  color: #172033;
+}
+
+.angleMarkComment {
+  resize: vertical;
+  width: 100%;
+  min-height: 56px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid rgba(59, 90, 152, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #172033;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.angleMarkComment:focus {
+  border-color: #2b6cff;
+  box-shadow: 0 0 0 2px rgba(43, 108, 255, 0.18);
+}
+
+.angleMarkActions {
+  display: flex;
+  gap: 8px;
+}
+
+.angleMarkSave {
+  flex: 1;
+  padding: 7px 0;
+  border: none;
+  border-radius: 8px;
+  background: #2b6cff;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.angleMarkSave:hover {
+  background: #1a52d4;
+}
+
+.angleMarkCancel {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid rgba(59, 90, 152, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #5b6475;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.angleMarkCancel:hover {
+  background: rgba(241, 247, 255, 0.9);
+}
