@@ -8,6 +8,12 @@ import type {
 } from "../lib/uncertainty/document";
 import styles from "./UncertaintyMarksPanel.module.css";
 
+type PendingAngle = {
+  part1PathKey: string;
+  part2PathKey: string;
+  angleDeg: number;
+};
+
 type UncertaintyMarksPanelProps = {
   document: FuzzyCADUncertaintyDocument;
   selectedAnnotationId: string | null;
@@ -16,6 +22,11 @@ type UncertaintyMarksPanelProps = {
   onDeleteAnnotation: (annotationId: string) => void;
   onCommentChange: (annotationId: string, comment: string) => void;
   onSaveToOnshape: () => void;
+  pendingAngle?: PendingAngle | null;
+  pendingAngleComment?: string;
+  onPendingAngleCommentChange?: (comment: string) => void;
+  onSaveAngle?: () => void;
+  onCancelAngle?: () => void;
 };
 
 function getAnnotationTitle(annotation: FuzzyCADUncertaintyAnnotation) {
@@ -173,6 +184,11 @@ export default function UncertaintyMarksPanel({
   onDeleteAnnotation,
   onCommentChange,
   onSaveToOnshape,
+  pendingAngle,
+  pendingAngleComment = "",
+  onPendingAngleCommentChange,
+  onSaveAngle,
+  onCancelAngle,
 }: UncertaintyMarksPanelProps) {
   const annotations = document.annotations;
 
@@ -208,7 +224,40 @@ export default function UncertaintyMarksPanel({
           </button>
         </div>
 
-        {annotations.length === 0 ? (
+        {pendingAngle ? (
+          <div className={styles.pendingAngle}>
+            <div className={styles.pendingAngleHeader}>
+              <span className={styles.pendingAngleLabel}>Angle uncertainty</span>
+              <span className={styles.pendingAngleValue}>
+                θ = {Math.abs(pendingAngle.angleDeg).toFixed(1)}°
+              </span>
+            </div>
+            <textarea
+              className={styles.comment}
+              value={pendingAngleComment}
+              placeholder="Add a comment..."
+              onChange={(e) => onPendingAngleCommentChange?.(e.target.value)}
+            />
+            <div className={styles.actions}>
+              <button
+                type="button"
+                className={styles.editButton}
+                onClick={onSaveAngle}
+              >
+                Save mark
+              </button>
+              <button
+                type="button"
+                className={styles.deleteButton}
+                onClick={onCancelAngle}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {annotations.length === 0 && !pendingAngle ? (
           <div className={styles.emptyState}>
             Use the Size or Angle tools to add an uncertainty mark. Each mark
             will appear here as a card.

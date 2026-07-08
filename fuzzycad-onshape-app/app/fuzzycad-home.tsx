@@ -875,6 +875,23 @@ if (result.ok && result.state) {
           onDeleteAnnotation={deleteUncertaintyCard}
           onCommentChange={updateUncertaintyCardComment}
           onSaveToOnshape={() => void saveProjectStateToOnshape()}
+          pendingAngle={activeTool === "angle" ? pendingAngle : null}
+          pendingAngleComment={pendingAngleComment}
+          onPendingAngleCommentChange={setPendingAngleComment}
+          onSaveAngle={() => {
+            if (!pendingAngle) return;
+            saveAngleMark({
+              ...pendingAngle,
+              comment: pendingAngleComment || undefined,
+            });
+            setPendingAngle(null);
+            setPendingAngleComment("");
+            setActiveTool("select");
+          }}
+          onCancelAngle={() => {
+            setPendingAngle(null);
+            setPendingAngleComment("");
+          }}
         />
 
         {heightCandidateOpen ? (
@@ -957,47 +974,6 @@ if (result.ok && result.state) {
           />
         ) : null}
 
-        {activeTool === "angle" && pendingAngle ? (
-          <div className={styles.angleMark}>
-            <div className={styles.angleMarkTitle}>Angle uncertainty</div>
-            <div className={styles.angleMarkValue}>
-              θ = {Math.abs(pendingAngle.angleDeg).toFixed(1)}°
-            </div>
-            <textarea
-              className={styles.angleMarkComment}
-              value={pendingAngleComment}
-              placeholder="Add a comment..."
-              onChange={(e) => setPendingAngleComment(e.target.value)}
-            />
-            <div className={styles.angleMarkActions}>
-              <button
-                type="button"
-                className={styles.angleMarkSave}
-                onClick={() => {
-                  saveAngleMark({
-                    ...pendingAngle,
-                    comment: pendingAngleComment || undefined,
-                  });
-                  setPendingAngle(null);
-                  setPendingAngleComment("");
-                  setActiveTool("select");
-                }}
-              >
-                Save mark
-              </button>
-              <button
-                type="button"
-                className={styles.angleMarkCancel}
-                onClick={() => {
-                  setPendingAngle(null);
-                  setPendingAngleComment("");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : null}
       </div>
 
       {dev ? (
