@@ -13,6 +13,7 @@ export type ApiResult = {
   data?: unknown;
   state?: unknown;
   graph?: unknown;
+  summary?: unknown;
   error?: string;
   action?: string;
   details?: unknown;
@@ -31,6 +32,60 @@ assemblyOverlayResult?: unknown;
   reconstructionResult?: unknown;
   projectState?: unknown;
 };
+
+// ── Client-side sessionStorage cache ─────────────────────────────────────────
+// Keyed by endpoint URL. TTL is 30 minutes matching the server assembly cache.
+// Entries are cleared when the assembly changes (force:true resets).
+
+const SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+
+type SessionCacheEntry = {
+  expiresAt: number;
+  data: ApiResult;
+};
+
+function sessionCacheGet(key: string): ApiResult | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const entry = JSON.parse(raw) as SessionCacheEntry;
+    if (Date.now() > entry.expiresAt) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+function sessionCacheSet(key: string, data: ApiResult) {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    const entry: SessionCacheEntry = {
+      expiresAt: Date.now() + SESSION_CACHE_TTL_MS,
+      data,
+    };
+    sessionStorage.setItem(key, JSON.stringify(entry));
+  } catch {
+    // sessionStorage may be full or unavailable — fail silently
+  }
+}
+
+export function clearAssemblySessionCache(query: {
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  server: string;
+}) {
+  if (typeof sessionStorage === "undefined") return;
+  const prefix = `fuzzycad:${query.server}:${query.documentId}:${query.workspaceId}:${query.assemblyElementId}:`;
+  const keys = Object.keys(sessionStorage).filter((k) => k.startsWith(prefix));
+  for (const k of keys) sessionStorage.removeItem(k);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function parseApiResult(res: Response): Promise<ApiResult> {
   const text = await res.text();
@@ -194,22 +249,60 @@ export async function fetchFuzzycadAssemblySummary(
   query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
-  const res = await fetch(
-    `/api/fuzzycad/assembly-summary?${params.toString()}`,
-  );
+  const url = `/api/fuzzycad/assembly-summary?${params.toString()}`;
+  const cacheKey = `fuzzycad:${query.server}:${query.documentId}:${query.workspaceId}:${query.assemblyElementId}:assembly-summary`;
 
-  return res.json() as Promise<ApiResult>;
+  if (!query.force) {
+    const cached = sessionCacheGet(cacheKey);
+    if (cached) return cached;
+  }
+
+  const res = await fetch(url);
+  const result = await parseApiResult(res);
+
+  if (result.ok) sessionCacheSet(cacheKey, result);
+
+  return result;
 }
 
 export async function fetchFuzzycadRelationshipGraph(
   query: AssemblyQuery,
 ): Promise<ApiResult> {
   const params = makeAssemblyParams(query);
-  const res = await fetch(
-    `/api/fuzzycad/relationship-graph?${params.toString()}`,
-  );
+  const url = `/api/fuzzycad/relationship-graph?${params.toString()}`;
+  const cacheKey = `fuzzycad:${query.server}:${query.documentId}:${query.workspaceId}:${query.assemblyElementId}:relationship-graph`;
 
-  return res.json() as Promise<ApiResult>;
+  if (!query.force) {
+    const cached = sessionCacheGet(cacheKey);
+    if (cached) return cached;
+  }
+
+  const res = await fetch(url);
+  const result = await parseApiResult(res);
+
+  if (result.ok) sessionCacheSet(cacheKey, result);
+
+  return result;
+}
+
+export async function fetchFuzzycadAssemblyData(
+  query: AssemblyQuery,
+): Promise<ApiResult> {
+  const params = makeAssemblyParams(query);
+  const url = `/api/fuzzycad/assembly-data?${params.toString()}`;
+  const cacheKey = `fuzzycad:${query.server}:${query.documentId}:${query.workspaceId}:${query.assemblyElementId}:assembly-data`;
+
+  if (!query.force) {
+    const cached = sessionCacheGet(cacheKey);
+    if (cached) return cached;
+  }
+
+  const res = await fetch(url);
+  const result = await parseApiResult(res);
+
+  if (result.ok) sessionCacheSet(cacheKey, result);
+
+  return result;
 }
 
 export type OccurrenceUpdate = {

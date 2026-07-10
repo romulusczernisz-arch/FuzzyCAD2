@@ -18,6 +18,8 @@ import type {
 } from "./components/FuzzyCADGeometryViewer";
 import { usePartGraph } from "./hooks/usePartGraph";
 import {
+  clearAssemblySessionCache,
+  fetchFuzzycadAssemblyData,
   fetchFuzzycadAssemblySummary,
   fetchFuzzycadRelationshipGraph,
   fetchOnshapeAssembly,
@@ -463,6 +465,27 @@ export default function FuzzyCADHome() {
     setRelationshipGraphResult(data);
   }
 
+  /**
+   * Fetch both the relationship graph and assembly summary in a single request,
+   * saving one Onshape API call on cache-miss and one HTTP round-trip.
+   * The combined ApiResult has both `graph` and `summary` fields populated.
+   */
+  async function loadAssemblyData(options: LoadOptions = {}) {
+    const data = await fetchFuzzycadAssemblyData({
+      documentId: documentId || "",
+      workspaceId: workspaceId || "",
+      assemblyElementId: selectedAssemblyId,
+      server,
+      force: options.force,
+    });
+
+    // Both hooks (usePartGraph, useAssemblyPlacementTree) read `result.graph`
+    // from ApiResult. The combined response sets `graph` at the top level.
+    setRelationshipGraphResult(data);
+    // Dev panel shows this as a debug value; summary is at `data.summary`.
+    setAssemblySummaryResult(data);
+  }
+
   async function loadSelectedAssembly() {
     if (!selectedAssemblyId) {
       return;
@@ -471,8 +494,12 @@ export default function FuzzyCADHome() {
     setBusy(true);
 
     try {
-      await buildRelationshipGraph();
-      await loadAssemblyGeometry();
+      // Combined endpoint fetches assembly once and returns graph + summary.
+      // Geometry load is run in parallel with the combined call.
+      await Promise.all([
+        loadAssemblyData(),
+        loadAssemblyGeometry(),
+      ]);
       await loadProjectStateFromOnshape();
     } finally {
       setBusy(false);
@@ -759,6 +786,15 @@ if (result.ok && result.state) {
   }
 
   function handleAssemblyChange(assemblyId: string) {
+    // Clear the previous assembly's client-side session cache before switching
+    if (selectedAssemblyId && documentId && workspaceId) {
+      clearAssemblySessionCache({
+        documentId,
+        workspaceId,
+        assemblyElementId: selectedAssemblyId,
+        server,
+      });
+    }
     setSelectedAssemblyId(assemblyId);
     resetGeometryState();
     setGeometryZipManifest(null);

@@ -23,7 +23,7 @@ type CacheEntry = {
   data: unknown;
 };
 
-const ELEMENTS_CACHE_TTL_MS = 60 * 1000;
+const ELEMENTS_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const elementsCache = new Map<string, CacheEntry>();
 const elementsInflight = new Map<string, Promise<ElementsResult>>();

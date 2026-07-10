@@ -3,7 +3,10 @@ import {
   clearElementsCache,
   getCachedElements,
 } from "../../../lib/server/onshapeElementsCache";
-import { clearAssemblyCache } from "../../../lib/server/onshapeAssemblyCache";
+import {
+  clearAssemblyCache,
+  getCachedAssembly,
+} from "../../../lib/server/onshapeAssemblyCache";
 import { onshapeFetch, parseJsonOrText } from "../../../lib/server/onshapeApi";
 
 const PROJECT_STATE_FILENAME = "fuzzycad-project-state.json";
@@ -478,29 +481,14 @@ async function getAssemblyDefinitionForOverlay(input: {
   assemblyElementId: string;
   accessToken: string;
 }) {
-  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}`;
-
-  const res = await onshapeFetch(
-    endpoint,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${input.accessToken}`,
-        Accept: "application/json",
-      },
-    },
-    {
-      route: "/api/fuzzycad/save-project",
-      operation: "get-selected-assembly-before-overlay-insert",
-    },
-  );
-
-  return {
-    ok: res.ok,
-    status: res.status,
-    endpoint,
-    data: await parseJsonOrText(res),
-  };
+  return getCachedAssembly({
+    server: input.server,
+    documentId: input.documentId,
+    workspaceId: input.workspaceId,
+    assemblyElementId: input.assemblyElementId,
+    accessToken: input.accessToken,
+    route: "/api/fuzzycad/save-project",
+  });
 }
 
 function getAssemblyInstances(data: unknown) {
@@ -812,7 +800,6 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
     workspaceId: input.workspaceId,
     accessToken: input.accessToken,
     route: "/api/fuzzycad/save-project",
-    force: true,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
@@ -1484,7 +1471,6 @@ async function validateVisualizationLayerElement(input: {
     workspaceId: input.workspaceId,
     accessToken: input.accessToken,
     route: "/api/fuzzycad/save-project",
-    force: true,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
@@ -1778,7 +1764,6 @@ export async function POST(req: NextRequest) {
     workspaceId,
     accessToken,
     route: "/api/fuzzycad/save-project",
-    force: true,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {

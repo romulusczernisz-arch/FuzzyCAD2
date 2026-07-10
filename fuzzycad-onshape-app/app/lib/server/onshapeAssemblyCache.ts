@@ -24,7 +24,7 @@ type CacheEntry = {
   data: unknown;
 };
 
-const ASSEMBLY_CACHE_TTL_MS = 2 * 60 * 1000;
+const ASSEMBLY_CACHE_TTL_MS = 30 * 60 * 1000;
 
 const assemblyCache = new Map<string, CacheEntry>();
 const assemblyInflight = new Map<string, Promise<AssemblyResult>>();
