@@ -1556,12 +1556,15 @@ async function validateVisualizationLayerElement(input: {
     };
   }
 
+  // force: true is critical here — the visualization layer element was just
+  // created by the STL translation and will not be in the stale elements cache.
   const elementsResult = await getCachedElements({
     server: input.server,
     documentId: input.documentId,
     workspaceId: input.workspaceId,
     accessToken: input.accessToken,
     route: "/api/fuzzycad/save-project",
+    force: true,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
