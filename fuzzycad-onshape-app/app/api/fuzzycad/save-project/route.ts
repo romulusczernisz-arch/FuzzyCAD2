@@ -1632,24 +1632,49 @@ function buildAnnotatedSelectionManifest(projectState: UnknownRecord) {
 
   for (const annotation of annotations) {
     if (!isRecord(annotation)) continue;
-    if (annotation.type !== "size") continue;
 
     const annotationId =
       typeof annotation.id === "string" ? annotation.id : "unknown-annotation";
 
-    const target = isRecord(annotation.target) ? annotation.target : null;
-    const pathKeys = Array.isArray(target?.pathKeys)
-      ? target.pathKeys.filter(
-          (item): item is string => typeof item === "string",
-        )
-      : [];
+    if (annotation.type === "size") {
+      const target = isRecord(annotation.target) ? annotation.target : null;
+      const pathKeys = Array.isArray(target?.pathKeys)
+        ? target.pathKeys.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [];
 
-    for (const pathKey of pathKeys) {
-      includedObjects.push({
-        annotationId,
-        pathKey,
-        type: "size",
-      });
+      for (const pathKey of pathKeys) {
+        includedObjects.push({ annotationId, pathKey, type: "size" });
+      }
+    } else if (annotation.type === "angle") {
+      const target = isRecord(annotation.target) ? annotation.target : null;
+      const part1PathKey =
+        typeof target?.part1PathKey === "string" ? target.part1PathKey : null;
+      const part2PathKey =
+        typeof target?.part2PathKey === "string" ? target.part2PathKey : null;
+      // Include angleDeg in the path key so any edit to the angle changes the
+      // signature and triggers overlay replacement instead of skip-import.
+      const angleDeg =
+        typeof annotation.angleDeg === "number"
+          ? annotation.angleDeg.toFixed(2)
+          : "0.00";
+
+      if (part1PathKey) {
+        includedObjects.push({
+          annotationId,
+          pathKey: `${part1PathKey}@angle-part1`,
+          type: "angle",
+        });
+      }
+
+      if (part2PathKey) {
+        includedObjects.push({
+          annotationId,
+          pathKey: `${part2PathKey}@angle-part2:${angleDeg}`,
+          type: "angle",
+        });
+      }
     }
   }
 
