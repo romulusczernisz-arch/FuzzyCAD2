@@ -44,7 +44,20 @@ export type AngleUncertaintyAnnotation = {
     part1PathKey: string;
     part2PathKey: string;
   };
+  /** Measured / target angle between the two selected face normals (degrees). */
   angleDeg: number;
+  /**
+   * Face normals and pivot stored in Onshape assembly coordinate space.
+   * Captured from the Three.js raycaster with the viewer's -π/2 display
+   * rotation removed: viewerSpace(x,y,z) → onshapeSpace(x,-z,y).
+   *
+   * These are used in the STL export to compute the rotation transform that
+   * achieves targetAngleDeg between the two faces.
+   */
+  face1Normal?: [number, number, number];
+  face2Normal?: [number, number, number];
+  /** Click point on face1 used as the rotation pivot (Onshape space). */
+  pivotPoint?: [number, number, number];
   comment?: string;
   createdAt: string;
   updatedAt: string;
@@ -191,6 +204,9 @@ export function addAngleAnnotation(
     part1PathKey: string;
     part2PathKey: string;
     angleDeg: number;
+    face1Normal?: [number, number, number];
+    face2Normal?: [number, number, number];
+    pivotPoint?: [number, number, number];
     comment?: string;
   },
 ): FuzzyCADUncertaintyDocument {
@@ -206,6 +222,9 @@ export function addAngleAnnotation(
     type: "angle",
     target: { part1PathKey: input.part1PathKey, part2PathKey: input.part2PathKey },
     angleDeg: input.angleDeg,
+    face1Normal: input.face1Normal ?? existing?.face1Normal,
+    face2Normal: input.face2Normal ?? existing?.face2Normal,
+    pivotPoint: input.pivotPoint ?? existing?.pivotPoint,
     comment: input.comment ?? existing?.comment,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,

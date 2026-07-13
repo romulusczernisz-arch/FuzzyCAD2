@@ -204,3 +204,39 @@
   font-weight: 700;
   color: #172033;
 }
+
+.pendingAngleRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pendingAngleSymbol {
+  font-size: 13px;
+  font-weight: 700;
+  color: #172033;
+  white-space: nowrap;
+}
+
+.pendingAngleInput {
+  width: 70px;
+  padding: 3px 6px;
+  border: 1px solid rgba(43, 108, 255, 0.4);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #172033;
+  background: white;
+  text-align: right;
+}
+
+.pendingAngleInput:focus {
+  outline: none;
+  border-color: #2b6cff;
+}
+
+.pendingAngleDeg {
+  font-size: 13px;
+  font-weight: 700;
+  color: #172033;
+}

@@ -1060,6 +1060,97 @@ async function deleteExistingFuzzyCadOverlayInstances(input: {
   };
 }
 
+/**
+ * After the rotated overlay is inserted into the assembly, hide the original
+ * part2 occurrences for each angle annotation so only the rotated version is
+ * visible. Hiding is best-effort — a failure here does not abort the save.
+ */
+async function hideAngleAnnotationOriginals(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  assemblyElementId: string;
+  accessToken: string;
+  projectState: UnknownRecord;
+}) {
+  const annotations = Array.isArray(input.projectState.annotations)
+    ? input.projectState.annotations
+    : [];
+
+  const angleAnnotations = annotations.filter(
+    (a): a is UnknownRecord =>
+      isRecord(a) &&
+      a.type === "angle" &&
+      isRecord(a.target) &&
+      typeof (a.target as UnknownRecord).part2PathKey === "string",
+  );
+
+  if (angleAnnotations.length === 0) {
+    return { ok: true, mode: "no-angle-annotations", hidden: [] };
+  }
+
+  const seenPathKeys = new Set<string>();
+  const occurrencesToHide: string[][] = [];
+
+  for (const annotation of angleAnnotations) {
+    const part2PathKey = (annotation.target as UnknownRecord)
+      .part2PathKey as string;
+    if (seenPathKeys.has(part2PathKey)) continue;
+    seenPathKeys.add(part2PathKey);
+    const path = part2PathKey.split("/").filter((p) => p.length > 0);
+    if (path.length > 0) occurrencesToHide.push(path);
+  }
+
+  if (occurrencesToHide.length === 0) {
+    return { ok: true, mode: "no-angle-part2-paths", hidden: [] };
+  }
+
+  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/occurrencetransforms`;
+
+  // Identity matrix keeps position unchanged; hidden:true hides the occurrence.
+  const identityTransform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+  const payload = {
+    isRelative: false,
+    occurrences: occurrencesToHide.map((path) => ({
+      path,
+      hidden: true,
+      transform: identityTransform,
+    })),
+  };
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+    {
+      route: "/api/fuzzycad/save-project",
+      operation: "hide-angle-annotation-originals",
+    },
+  );
+
+  const data = await parseJsonOrText(res);
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    mode: res.ok
+      ? "hidden-angle-annotation-originals"
+      : "failed-to-hide-angle-annotation-originals",
+    endpoint,
+    hiddenCount: occurrencesToHide.length,
+    hidden: occurrencesToHide,
+    data,
+  };
+}
+
 async function ensureVisualizationLayerInSelectedAssembly(input: {
   server: string;
   documentId: string;
@@ -1913,6 +2004,19 @@ const assemblyOverlayResult = existingOverlayPreflight.shouldSkipImport
         validation: visualizationLayerValidation,
       };
 
+  // Best-effort: hide original part2 occurrences after overlay is inserted.
+  const hideAngleOriginalsResult =
+    isOkResult(assemblyOverlayResult) && selectedAssemblyElementId
+      ? await hideAngleAnnotationOriginals({
+          server,
+          documentId,
+          workspaceId,
+          assemblyElementId: selectedAssemblyElementId,
+          accessToken,
+          projectState,
+        })
+      : null;
+
   const generatedGeometryPayload = buildGeneratedGeometryPayload({
     projectState,
     annotatedSelectionStlResult,
@@ -2095,6 +2199,7 @@ return NextResponse.json({
   reconstructionResult,
   visualizationLayerValidation,
   assemblyOverlayResult,
+  hideAngleOriginalsResult,
   projectStateResult,
   projectState: projectStateWithGeneratedGeometry,
 });

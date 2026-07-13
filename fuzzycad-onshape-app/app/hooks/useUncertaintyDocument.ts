@@ -102,6 +102,9 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     part1PathKey: string;
     part2PathKey: string;
     angleDeg: number;
+    face1Normal?: [number, number, number];
+    face2Normal?: [number, number, number];
+    pivotPoint?: [number, number, number];
     comment?: string;
   }) {
     setUncertaintyDocument((previous) =>

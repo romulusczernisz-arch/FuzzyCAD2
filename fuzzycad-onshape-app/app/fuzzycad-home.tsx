@@ -165,8 +165,16 @@ export default function FuzzyCADHome() {
     part1PathKey: string;
     part2PathKey: string;
     angleDeg: number;
+    /** Face normals in viewer world space (scene.rotation.x = -π/2 applied). */
+    face1NormalViewer?: [number, number, number];
+    face2NormalViewer?: [number, number, number];
+    pivotViewer?: [number, number, number];
   } | null>(null);
   const [pendingAngleComment, setPendingAngleComment] = useState("");
+  /** Similar-part candidates for part2 when the angle popup is open. */
+  const [angleCandidateOpen, setAngleCandidateOpen] = useState(false);
+  /** [part2PathKey, ...similar part2 pathKeys] */
+  const [angleCandidatePart2Keys, setAngleCandidatePart2Keys] = useState<string[]>([]);
 
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
@@ -873,8 +881,33 @@ if (result.ok && result.state) {
             setHighlightedPathKey(pathKeys[0] ?? null);
             leaveUncertaintyEditingState();
           }}
-          onAngleSelection={(part1PathKey, part2PathKey, angleDeg) => {
-            setPendingAngle({ part1PathKey, part2PathKey, angleDeg });
+          onAngleSelection={({ part1PathKey, part2PathKey, angleDeg, face1Normal, face2Normal, pivot }) => {
+            const raw = {
+              part1PathKey,
+              part2PathKey,
+              angleDeg,
+              face1NormalViewer: face1Normal,
+              face2NormalViewer: face2Normal,
+              pivotViewer: pivot,
+            };
+
+            // Check for similar instances of part2 to offer "apply to all"
+            const part2Summary = objectSummaries.find(
+              (s) => s.pathKey === part2PathKey,
+            );
+            const candidates = part2Summary
+              ? buildSizeCandidatePathKeys(part2Summary, objectSummaries)
+              : [part2PathKey];
+
+            if (candidates.length > 1) {
+              // Stash the raw data and show the related-parts popup
+              setPendingAngle(raw);
+              setAngleCandidatePart2Keys(candidates);
+              setAngleCandidateOpen(true);
+            } else {
+              // No similar parts — set directly and show sidebar panel
+              setPendingAngle(raw);
+            }
           }}
         />
 
@@ -916,19 +949,121 @@ if (result.ok && result.state) {
           onPendingAngleCommentChange={setPendingAngleComment}
           onSaveAngle={() => {
             if (!pendingAngle) return;
+            // Convert face normals from viewer space to Onshape space:
+            // viewer (x,y,z) → onshape (x,-z,y)  [undoes scene.rotation.x = -π/2]
+            function viewerToOnshape(
+              v?: [number, number, number],
+            ): [number, number, number] | undefined {
+              if (!v) return undefined;
+              return [v[0], -v[2], v[1]];
+            }
             saveAngleMark({
-              ...pendingAngle,
+              part1PathKey: pendingAngle.part1PathKey,
+              part2PathKey: pendingAngle.part2PathKey,
+              angleDeg: pendingAngle.angleDeg,
+              face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
+              face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
+              pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
               comment: pendingAngleComment || undefined,
             });
             setPendingAngle(null);
             setPendingAngleComment("");
+            setAngleCandidateOpen(false);
             setActiveTool("select");
           }}
           onCancelAngle={() => {
             setPendingAngle(null);
             setPendingAngleComment("");
+            setAngleCandidateOpen(false);
+          }}
+          onPendingAngleValueChange={(deg) => {
+            if (pendingAngle) {
+              setPendingAngle({ ...pendingAngle, angleDeg: deg });
+            }
           }}
         />
+
+        {angleCandidateOpen && pendingAngle ? (
+          <OperationPreviewPanel
+            operation="height"
+            title="Modify related components?"
+            description={
+              angleCandidatePart2Keys.length > 1
+                ? `${
+                    angleCandidatePart2Keys.length - 1 === 1
+                      ? "1 similar component was"
+                      : `${angleCandidatePart2Keys.length - 1} similar components were`
+                  } found. Apply this angle annotation to all of them, or just the selected one.`
+                : "No similar components found. Continuing will annotate only the selected part."
+            }
+            suggestedObjects={
+              angleCandidatePart2Keys.length > 1
+                ? angleCandidatePart2Keys
+                    .map((pk) => objectSummaries.find((s) => s.pathKey === pk))
+                    .filter(Boolean)
+                    .map((s) => getObjectDisplayName(s!))
+                : undefined
+            }
+            confirmLabel={angleCandidatePart2Keys.length > 1 ? "Apply to all" : "Continue"}
+            secondaryConfirmLabel={angleCandidatePart2Keys.length > 1 ? "Selected only" : undefined}
+            cancelLabel="Cancel"
+            onConfirm={() => {
+              // For "apply to all": save one annotation per similar part2 instance
+              for (const part2PathKey of angleCandidatePart2Keys) {
+                function viewerToOnshape(
+                  v?: [number, number, number],
+                ): [number, number, number] | undefined {
+                  if (!v) return undefined;
+                  return [v[0], -v[2], v[1]];
+                }
+                saveAngleMark({
+                  part1PathKey: pendingAngle.part1PathKey,
+                  part2PathKey,
+                  angleDeg: pendingAngle.angleDeg,
+                  face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
+                  face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
+                  pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
+                  comment: pendingAngleComment || undefined,
+                });
+              }
+              setPendingAngle(null);
+              setPendingAngleComment("");
+              setAngleCandidateOpen(false);
+              setActiveTool("select");
+            }}
+            onSecondaryConfirm={
+              angleCandidatePart2Keys.length > 1
+                ? () => {
+                    // "Selected only": annotate just the originally-clicked part2
+                    function viewerToOnshape(
+                      v?: [number, number, number],
+                    ): [number, number, number] | undefined {
+                      if (!v) return undefined;
+                      return [v[0], -v[2], v[1]];
+                    }
+                    saveAngleMark({
+                      part1PathKey: pendingAngle.part1PathKey,
+                      part2PathKey: pendingAngle.part2PathKey,
+                      angleDeg: pendingAngle.angleDeg,
+                      face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
+                      face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
+                      pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
+                      comment: pendingAngleComment || undefined,
+                    });
+                    setPendingAngle(null);
+                    setPendingAngleComment("");
+                    setAngleCandidateOpen(false);
+                    setActiveTool("select");
+                  }
+                : undefined
+            }
+            onCancel={() => {
+              setAngleCandidateOpen(false);
+              setPendingAngle(null);
+              setPendingAngleComment("");
+            }}
+          />
+        ) : null}
 
         {heightCandidateOpen ? (
           <OperationPreviewPanel

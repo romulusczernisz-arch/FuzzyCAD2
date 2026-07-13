@@ -99,7 +99,15 @@ type FuzzyCADGeometryViewerProps = {
   onSelectedPathKey?: (pathKey: string | null) => void;
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
-  onAngleSelection?: (part1PathKey: string, part2PathKey: string, angleDeg: number) => void;
+  onAngleSelection?: (data: {
+    part1PathKey: string;
+    part2PathKey: string;
+    angleDeg: number;
+    /** Face normals and pivot in Three.js viewer world space (scene.rotation.x = -π/2 applied). */
+    face1Normal?: [number, number, number];
+    face2Normal?: [number, number, number];
+    pivot?: [number, number, number];
+  }) => void;
 };
 
 type HandleConfig =
@@ -909,7 +917,14 @@ function Model({
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
   onManipulationDragStateChange?: (dragging: boolean) => void;
-  onAngleSelection?: (part1PathKey: string, part2PathKey: string, angleDeg: number) => void;
+  onAngleSelection?: (data: {
+    part1PathKey: string;
+    part2PathKey: string;
+    angleDeg: number;
+    face1Normal?: [number, number, number];
+    face2Normal?: [number, number, number];
+    pivot?: [number, number, number];
+  }) => void;
 }) {
   const gltf = useGLTF(url);
   const graphRef = useRef<MeshGraphNode[]>([]);
@@ -1009,17 +1024,26 @@ function Model({
     onObjectLassoSelection?.(pathKeys);
   }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
 
-  // ── Angle tool two-part selection ──────────────────────────────────────
-  // Declared here (before the highlight useEffect) so the effect can reference them.
-  const [angleLine1PathKey, setAngleLine1PathKey] = useState<string | null>(null);
-  const [angleLine2PathKey, setAngleLine2PathKey] = useState<string | null>(null);
+  // ── Angle tool face-level selection ──────────────────────────────────────
+  // Each selection captures the clicked face's world-space normal + hit point.
+  // Declared before the highlight useEffect so the effect can reference them.
+  type FaceSelection = {
+    pathKey: string;
+    /** Face normal in Three.js viewer world space (scene has rotation.x = -π/2). */
+    faceNormal: THREE.Vector3;
+    /** World-space click point — used as the arc pivot. */
+    hitPoint: THREE.Vector3;
+  };
+
+  const [angleFace1, setAngleFace1] = useState<FaceSelection | null>(null);
+  const [angleFace2, setAngleFace2] = useState<FaceSelection | null>(null);
   const [angleArcDeg, setAngleArcDeg] = useState<number>(45);
 
   useEffect(() => {
     // When the angle tool is active, highlight whichever parts have been selected
     // for the angle measurement so it's clear what's being compared.
     if (activeTool === "angle") {
-      const angleKeys = [angleLine1PathKey, angleLine2PathKey].filter(
+      const angleKeys = [angleFace1?.pathKey ?? null, angleFace2?.pathKey ?? null].filter(
         (k): k is string => k !== null,
       );
       applyPathHighlight(scene, angleKeys.length > 0 ? angleKeys : null);
@@ -1034,7 +1058,7 @@ function Model({
 
     applyPathHighlight(scene, activeHighlights);
     invalidate();
-  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleLine1PathKey, angleLine2PathKey, invalidate]);
+  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleFace1, angleFace2, invalidate]);
 
   useEffect(() => {
     applyFuzzyConfidence(
@@ -1281,66 +1305,65 @@ function Model({
   // Reset selection when leaving angle tool
   useEffect(() => {
     if (activeTool !== "angle") {
-      setAngleLine1PathKey(null);
-      setAngleLine2PathKey(null);
+      setAngleFace1(null);
+      setAngleFace2(null);
       setAngleArcDeg(45);
     }
   }, [activeTool]);
 
-  // When the second part is chosen, set initial arc angle from actual axis directions
+  // When the second face is chosen, set initial arc angle from actual face normals
   useEffect(() => {
-    if (!angleLine1PathKey || !angleLine2PathKey) return;
-    const sum1 = objectSummaries.find((s) => s.pathKey === angleLine1PathKey);
-    const sum2 = objectSummaries.find((s) => s.pathKey === angleLine2PathKey);
-    if (!sum1 || !sum2) return;
-    const dir1 = new THREE.Vector3(...sum1.principalAxisWorld).normalize();
-    const dir2 = new THREE.Vector3(...sum2.principalAxisWorld).normalize();
-    const cosAngle = Math.max(-1, Math.min(1, dir1.dot(dir2)));
+    if (!angleFace1 || !angleFace2) return;
+    const cosAngle = Math.max(-1, Math.min(1, angleFace1.faceNormal.dot(angleFace2.faceNormal)));
     setAngleArcDeg((Math.acos(cosAngle) * 180) / Math.PI);
-  // Only fire when path keys change, not on every objectSummaries update
+  // Only fire when face selections change, not on every render
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [angleLine1PathKey, angleLine2PathKey]);
+  }, [angleFace1?.pathKey, angleFace2?.pathKey]);
 
-  // Notify parent when both parts are selected and angle is known
+  // Notify parent when both faces are selected and angle is known
   useEffect(() => {
-    if (angleLine1PathKey && angleLine2PathKey) {
-      onAngleSelection?.(angleLine1PathKey, angleLine2PathKey, angleArcDeg);
-    }
-  }, [angleLine1PathKey, angleLine2PathKey, angleArcDeg, onAngleSelection]);
+    if (!angleFace1 || !angleFace2) return;
+    onAngleSelection?.({
+      part1PathKey: angleFace1.pathKey,
+      part2PathKey: angleFace2.pathKey,
+      angleDeg: angleArcDeg,
+      face1Normal: angleFace1.faceNormal.toArray() as [number, number, number],
+      face2Normal: angleFace2.faceNormal.toArray() as [number, number, number],
+      pivot: angleFace1.hitPoint.toArray() as [number, number, number],
+    });
+  }, [angleFace1, angleFace2, angleArcDeg, onAngleSelection]);
 
   // Compute the 3D geometry config for the arc overlay
   const angleOverlayConfig = useMemo(() => {
-    if (!angleLine1PathKey || !angleLine2PathKey) return null;
-    const sum1 = objectSummaries.find((s) => s.pathKey === angleLine1PathKey);
-    const sum2 = objectSummaries.find((s) => s.pathKey === angleLine2PathKey);
-    if (!sum1 || !sum2) return null;
+    if (!angleFace1 || !angleFace2) return null;
 
-    const dir1 = new THREE.Vector3(...sum1.principalAxisWorld).normalize();
-    const dir2 = new THREE.Vector3(...sum2.principalAxisWorld).normalize();
+    const n1 = angleFace1.faceNormal.clone().normalize();
+    const n2 = angleFace2.faceNormal.clone().normalize();
 
-    // Pivot: endpoint of part 1 closest to part 2's center
-    const center2 = new THREE.Vector3(...sum2.aabbCenterWorld);
-    const posEnd = new THREE.Vector3(...sum1.positiveEndWorld);
-    const negEnd = new THREE.Vector3(...sum1.negativeEndWorld);
-    const pivot = posEnd.distanceTo(center2) < negEnd.distanceTo(center2) ? posEnd : negEnd;
-
-    // Rotation axis: perpendicular to both line directions
-    let normalAxis = new THREE.Vector3().crossVectors(dir1, dir2);
+    // Hinge axis: perpendicular to both face normals
+    let normalAxis = new THREE.Vector3().crossVectors(n1, n2);
     if (normalAxis.lengthSq() < 0.0001) {
-      normalAxis = Math.abs(dir1.y) < 0.9
-        ? new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir1)
-        : new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), dir1);
+      // Parallel normals — fall back to a plausible axis
+      normalAxis = Math.abs(n1.y) < 0.9
+        ? new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n1)
+        : new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), n1);
     }
     normalAxis.normalize();
 
+    // Use face1's click point as pivot
+    const pivot = angleFace1.hitPoint.clone();
+
+    // Arc radius based on part sizes (look up summaries for scale)
+    const sum1 = objectSummaries.find((s) => s.pathKey === angleFace1.pathKey);
+    const sum2 = objectSummaries.find((s) => s.pathKey === angleFace2.pathKey);
     const radius = Math.max(
-      sum1.axisLength * 0.5,
-      sum2.axisLength * 0.5,
+      (sum1?.axisLength ?? 0.1) * 0.5,
+      (sum2?.axisLength ?? 0.1) * 0.5,
       0.05,
     );
 
-    return { pivot, line1Dir: dir1, normalAxis, radius };
-  }, [angleLine1PathKey, angleLine2PathKey, objectSummaries]);
+    return { pivot, line1Dir: n1, normalAxis, radius };
+  }, [angleFace1, angleFace2, objectSummaries]);
 
   useEffect(() => {
     appliedValueRef.current = 0;
@@ -1402,16 +1425,33 @@ function Model({
 
     const selectedPathKey = findFuzzyPathKey(selectedObject);
 
-    // Angle tool: intercept clicks for two-part selection instead of normal select
+    // Angle tool: intercept clicks for face-level two-part selection
     if (activeTool === "angle" && selectedPathKey) {
-      if (!angleLine1PathKey) {
-        setAngleLine1PathKey(selectedPathKey);
-      } else if (!angleLine2PathKey && selectedPathKey !== angleLine1PathKey) {
-        setAngleLine2PathKey(selectedPathKey);
+      // Compute face normal in viewer world space from the raycaster intersection
+      let faceNormal = new THREE.Vector3(0, 1, 0); // fallback
+      if (event.face) {
+        const localNormal = event.face.normal.clone();
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(
+          event.object.matrixWorld,
+        );
+        faceNormal = localNormal.applyMatrix3(normalMatrix).normalize();
+      }
+
+      const selection = {
+        pathKey: selectedPathKey,
+        faceNormal,
+        hitPoint: event.point.clone(),
+      };
+
+      if (!angleFace1) {
+        setAngleFace1(selection);
+      } else if (!angleFace2 && selectedPathKey !== angleFace1.pathKey) {
+        setAngleFace2(selection);
       } else {
-        // Third click resets selection and starts over with the new part
-        setAngleLine1PathKey(selectedPathKey);
-        setAngleLine2PathKey(null);
+        // Third click (or same part as face1): reset and start over
+        setAngleFace1(selection);
+        setAngleFace2(null);
+        setAngleArcDeg(45);
       }
       return;
     }
@@ -1498,8 +1538,8 @@ function Model({
       {/* Angle tool: selection markers showing which parts are chosen */}
       {activeTool === "angle" &&
         [
-          { pathKey: angleLine1PathKey, label: "1", color: "#64748b" },
-          { pathKey: angleLine2PathKey, label: "2", color: "#2b6cff" },
+          { pathKey: angleFace1?.pathKey ?? null, label: "1", color: "#64748b" },
+          { pathKey: angleFace2?.pathKey ?? null, label: "2", color: "#2b6cff" },
         ].map(({ pathKey, label, color }) => {
           if (!pathKey) return null;
           const summary = objectSummaries.find((s) => s.pathKey === pathKey);
@@ -1541,7 +1581,7 @@ function Model({
         })}
 
       {/* Angle tool: prompt to pick second part */}
-      {activeTool === "angle" && angleLine1PathKey && !angleLine2PathKey ? (
+      {activeTool === "angle" && angleFace1 && !angleFace2 ? (
         <Html fullscreen style={{ pointerEvents: "none" }}>
           <div
             style={{

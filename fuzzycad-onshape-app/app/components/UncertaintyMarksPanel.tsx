@@ -25,6 +25,8 @@ type UncertaintyMarksPanelProps = {
   pendingAngle?: PendingAngle | null;
   pendingAngleComment?: string;
   onPendingAngleCommentChange?: (comment: string) => void;
+  /** Called when the user edits the angle value directly in the input field. */
+  onPendingAngleValueChange?: (angleDeg: number) => void;
   onSaveAngle?: () => void;
   onCancelAngle?: () => void;
 };
@@ -187,6 +189,7 @@ export default function UncertaintyMarksPanel({
   pendingAngle,
   pendingAngleComment = "",
   onPendingAngleCommentChange,
+  onPendingAngleValueChange,
   onSaveAngle,
   onCancelAngle,
 }: UncertaintyMarksPanelProps) {
@@ -228,9 +231,24 @@ export default function UncertaintyMarksPanel({
           <div className={styles.pendingAngle}>
             <div className={styles.pendingAngleHeader}>
               <span className={styles.pendingAngleLabel}>Angle uncertainty</span>
-              <span className={styles.pendingAngleValue}>
-                θ = {Math.abs(pendingAngle.angleDeg).toFixed(1)}°
-              </span>
+            </div>
+            <div className={styles.pendingAngleRow}>
+              <span className={styles.pendingAngleSymbol}>θ =</span>
+              <input
+                type="number"
+                className={styles.pendingAngleInput}
+                value={pendingAngle.angleDeg.toFixed(1)}
+                min={0}
+                max={179}
+                step={0.5}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v)) {
+                    onPendingAngleValueChange?.(Math.max(0, Math.min(179, v)));
+                  }
+                }}
+              />
+              <span className={styles.pendingAngleDeg}>°</span>
             </div>
             <textarea
               className={styles.comment}
