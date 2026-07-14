@@ -43,6 +43,12 @@ export type AngleUncertaintyAnnotation = {
   target: {
     part1PathKey: string;
     part2PathKey: string;
+    /**
+     * All occurrences that move rigidly with part2 (excluding part1).
+     * Computed by BFS over mateEdges at annotation-save time.
+     * Included in STL export rotation and hidden in Onshape alongside part2.
+     */
+    relatedPart2PathKeys?: string[];
   };
   /** Measured / target angle between the two selected face normals (degrees). */
   angleDeg: number;
@@ -203,6 +209,7 @@ export function addAngleAnnotation(
   input: {
     part1PathKey: string;
     part2PathKey: string;
+    relatedPart2PathKeys?: string[];
     angleDeg: number;
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
@@ -220,7 +227,11 @@ export function addAngleAnnotation(
   const annotation: AngleUncertaintyAnnotation = {
     id,
     type: "angle",
-    target: { part1PathKey: input.part1PathKey, part2PathKey: input.part2PathKey },
+    target: {
+      part1PathKey: input.part1PathKey,
+      part2PathKey: input.part2PathKey,
+      relatedPart2PathKeys: input.relatedPart2PathKeys ?? existing?.target.relatedPart2PathKeys,
+    },
     angleDeg: input.angleDeg,
     face1Normal: input.face1Normal ?? existing?.face1Normal,
     face2Normal: input.face2Normal ?? existing?.face2Normal,

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type {
   AngleUncertaintyAnnotation,
   FuzzyCADUncertaintyAnnotation,
@@ -178,6 +179,88 @@ function AngleAnnotationCard({
   );
 }
 
+/**
+ * Isolated sub-component so it can hold local draft state for the angle input.
+ * Using local state prevents the controlled-input / toFixed reformat problem
+ * where every keystroke resets the field, making it impossible to type.
+ */
+function PendingAnglePanel({
+  pendingAngle,
+  pendingAngleComment = "",
+  onPendingAngleValueChange,
+  onPendingAngleCommentChange,
+  onSaveAngle,
+  onCancelAngle,
+}: {
+  pendingAngle: PendingAngle;
+  pendingAngleComment?: string;
+  onPendingAngleValueChange?: (angleDeg: number) => void;
+  onPendingAngleCommentChange?: (comment: string) => void;
+  onSaveAngle?: () => void;
+  onCancelAngle?: () => void;
+}) {
+  // Local draft keeps what the user is currently typing.
+  const [draft, setDraft] = useState(pendingAngle.angleDeg.toFixed(1));
+
+  // Track the last externally-set angleDeg so we can sync when arc drag updates it.
+  const lastExternalDeg = useRef(pendingAngle.angleDeg);
+  useEffect(() => {
+    if (pendingAngle.angleDeg !== lastExternalDeg.current) {
+      lastExternalDeg.current = pendingAngle.angleDeg;
+      setDraft(pendingAngle.angleDeg.toFixed(1));
+    }
+  }, [pendingAngle.angleDeg]);
+
+  return (
+    <div className={styles.pendingAngle}>
+      <div className={styles.pendingAngleHeader}>
+        <span className={styles.pendingAngleLabel}>Angle uncertainty</span>
+      </div>
+      <div className={styles.pendingAngleRow}>
+        <span className={styles.pendingAngleSymbol}>θ =</span>
+        <input
+          type="number"
+          className={styles.pendingAngleInput}
+          value={draft}
+          min={0}
+          max={179}
+          step={0.5}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            const v = parseFloat(e.target.value);
+            if (!isNaN(v)) {
+              const clamped = Math.max(0, Math.min(179, v));
+              lastExternalDeg.current = clamped;
+              onPendingAngleValueChange?.(clamped);
+            }
+          }}
+          onBlur={() => {
+            // Clean up display on blur
+            const v = parseFloat(draft);
+            const clamped = isNaN(v) ? pendingAngle.angleDeg : Math.max(0, Math.min(179, v));
+            setDraft(clamped.toFixed(1));
+          }}
+        />
+        <span className={styles.pendingAngleDeg}>°</span>
+      </div>
+      <textarea
+        className={styles.comment}
+        value={pendingAngleComment}
+        placeholder="Add a comment..."
+        onChange={(e) => onPendingAngleCommentChange?.(e.target.value)}
+      />
+      <div className={styles.actions}>
+        <button type="button" className={styles.editButton} onClick={onSaveAngle}>
+          Save mark
+        </button>
+        <button type="button" className={styles.deleteButton} onClick={onCancelAngle}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function UncertaintyMarksPanel({
   document,
   selectedAnnotationId,
@@ -228,51 +311,14 @@ export default function UncertaintyMarksPanel({
         </div>
 
         {pendingAngle ? (
-          <div className={styles.pendingAngle}>
-            <div className={styles.pendingAngleHeader}>
-              <span className={styles.pendingAngleLabel}>Angle uncertainty</span>
-            </div>
-            <div className={styles.pendingAngleRow}>
-              <span className={styles.pendingAngleSymbol}>θ =</span>
-              <input
-                type="number"
-                className={styles.pendingAngleInput}
-                value={pendingAngle.angleDeg.toFixed(1)}
-                min={0}
-                max={179}
-                step={0.5}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v)) {
-                    onPendingAngleValueChange?.(Math.max(0, Math.min(179, v)));
-                  }
-                }}
-              />
-              <span className={styles.pendingAngleDeg}>°</span>
-            </div>
-            <textarea
-              className={styles.comment}
-              value={pendingAngleComment}
-              placeholder="Add a comment..."
-              onChange={(e) => onPendingAngleCommentChange?.(e.target.value)}
-            />
-            <div className={styles.actions}>
-              <button
-                type="button"
-                className={styles.editButton}
-                onClick={onSaveAngle}
-              >
-                Save mark
-              </button>
-              <button
-                type="button"
-                className={styles.deleteButton}
-                onClick={onCancelAngle}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
+          <PendingAnglePanel
+            pendingAngle={pendingAngle}
+            pendingAngleComment={pendingAngleComment}
+            onPendingAngleValueChange={onPendingAngleValueChange}
+            onPendingAngleCommentChange={onPendingAngleCommentChange}
+            onSaveAngle={onSaveAngle}
+            onCancelAngle={onCancelAngle}
+          />
         ) : null}
 
         {annotations.length === 0 && !pendingAngle ? (

@@ -101,6 +101,8 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
   function saveAngleMark(input: {
     part1PathKey: string;
     part2PathKey: string;
+    /** All occurrences that move rigidly with part2 (from mate graph BFS). */
+    relatedPart2PathKeys?: string[];
     angleDeg: number;
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];

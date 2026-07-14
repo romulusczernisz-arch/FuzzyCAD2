@@ -204,7 +204,12 @@ export async function exportAnnotatedSelectionStl(input: {
       a.type === "angle",
   );
   const anglePart1Keys = new Set(angleAnnotations.map((a) => a.target.part1PathKey));
-  const anglePart2Keys = new Set(angleAnnotations.map((a) => a.target.part2PathKey));
+  const anglePart2Keys = new Set(
+    angleAnnotations.flatMap((a) => [
+      a.target.part2PathKey,
+      ...(a.target.relatedPart2PathKeys ?? []),
+    ]),
+  );
 
   const allStaticPathKeys = [
     ...new Set([...sizePathKeys, ...anglePart1Keys]),
@@ -239,15 +244,19 @@ export async function exportAnnotatedSelectionStl(input: {
     exportRoot.add(cloneObjectInWorldSpace(object));
   }
 
-  // Angle part2 objects: clone with rotation applied so target angle is achieved
+  // Angle part2 objects: clone with rotation applied so target angle is achieved.
+  // Also rotate all related parts that move rigidly with part2 (mate-connected group).
   for (const annotation of angleAnnotations) {
-    const part2Objects = findTopLevelAnnotatedObjects(scene, [
+    const rotatingPathKeys = [
       annotation.target.part2PathKey,
-    ]);
+      ...(annotation.target.relatedPart2PathKeys ?? []),
+    ];
+
+    const rotatingObjects = findTopLevelAnnotatedObjects(scene, rotatingPathKeys);
 
     const transform = buildAngleRotationTransform(annotation);
 
-    for (const object of part2Objects) {
+    for (const object of rotatingObjects) {
       const clone = cloneObjectInWorldSpace(object, transform ?? undefined);
       clone.name = `FuzzyCAD_AngleRotated__${object.name || annotation.id}`;
       exportRoot.add(clone);

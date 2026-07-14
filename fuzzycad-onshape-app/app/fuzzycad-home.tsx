@@ -58,6 +58,7 @@ import {
 import { useUncertaintyDocument } from "./hooks/useUncertaintyDocument";
 import { buildFuzzyCADProjectState } from "./lib/fuzzycad/projectState";
 import { exportAnnotatedSelectionStl } from "./lib/fuzzycad/exportAnnotatedSelectionStl";
+import { findMateConnectedParts } from "./lib/fuzzycad/mateGraph";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -957,9 +958,19 @@ if (result.ok && result.state) {
               if (!v) return undefined;
               return [v[0], -v[2], v[1]];
             }
+            // BFS over mate graph to find all parts that move with part2
+            const mateEdges = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
+              ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
+              : [];
+            const relatedPart2PathKeys = findMateConnectedParts(
+              pendingAngle.part2PathKey,
+              pendingAngle.part1PathKey,
+              mateEdges,
+            );
             saveAngleMark({
               part1PathKey: pendingAngle.part1PathKey,
               part2PathKey: pendingAngle.part2PathKey,
+              relatedPart2PathKeys: relatedPart2PathKeys.length > 0 ? relatedPart2PathKeys : undefined,
               angleDeg: pendingAngle.angleDeg,
               face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
               face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
@@ -1009,6 +1020,9 @@ if (result.ok && result.state) {
             cancelLabel="Cancel"
             onConfirm={() => {
               // For "apply to all": save one annotation per similar part2 instance
+              const mateEdgesForAll = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
+                ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
+                : [];
               for (const part2PathKey of angleCandidatePart2Keys) {
                 function viewerToOnshape(
                   v?: [number, number, number],
@@ -1016,9 +1030,15 @@ if (result.ok && result.state) {
                   if (!v) return undefined;
                   return [v[0], -v[2], v[1]];
                 }
+                const related = findMateConnectedParts(
+                  part2PathKey,
+                  pendingAngle.part1PathKey,
+                  mateEdgesForAll,
+                );
                 saveAngleMark({
                   part1PathKey: pendingAngle.part1PathKey,
                   part2PathKey,
+                  relatedPart2PathKeys: related.length > 0 ? related : undefined,
                   angleDeg: pendingAngle.angleDeg,
                   face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
                   face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
@@ -1041,9 +1061,18 @@ if (result.ok && result.state) {
                       if (!v) return undefined;
                       return [v[0], -v[2], v[1]];
                     }
+                    const mateEdgesSingle = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
+                      ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
+                      : [];
+                    const related = findMateConnectedParts(
+                      pendingAngle.part2PathKey,
+                      pendingAngle.part1PathKey,
+                      mateEdgesSingle,
+                    );
                     saveAngleMark({
                       part1PathKey: pendingAngle.part1PathKey,
                       part2PathKey: pendingAngle.part2PathKey,
+                      relatedPart2PathKeys: related.length > 0 ? related : undefined,
                       angleDeg: pendingAngle.angleDeg,
                       face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
                       face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),

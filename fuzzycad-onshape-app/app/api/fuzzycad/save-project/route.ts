@@ -1092,13 +1092,27 @@ async function hideAngleAnnotationOriginals(input: {
   const seenPathKeys = new Set<string>();
   const occurrencesToHide: string[][] = [];
 
-  for (const annotation of angleAnnotations) {
-    const part2PathKey = (annotation.target as UnknownRecord)
-      .part2PathKey as string;
-    if (seenPathKeys.has(part2PathKey)) continue;
-    seenPathKeys.add(part2PathKey);
-    const path = part2PathKey.split("/").filter((p) => p.length > 0);
+  function addPathKeyToHide(pathKey: string) {
+    if (seenPathKeys.has(pathKey)) return;
+    seenPathKeys.add(pathKey);
+    const path = pathKey.split("/").filter((p) => p.length > 0);
     if (path.length > 0) occurrencesToHide.push(path);
+  }
+
+  for (const annotation of angleAnnotations) {
+    const target = annotation.target as UnknownRecord;
+    // Hide the primary part2
+    const part2PathKey = target.part2PathKey as string;
+    addPathKeyToHide(part2PathKey);
+    // Also hide all related parts that move rigidly with part2
+    const relatedKeys = Array.isArray(target.relatedPart2PathKeys)
+      ? (target.relatedPart2PathKeys as unknown[]).filter(
+          (k): k is string => typeof k === "string",
+        )
+      : [];
+    for (const relatedKey of relatedKeys) {
+      addPathKeyToHide(relatedKey);
+    }
   }
 
   if (occurrencesToHide.length === 0) {
