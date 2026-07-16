@@ -1160,22 +1160,39 @@ async function hideAngleAnnotationOriginals(input: {
     return { ok: true, mode: "no-angle-part2-paths", hidden: [] };
   }
 
-  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/occurrencetransforms`;
+  /**
+   * Onshape's REST API cannot toggle the "hidden" flag of an existing
+   * occurrence (it is read-only; isHidden only exists on createInstance).
+   * Instance SUPPRESSION via the assembly `modify` endpoint is the documented
+   * way to remove an instance from view — and the user can restore it any
+   * time with right-click → Unsuppress in the Onshape UI.
+   *
+   * Suppression addresses top-level instance ids. For a top-level occurrence
+   * the instance id is the single path segment; occurrences nested inside
+   * subassemblies cannot be suppressed from the root assembly, so they are
+   * reported as skipped instead.
+   */
+  const suppressionStates: Record<string, { value: string }> = {};
+  const skippedNestedPaths: string[] = [];
 
-  // A RELATIVE identity transform leaves the occurrence exactly where it is;
-  // isHidden:true hides it. (With isRelative:false an identity transform is an
-  // absolute pose and would snap offset parts back to the origin.)
-  // Note: Onshape GET responses use "hidden" but the POST request body uses "isHidden".
-  const identityTransform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  for (const path of occurrencesToHide) {
+    if (path.length === 1) {
+      suppressionStates[path[0]] = { value: "true" };
+    } else {
+      skippedNestedPaths.push(path.join("/"));
+    }
+  }
 
-  const payload = {
-    isRelative: true,
-    occurrences: occurrencesToHide.map((path) => ({
-      path,
-      isHidden: true,
-      transform: identityTransform,
-    })),
-  };
+  if (Object.keys(suppressionStates).length === 0) {
+    return {
+      ok: false,
+      mode: "no-suppressible-top-level-instances",
+      skippedNestedPaths,
+      hidden: [],
+    };
+  }
+
+  const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/modify`;
 
   const res = await onshapeFetch(
     endpoint,
@@ -1186,21 +1203,18 @@ async function hideAngleAnnotationOriginals(input: {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ suppressionStates }),
     },
     {
       route: "/api/fuzzycad/save-project",
-      operation: "hide-angle-annotation-originals",
+      operation: "suppress-annotation-originals",
     },
   );
 
   const data = await parseJsonOrText(res);
 
-  /**
-   * Onshape can accept the occurrencetransforms call (200) without actually
-   * honoring isHidden. Verify by force re-reading the assembly and checking
-   * the occurrences' hidden flags, so the client log tells the truth.
-   */
+  // Verify by force re-reading the assembly and checking instance
+  // suppression flags, so the client log reports what actually happened.
   let verification: UnknownRecord | null = null;
 
   if (res.ok) {
@@ -1220,41 +1234,39 @@ async function hideAngleAnnotationOriginals(input: {
       const rootAssembly = isRecord(assemblyAfter.data.rootAssembly)
         ? assemblyAfter.data.rootAssembly
         : null;
-      const occurrences = Array.isArray(rootAssembly?.occurrences)
-        ? rootAssembly.occurrences
+      const instances = Array.isArray(rootAssembly?.instances)
+        ? rootAssembly.instances
         : [];
 
-      const wantedPaths = new Set(
-        occurrencesToHide.map((path) => path.join("/")),
-      );
+      const suppressedStates: { instanceId: string; suppressed: unknown }[] =
+        [];
 
-      const hiddenStates: { path: string; hidden: unknown }[] = [];
-
-      for (const occurrence of occurrences) {
-        if (!isRecord(occurrence)) continue;
-        const path = Array.isArray(occurrence.path)
-          ? occurrence.path.join("/")
-          : null;
-        if (path && wantedPaths.has(path)) {
-          hiddenStates.push({ path, hidden: occurrence.hidden });
+      for (const instance of instances) {
+        if (!isRecord(instance)) continue;
+        const id = typeof instance.id === "string" ? instance.id : null;
+        if (id && suppressionStates[id]) {
+          suppressedStates.push({
+            instanceId: id,
+            suppressed: instance.suppressed,
+          });
         }
       }
 
-      const allHidden =
-        hiddenStates.length > 0 &&
-        hiddenStates.every((state) => state.hidden === true);
+      const allSuppressed =
+        suppressedStates.length > 0 &&
+        suppressedStates.every((state) => state.suppressed === true);
 
       verification = {
-        checked: hiddenStates.length,
-        allHidden,
-        hiddenStates,
-        mode: allHidden
-          ? "verified-originals-hidden"
-          : "hide-call-accepted-but-not-applied",
+        checked: suppressedStates.length,
+        allSuppressed,
+        suppressedStates,
+        mode: allSuppressed
+          ? "verified-originals-suppressed"
+          : "suppress-call-accepted-but-not-applied",
       };
     } else {
       verification = {
-        mode: "failed-to-verify-hidden-state",
+        mode: "failed-to-verify-suppression-state",
         status: assemblyAfter.status,
       };
     }
@@ -1264,11 +1276,12 @@ async function hideAngleAnnotationOriginals(input: {
     ok: res.ok,
     status: res.status,
     mode: res.ok
-      ? "hidden-angle-annotation-originals"
-      : "failed-to-hide-angle-annotation-originals",
+      ? "suppressed-annotation-originals"
+      : "failed-to-suppress-annotation-originals",
     endpoint,
-    hiddenCount: occurrencesToHide.length,
+    hiddenCount: Object.keys(suppressionStates).length,
     hidden: occurrencesToHide,
+    skippedNestedPaths,
     verification,
     data,
   };
