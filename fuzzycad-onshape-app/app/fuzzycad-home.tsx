@@ -58,7 +58,10 @@ import {
 import { useUncertaintyDocument } from "./hooks/useUncertaintyDocument";
 import { buildFuzzyCADProjectState } from "./lib/fuzzycad/projectState";
 import { exportAnnotatedSelectionStl } from "./lib/fuzzycad/exportAnnotatedSelectionStl";
-import { findMateConnectedParts } from "./lib/fuzzycad/mateGraph";
+import {
+  findMateConnectedParts,
+  type MateGraphEdge,
+} from "./lib/fuzzycad/mateGraph";
 
 const FuzzyCADGeometryViewer = dynamic(
   () => import("./components/FuzzyCADGeometryViewer"),
@@ -85,6 +88,18 @@ function isElementArray(data: unknown): data is OnshapeElement[] {
 }
 
 
+
+/**
+ * Convert a vector/point from Three.js viewer world space to Onshape assembly
+ * space by undoing the viewer's scene.rotation.x = -π/2 display rotation:
+ * viewer (x, y, z) → onshape (x, -z, y).
+ */
+function viewerToOnshape(
+  v?: [number, number, number],
+): [number, number, number] | undefined {
+  if (!v) return undefined;
+  return [v[0], -v[2], v[1]];
+}
 
 export default function FuzzyCADHome() {
   const params = useSearchParams();
@@ -165,10 +180,14 @@ export default function FuzzyCADHome() {
   const [pendingAngle, setPendingAngle] = useState<{
     part1PathKey: string;
     part2PathKey: string;
+    /** Target angle (deg) the user is editing toward. */
     angleDeg: number;
+    /** Angle between the two selected face normals as clicked (deg). */
+    measuredAngleDeg?: number;
     /** Face normals in viewer world space (scene.rotation.x = -π/2 applied). */
     face1NormalViewer?: [number, number, number];
     face2NormalViewer?: [number, number, number];
+    /** Snapped pivot vertex in viewer world space. */
     pivotViewer?: [number, number, number];
   } | null>(null);
   const [pendingAngleComment, setPendingAngleComment] = useState("");
@@ -176,6 +195,8 @@ export default function FuzzyCADHome() {
   const [angleCandidateOpen, setAngleCandidateOpen] = useState(false);
   /** [part2PathKey, ...similar part2 pathKeys] */
   const [angleCandidatePart2Keys, setAngleCandidatePart2Keys] = useState<string[]>([]);
+  /** Incremented to tell the viewer to clear its angle selection + preview. */
+  const [angleResetNonce, setAngleResetNonce] = useState(0);
 
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
@@ -685,6 +706,55 @@ export default function FuzzyCADHome() {
     updateAnnotationComment(annotationId, comment);
   }
 
+  /** Mate edges from the relationship graph (already fetched — no extra API calls). */
+  const mateEdges = useMemo<MateGraphEdge[]>(() => {
+    const data = relationshipGraphResult?.data as
+      | Record<string, unknown>
+      | undefined;
+    return Array.isArray(data?.mateEdges)
+      ? (data.mateEdges as MateGraphEdge[])
+      : [];
+  }, [relationshipGraphResult]);
+
+  /** Clear pending-angle UI state and tell the viewer to reset its selection + preview. */
+  function finishPendingAngle() {
+    setPendingAngle(null);
+    setPendingAngleComment("");
+    setAngleCandidateOpen(false);
+    setAngleCandidatePart2Keys([]);
+    setAngleResetNonce((nonce) => nonce + 1);
+  }
+
+  /**
+   * Save the pending angle mark for each given part2 pathKey (one annotation
+   * per instance for "apply to all"), then reset the angle tool.
+   */
+  function commitPendingAngle(part2PathKeys: string[]) {
+    if (!pendingAngle) return;
+
+    for (const part2PathKey of part2PathKeys) {
+      const related = findMateConnectedParts(
+        part2PathKey,
+        pendingAngle.part1PathKey,
+        mateEdges,
+      );
+
+      saveAngleMark({
+        part1PathKey: pendingAngle.part1PathKey,
+        part2PathKey,
+        relatedPart2PathKeys: related.length > 0 ? related : undefined,
+        angleDeg: pendingAngle.angleDeg,
+        face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
+        face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
+        pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
+        comment: pendingAngleComment || undefined,
+      });
+    }
+
+    finishPendingAngle();
+    setActiveTool("select");
+  }
+
 async function saveProjectStateToOnshape() {
   if (!documentId || !workspaceId) {
     console.warn("Missing documentId or workspaceId");
@@ -706,7 +776,16 @@ async function saveProjectStateToOnshape() {
         })
       : null;
 
-  console.log("Annotated selection STL:", annotatedSelectionStl);
+  const angleAnnotationCount =
+    uncertaintyDocumentWithCurrentSource.annotations.filter(
+      (annotation) => annotation.type === "angle",
+    ).length;
+
+  console.log(
+    `[FuzzyCAD] Save to Onshape: ${uncertaintyDocumentWithCurrentSource.annotations.length} annotation(s) (${angleAnnotationCount} angle). STL: ${
+      annotatedSelectionStl ? `${annotatedSelectionStl.size} bytes` : "none generated"
+    }`,
+  );
 
   const result = await saveFuzzycadProject(
     {
@@ -882,33 +961,53 @@ if (result.ok && result.state) {
             setHighlightedPathKey(pathKeys[0] ?? null);
             leaveUncertaintyEditingState();
           }}
-          onAngleSelection={({ part1PathKey, part2PathKey, angleDeg, face1Normal, face2Normal, pivot }) => {
-            const raw = {
-              part1PathKey,
-              part2PathKey,
-              angleDeg,
-              face1NormalViewer: face1Normal,
-              face2NormalViewer: face2Normal,
-              pivotViewer: pivot,
-            };
+          angleTargetDeg={
+            activeTool === "angle" ? pendingAngle?.angleDeg ?? null : null
+          }
+          angleMateEdges={mateEdges}
+          angleResetNonce={angleResetNonce}
+          onAngleSelection={({
+            part1PathKey,
+            part2PathKey,
+            angleDeg,
+            measuredAngleDeg,
+            face1Normal,
+            face2Normal,
+            pivot,
+          }) => {
+            // Fires when the vertex + two-face selection completes, and again
+            // on every arc-handle drag. Just keep pendingAngle in sync — the
+            // "apply to similar parts" check happens at save time instead.
+            setPendingAngle((previous) => {
+              const next = {
+                part1PathKey,
+                part2PathKey,
+                angleDeg,
+                measuredAngleDeg,
+                face1NormalViewer: face1Normal,
+                face2NormalViewer: face2Normal,
+                pivotViewer: pivot,
+              };
 
-            // Check for similar instances of part2 to offer "apply to all"
-            const part2Summary = objectSummaries.find(
-              (s) => s.pathKey === part2PathKey,
-            );
-            const candidates = part2Summary
-              ? buildSizeCandidatePathKeys(part2Summary, objectSummaries)
-              : [part2PathKey];
+              const samePivot =
+                previous?.pivotViewer && pivot
+                  ? previous.pivotViewer.every(
+                      (value, index) => Math.abs(value - pivot[index]) < 1e-9,
+                    )
+                  : previous?.pivotViewer === pivot;
 
-            if (candidates.length > 1) {
-              // Stash the raw data and show the related-parts popup
-              setPendingAngle(raw);
-              setAngleCandidatePart2Keys(candidates);
-              setAngleCandidateOpen(true);
-            } else {
-              // No similar parts — set directly and show sidebar panel
-              setPendingAngle(raw);
-            }
+              if (
+                previous &&
+                previous.part1PathKey === part1PathKey &&
+                previous.part2PathKey === part2PathKey &&
+                samePivot &&
+                Math.abs(previous.angleDeg - angleDeg) < 1e-4
+              ) {
+                return previous;
+              }
+
+              return next;
+            });
           }}
         />
 
@@ -950,43 +1049,26 @@ if (result.ok && result.state) {
           onPendingAngleCommentChange={setPendingAngleComment}
           onSaveAngle={() => {
             if (!pendingAngle) return;
-            // Convert face normals from viewer space to Onshape space:
-            // viewer (x,y,z) → onshape (x,-z,y)  [undoes scene.rotation.x = -π/2]
-            function viewerToOnshape(
-              v?: [number, number, number],
-            ): [number, number, number] | undefined {
-              if (!v) return undefined;
-              return [v[0], -v[2], v[1]];
-            }
-            // BFS over mate graph to find all parts that move with part2
-            const mateEdges = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
-              ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
-              : [];
-            const relatedPart2PathKeys = findMateConnectedParts(
-              pendingAngle.part2PathKey,
-              pendingAngle.part1PathKey,
-              mateEdges,
+
+            // Check for similar instances of part2 to offer "apply to all".
+            // This happens at save time so the user can adjust the angle and
+            // comment first.
+            const part2Summary = objectSummaries.find(
+              (summary) => summary.pathKey === pendingAngle.part2PathKey,
             );
-            saveAngleMark({
-              part1PathKey: pendingAngle.part1PathKey,
-              part2PathKey: pendingAngle.part2PathKey,
-              relatedPart2PathKeys: relatedPart2PathKeys.length > 0 ? relatedPart2PathKeys : undefined,
-              angleDeg: pendingAngle.angleDeg,
-              face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
-              face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
-              pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
-              comment: pendingAngleComment || undefined,
-            });
-            setPendingAngle(null);
-            setPendingAngleComment("");
-            setAngleCandidateOpen(false);
-            setActiveTool("select");
+            const candidates = part2Summary
+              ? buildSizeCandidatePathKeys(part2Summary, objectSummaries)
+              : [pendingAngle.part2PathKey];
+
+            if (candidates.length > 1) {
+              setAngleCandidatePart2Keys(candidates);
+              setAngleCandidateOpen(true);
+              return;
+            }
+
+            commitPendingAngle([pendingAngle.part2PathKey]);
           }}
-          onCancelAngle={() => {
-            setPendingAngle(null);
-            setPendingAngleComment("");
-            setAngleCandidateOpen(false);
-          }}
+          onCancelAngle={finishPendingAngle}
           onPendingAngleValueChange={(deg) => {
             if (pendingAngle) {
               setPendingAngle({ ...pendingAngle, angleDeg: deg });
@@ -1019,77 +1101,21 @@ if (result.ok && result.state) {
             secondaryConfirmLabel={angleCandidatePart2Keys.length > 1 ? "Selected only" : undefined}
             cancelLabel="Cancel"
             onConfirm={() => {
-              // For "apply to all": save one annotation per similar part2 instance
-              const mateEdgesForAll = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
-                ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
-                : [];
-              for (const part2PathKey of angleCandidatePart2Keys) {
-                function viewerToOnshape(
-                  v?: [number, number, number],
-                ): [number, number, number] | undefined {
-                  if (!v) return undefined;
-                  return [v[0], -v[2], v[1]];
-                }
-                const related = findMateConnectedParts(
-                  part2PathKey,
-                  pendingAngle.part1PathKey,
-                  mateEdgesForAll,
-                );
-                saveAngleMark({
-                  part1PathKey: pendingAngle.part1PathKey,
-                  part2PathKey,
-                  relatedPart2PathKeys: related.length > 0 ? related : undefined,
-                  angleDeg: pendingAngle.angleDeg,
-                  face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
-                  face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
-                  pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
-                  comment: pendingAngleComment || undefined,
-                });
-              }
-              setPendingAngle(null);
-              setPendingAngleComment("");
-              setAngleCandidateOpen(false);
-              setActiveTool("select");
+              // "Apply to all": save one annotation per similar part2 instance
+              commitPendingAngle(angleCandidatePart2Keys);
             }}
             onSecondaryConfirm={
               angleCandidatePart2Keys.length > 1
                 ? () => {
                     // "Selected only": annotate just the originally-clicked part2
-                    function viewerToOnshape(
-                      v?: [number, number, number],
-                    ): [number, number, number] | undefined {
-                      if (!v) return undefined;
-                      return [v[0], -v[2], v[1]];
-                    }
-                    const mateEdgesSingle = Array.isArray((relationshipGraphResult?.data as Record<string, unknown> | undefined)?.mateEdges)
-                      ? ((relationshipGraphResult!.data as Record<string, unknown>).mateEdges as { a: string; b: string; mateType?: string | null }[])
-                      : [];
-                    const related = findMateConnectedParts(
-                      pendingAngle.part2PathKey,
-                      pendingAngle.part1PathKey,
-                      mateEdgesSingle,
-                    );
-                    saveAngleMark({
-                      part1PathKey: pendingAngle.part1PathKey,
-                      part2PathKey: pendingAngle.part2PathKey,
-                      relatedPart2PathKeys: related.length > 0 ? related : undefined,
-                      angleDeg: pendingAngle.angleDeg,
-                      face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
-                      face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
-                      pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
-                      comment: pendingAngleComment || undefined,
-                    });
-                    setPendingAngle(null);
-                    setPendingAngleComment("");
-                    setAngleCandidateOpen(false);
-                    setActiveTool("select");
+                    commitPendingAngle([pendingAngle.part2PathKey]);
                   }
                 : undefined
             }
             onCancel={() => {
+              // Back to editing — keep the pending mark and viewer preview.
               setAngleCandidateOpen(false);
-              setPendingAngle(null);
-              setPendingAngleComment("");
+              setAngleCandidatePart2Keys([]);
             }}
           />
         ) : null}

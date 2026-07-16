@@ -1121,12 +1121,14 @@ async function hideAngleAnnotationOriginals(input: {
 
   const endpoint = `${input.server}/api/assemblies/d/${input.documentId}/w/${input.workspaceId}/e/${input.assemblyElementId}/occurrencetransforms`;
 
-  // Identity matrix keeps position unchanged; isHidden:true hides the occurrence.
+  // A RELATIVE identity transform leaves the occurrence exactly where it is;
+  // isHidden:true hides it. (With isRelative:false an identity transform is an
+  // absolute pose and would snap offset parts back to the origin.)
   // Note: Onshape GET responses use "hidden" but the POST request body uses "isHidden".
   const identityTransform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
   const payload = {
-    isRelative: false,
+    isRelative: true,
     occurrences: occurrencesToHide.map((path) => ({
       path,
       isHidden: true,

@@ -3,7 +3,7 @@
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
 import { Bounds, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import RoleBadge, { type RoleBadgeRole } from "./viewer/RoleBadge";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import styles from "./FuzzyCADGeometryViewer.module.css";
 import { buildMeshGraph, type MeshGraphNode } from "./viewer/meshGraph";
@@ -34,10 +34,15 @@ import { buildObjectSummaries } from "./viewer/objectSummary";
 import type { AxialStretchObjectSummary } from "../lib/operations/axialStretchTypes";
 import {
   findObjectsByPathKeys,
+  findTopLevelObjectsByPathKeys,
   projectToScreen,
   rotateObjectsAroundWorldAxis,
   translateObjectsWorld,
 } from "./viewer/manipulation";
+import {
+  findMateConnectedParts,
+  type MateGraphEdge,
+} from "../lib/fuzzycad/mateGraph";
 import SizingHandle from "./viewer/SizingHandle";
 import AngleHandle from "./viewer/AngleHandle";
 import {
@@ -99,13 +104,27 @@ type FuzzyCADGeometryViewerProps = {
   onSelectedPathKey?: (pathKey: string | null) => void;
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
+  /**
+   * Externally-controlled target angle for the angle tool, in degrees.
+   * When the user edits θ in the sidebar panel this flows back into the
+   * viewer so the arc + live rotation preview stay in sync.
+   */
+  angleTargetDeg?: number | null;
+  /** Mate edges used to find the rigid group that rotates with part 2. */
+  angleMateEdges?: MateGraphEdge[];
+  /** Increment to force the angle tool to clear its selection + preview. */
+  angleResetNonce?: number;
   onAngleSelection?: (data: {
     part1PathKey: string;
     part2PathKey: string;
+    /** Target angle (deg) — starts at measuredAngleDeg until edited. */
     angleDeg: number;
+    /** Angle between the two selected face normals as clicked (deg). */
+    measuredAngleDeg: number;
     /** Face normals and pivot in Three.js viewer world space (scene.rotation.x = -π/2 applied). */
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
+    /** Snapped pivot vertex (viewer world space). */
     pivot?: [number, number, number];
   }) => void;
 };
@@ -873,6 +892,59 @@ function AngleArcOverlay({
   );
 }
 
+/**
+ * Snap a raycast hit to the nearest actual vertex of the clicked mesh,
+ * returned in world space.
+ *
+ * For small geometries every vertex is checked; for large ones only the three
+ * vertices of the intersected triangle are considered (still real mesh
+ * vertices, just a coarser snap).
+ */
+function snapToNearestVertexWorld(
+  event: ThreeEvent<PointerEvent>,
+): THREE.Vector3 {
+  const mesh = event.object as THREE.Mesh;
+  const position = mesh.geometry?.attributes?.position;
+
+  if (!position) {
+    return event.point.clone();
+  }
+
+  mesh.updateWorldMatrix(true, false);
+  const localHit = mesh.worldToLocal(event.point.clone());
+
+  const FULL_SCAN_LIMIT = 60000;
+  const candidate = new THREE.Vector3();
+  let bestIndex = -1;
+  let bestDistanceSq = Infinity;
+
+  const consider = (index: number) => {
+    candidate.fromBufferAttribute(position, index);
+    const distanceSq = candidate.distanceToSquared(localHit);
+    if (distanceSq < bestDistanceSq) {
+      bestDistanceSq = distanceSq;
+      bestIndex = index;
+    }
+  };
+
+  if (position.count > FULL_SCAN_LIMIT && event.face) {
+    consider(event.face.a);
+    consider(event.face.b);
+    consider(event.face.c);
+  } else {
+    for (let index = 0; index < position.count; index++) {
+      consider(index);
+    }
+  }
+
+  if (bestIndex < 0) {
+    return event.point.clone();
+  }
+
+  candidate.fromBufferAttribute(position, bestIndex);
+  return mesh.localToWorld(candidate.clone());
+}
+
 function Model({
   url,
   placements,
@@ -895,6 +967,9 @@ function Model({
   onObjectLassoSelection,
   onManipulationChange,
   onManipulationDragStateChange,
+  angleTargetDeg,
+  angleMateEdges,
+  angleResetNonce,
   onAngleSelection,
 }: {
   url: string;
@@ -917,10 +992,14 @@ function Model({
   onObjectLassoSelection?: (pathKeys: string[]) => void;
   onManipulationChange?: (value: number) => void;
   onManipulationDragStateChange?: (dragging: boolean) => void;
+  angleTargetDeg?: number | null;
+  angleMateEdges?: MateGraphEdge[];
+  angleResetNonce?: number;
   onAngleSelection?: (data: {
     part1PathKey: string;
     part2PathKey: string;
     angleDeg: number;
+    measuredAngleDeg: number;
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
     pivot?: [number, number, number];
@@ -1024,19 +1103,30 @@ function Model({
     onObjectLassoSelection?.(pathKeys);
   }, [scene, camera, gl, lassoPolygon, onObjectLassoSelection]);
 
-  // ── Angle tool face-level selection ──────────────────────────────────────
-  // Each selection captures the clicked face's world-space normal + hit point.
+  // ── Angle tool selection: pivot vertex → face 1 (fixed) → face 2 (rotates) ──
+  // The vertex click is snapped to the nearest actual mesh vertex; each face
+  // click captures the clicked face's world-space normal.
   // Declared before the highlight useEffect so the effect can reference them.
   type FaceSelection = {
     pathKey: string;
     /** Face normal in Three.js viewer world space (scene has rotation.x = -π/2). */
     faceNormal: THREE.Vector3;
-    /** World-space click point — used as the arc pivot. */
+    /** World-space click point. */
     hitPoint: THREE.Vector3;
   };
 
+  type VertexSelection = {
+    pathKey: string;
+    /** Snapped mesh vertex in viewer world space — the rotation pivot. */
+    point: THREE.Vector3;
+  };
+
+  const [angleVertex, setAngleVertex] = useState<VertexSelection | null>(null);
   const [angleFace1, setAngleFace1] = useState<FaceSelection | null>(null);
   const [angleFace2, setAngleFace2] = useState<FaceSelection | null>(null);
+  /** Measured angle between the two face normals at click time (deg). */
+  const [angleMeasuredDeg, setAngleMeasuredDeg] = useState<number | null>(null);
+  /** Target angle the user is editing toward (deg). */
   const [angleArcDeg, setAngleArcDeg] = useState<number>(45);
 
   useEffect(() => {
@@ -1300,42 +1390,93 @@ function Model({
   const appliedValueRef = useRef(0);
   const angleAxisRef = useRef(new THREE.Vector3(0, 0, 1));
 
-  // ── Angle tool two-part selection (state declared above near highlight effect) ──
+  // ── Angle tool: vertex + two-face selection, live rotation preview ──────
 
-  // Reset selection when leaving angle tool
+  /**
+   * Live-preview state: which objects have been rotated, around what axis and
+   * pivot, and by how much. Kept in a ref (not React state) so the reverse
+   * rotation always uses exactly what was applied — no stale-closure risk.
+   */
+  const anglePreviewRef = useRef<{
+    objects: THREE.Object3D[];
+    pivot: THREE.Vector3;
+    axis: THREE.Vector3;
+    appliedRad: number;
+  } | null>(null);
+
+  const resetAnglePreview = useCallback(() => {
+    const preview = anglePreviewRef.current;
+    if (preview && Math.abs(preview.appliedRad) > 1e-12) {
+      rotateObjectsAroundWorldAxis(
+        preview.objects,
+        preview.pivot,
+        preview.axis,
+        -preview.appliedRad,
+      );
+    }
+    anglePreviewRef.current = null;
+    invalidate();
+  }, [invalidate]);
+
+  const resetAngleSelection = useCallback(() => {
+    resetAnglePreview();
+    setAngleVertex(null);
+    setAngleFace1(null);
+    setAngleFace2(null);
+    setAngleMeasuredDeg(null);
+    setAngleArcDeg(45);
+  }, [resetAnglePreview]);
+
+  // Reset selection when leaving angle tool or when the parent forces a reset
+  // (after saving/cancelling a pending mark).
   useEffect(() => {
     if (activeTool !== "angle") {
-      setAngleFace1(null);
-      setAngleFace2(null);
-      setAngleArcDeg(45);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      resetAngleSelection();
     }
-  }, [activeTool]);
+  }, [activeTool, resetAngleSelection]);
 
-  // When the second face is chosen, set initial arc angle from actual face normals
   useEffect(() => {
-    if (!angleFace1 || !angleFace2) return;
-    const cosAngle = Math.max(-1, Math.min(1, angleFace1.faceNormal.dot(angleFace2.faceNormal)));
-    setAngleArcDeg((Math.acos(cosAngle) * 180) / Math.PI);
-  // Only fire when face selections change, not on every render
+    if (angleResetNonce !== undefined && angleResetNonce > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      resetAngleSelection();
+    }
+  }, [angleResetNonce, resetAngleSelection]);
+
+  // If the scene is replaced (reload), any applied preview transform is gone.
+  useEffect(() => {
+    anglePreviewRef.current = null;
+  }, [scene]);
+
+  // Sync target angle from the sidebar panel's numeric input.
+  // (Intentional controlled-prop sync — disable the strict compiler rule.)
+  useEffect(() => {
+    if (angleTargetDeg == null || !angleFace2) return;
+    const clamped = Math.max(0, Math.min(179, angleTargetDeg));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAngleArcDeg((current) =>
+      Math.abs(clamped - current) > 1e-4 ? clamped : current,
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [angleFace1?.pathKey, angleFace2?.pathKey]);
+  }, [angleTargetDeg]);
 
-  // Notify parent when both faces are selected and angle is known
+  // Notify parent when the full selection exists and whenever the target changes
   useEffect(() => {
-    if (!angleFace1 || !angleFace2) return;
+    if (!angleVertex || !angleFace1 || !angleFace2 || angleMeasuredDeg == null) return;
     onAngleSelection?.({
       part1PathKey: angleFace1.pathKey,
       part2PathKey: angleFace2.pathKey,
       angleDeg: angleArcDeg,
+      measuredAngleDeg: angleMeasuredDeg,
       face1Normal: angleFace1.faceNormal.toArray() as [number, number, number],
       face2Normal: angleFace2.faceNormal.toArray() as [number, number, number],
-      pivot: angleFace1.hitPoint.toArray() as [number, number, number],
+      pivot: angleVertex.point.toArray() as [number, number, number],
     });
-  }, [angleFace1, angleFace2, angleArcDeg, onAngleSelection]);
+  }, [angleVertex, angleFace1, angleFace2, angleArcDeg, angleMeasuredDeg, onAngleSelection]);
 
   // Compute the 3D geometry config for the arc overlay
   const angleOverlayConfig = useMemo(() => {
-    if (!angleFace1 || !angleFace2) return null;
+    if (!angleVertex || !angleFace1 || !angleFace2) return null;
 
     const n1 = angleFace1.faceNormal.clone().normalize();
     const n2 = angleFace2.faceNormal.clone().normalize();
@@ -1350,8 +1491,8 @@ function Model({
     }
     normalAxis.normalize();
 
-    // Use face1's click point as pivot
-    const pivot = angleFace1.hitPoint.clone();
+    // The snapped vertex is the rotation pivot
+    const pivot = angleVertex.point.clone();
 
     // Arc radius based on part sizes (look up summaries for scale)
     const sum1 = objectSummaries.find((s) => s.pathKey === angleFace1.pathKey);
@@ -1363,7 +1504,65 @@ function Model({
     );
 
     return { pivot, line1Dir: n1, normalAxis, radius };
-  }, [angleFace1, angleFace2, objectSummaries]);
+  }, [angleVertex, angleFace1, angleFace2, objectSummaries]);
+
+  // Live rotation preview: rotate part 2 (+ its rigid mate group) around the
+  // hinge axis through the pivot vertex by (target − measured). Incremental —
+  // each run applies only the difference from what is already applied.
+  useEffect(() => {
+    if (
+      activeTool !== "angle" ||
+      !angleOverlayConfig ||
+      !angleFace1 ||
+      !angleFace2 ||
+      angleMeasuredDeg == null
+    ) {
+      return;
+    }
+
+    let preview = anglePreviewRef.current;
+
+    if (!preview) {
+      const relatedKeys = findMateConnectedParts(
+        angleFace2.pathKey,
+        angleFace1.pathKey,
+        angleMateEdges ?? [],
+      );
+      const objects = findTopLevelObjectsByPathKeys(scene, [
+        angleFace2.pathKey,
+        ...relatedKeys,
+      ]);
+
+      if (objects.length === 0) return;
+
+      preview = {
+        objects,
+        pivot: angleOverlayConfig.pivot.clone(),
+        axis: angleOverlayConfig.normalAxis.clone(),
+        appliedRad: 0,
+      };
+      anglePreviewRef.current = preview;
+    }
+
+    const targetRad = THREE.MathUtils.degToRad(angleArcDeg - angleMeasuredDeg);
+    const diff = targetRad - preview.appliedRad;
+
+    if (Math.abs(diff) < 1e-9) return;
+
+    rotateObjectsAroundWorldAxis(preview.objects, preview.pivot, preview.axis, diff);
+    anglePreviewRef.current = { ...preview, appliedRad: targetRad };
+    invalidate();
+  }, [
+    activeTool,
+    angleOverlayConfig,
+    angleFace1,
+    angleFace2,
+    angleMeasuredDeg,
+    angleArcDeg,
+    angleMateEdges,
+    scene,
+    invalidate,
+  ]);
 
   useEffect(() => {
     appliedValueRef.current = 0;
@@ -1425,9 +1624,19 @@ function Model({
 
     const selectedPathKey = findFuzzyPathKey(selectedObject);
 
-    // Angle tool: intercept clicks for face-level two-part selection
+    // Angle tool: intercept clicks for vertex → face 1 → face 2 selection
     if (activeTool === "angle" && selectedPathKey) {
-      // Compute face normal in viewer world space from the raycaster intersection
+      // Step 1: pivot vertex — snap the raycast hit to the nearest actual
+      // mesh vertex of the clicked object.
+      if (!angleVertex) {
+        setAngleVertex({
+          pathKey: selectedPathKey,
+          point: snapToNearestVertexWorld(event),
+        });
+        return;
+      }
+
+      // Steps 2/3: face picks — capture the clicked face's world-space normal.
       let faceNormal = new THREE.Vector3(0, 1, 0); // fallback
       if (event.face) {
         const localNormal = event.face.normal.clone();
@@ -1446,11 +1655,29 @@ function Model({
       if (!angleFace1) {
         setAngleFace1(selection);
       } else if (!angleFace2 && selectedPathKey !== angleFace1.pathKey) {
+        // Record the measured angle between the two face normals and start
+        // the editable target there (absolute-angle semantics).
+        const cosAngle = Math.max(
+          -1,
+          Math.min(1, angleFace1.faceNormal.dot(selection.faceNormal)),
+        );
+        const measured = (Math.acos(cosAngle) * 180) / Math.PI;
         setAngleFace2(selection);
+        setAngleMeasuredDeg(measured);
+        setAngleArcDeg(measured);
+      } else if (!angleFace2) {
+        // Second face must be on a different part — ignore the click.
+        return;
       } else {
-        // Third click (or same part as face1): reset and start over
-        setAngleFace1(selection);
+        // Selection already complete: restart with a fresh pivot vertex.
+        resetAnglePreview();
+        setAngleVertex({
+          pathKey: selectedPathKey,
+          point: snapToNearestVertexWorld(event),
+        });
+        setAngleFace1(null);
         setAngleFace2(null);
+        setAngleMeasuredDeg(null);
         setAngleArcDeg(45);
       }
       return;
@@ -1535,6 +1762,33 @@ function Model({
         />
       ) : null}
 
+      {/* Angle tool: pivot vertex marker */}
+      {activeTool === "angle" && angleVertex ? (
+        <Html
+          position={[
+            angleVertex.point.x,
+            angleVertex.point.y,
+            angleVertex.point.z,
+          ]}
+          center
+          distanceFactor={0.8}
+          occlude={false}
+        >
+          <div
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "#f59e0b",
+              border: "2.5px solid white",
+              boxShadow: "0 2px 8px rgba(245,158,11,0.6)",
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          />
+        </Html>
+      ) : null}
+
       {/* Angle tool: selection markers showing which parts are chosen */}
       {activeTool === "angle" &&
         [
@@ -1580,8 +1834,8 @@ function Model({
           );
         })}
 
-      {/* Angle tool: prompt to pick second part */}
-      {activeTool === "angle" && angleFace1 && !angleFace2 ? (
+      {/* Angle tool: step-by-step prompt */}
+      {activeTool === "angle" ? (
         <Html fullscreen style={{ pointerEvents: "none" }}>
           <div
             style={{
@@ -1601,7 +1855,13 @@ function Model({
               whiteSpace: "nowrap",
             }}
           >
-            Now click a second part to measure the angle
+            {!angleVertex
+              ? "Step 1/3 — Click a corner (vertex) to set the rotation pivot"
+              : !angleFace1
+                ? "Step 2/3 — Click a face on the part that stays fixed"
+                : !angleFace2
+                  ? "Step 3/3 — Click a face on a different part to rotate"
+                  : "Drag the blue handle or edit θ in the panel, then Save mark"}
           </div>
         </Html>
       ) : null}
@@ -1628,6 +1888,9 @@ export default function FuzzyCADGeometryViewer({
   onSelectedPathKey,
   onObjectLassoSelection,
   onManipulationChange,
+  angleTargetDeg,
+  angleMateEdges,
+  angleResetNonce,
   onAngleSelection,
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
@@ -1691,6 +1954,9 @@ export default function FuzzyCADGeometryViewer({
                   onObjectLassoSelection={onObjectLassoSelection}
                   onManipulationChange={onManipulationChange}
                   onManipulationDragStateChange={setManipulationDragging}
+                  angleTargetDeg={angleTargetDeg}
+                  angleMateEdges={angleMateEdges}
+                  angleResetNonce={angleResetNonce}
                   onAngleSelection={onAngleSelection}
                 />
               </Bounds>

@@ -111,6 +111,40 @@ export function rotateObjectsAroundWorldAxis(
 }
 
 /**
+ * Like findObjectsByPathKeys, but skips objects that have an ancestor whose
+ * pathKey is also in the set. Prevents double-transforming nested occurrences
+ * (e.g. a subassembly and one of its own parts both matching).
+ */
+export function findTopLevelObjectsByPathKeys(
+  scene: THREE.Object3D,
+  pathKeys: string[],
+): THREE.Object3D[] {
+  const wanted = new Set(pathKeys);
+  const found: THREE.Object3D[] = [];
+
+  scene.traverse((object) => {
+    const pathKey = object.userData?.fuzzyPathKey;
+
+    if (typeof pathKey !== "string" || !wanted.has(pathKey)) {
+      return;
+    }
+
+    let parent = object.parent;
+    while (parent) {
+      const parentPathKey = parent.userData?.fuzzyPathKey;
+      if (typeof parentPathKey === "string" && wanted.has(parentPathKey)) {
+        return;
+      }
+      parent = parent.parent;
+    }
+
+    found.push(object);
+  });
+
+  return found;
+}
+
+/**
  * Project a world-space point to pixel coordinates within a canvas-sized
  * rect. Returns null if the point is behind the camera (outside NDC z range).
  * Adapted from lassoObjectSelection.ts's projectWorldPoint.
