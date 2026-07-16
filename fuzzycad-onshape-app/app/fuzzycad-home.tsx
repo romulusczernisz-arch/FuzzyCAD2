@@ -849,6 +849,18 @@ async function saveProjectStateToOnshape() {
   );
 
   console.log("Saved FuzzyCAD project:", result);
+
+  // Focused log for the suppress-originals step so failures are easy to spot.
+  const resultRecord =
+    result && typeof result === "object"
+      ? (result as Record<string, unknown>)
+      : null;
+  if (resultRecord && "hideAngleOriginalsResult" in resultRecord) {
+    console.log(
+      "[FuzzyCAD] Suppress originals result:",
+      resultRecord.hideAngleOriginalsResult,
+    );
+  }
 }
 
 

@@ -1910,6 +1910,58 @@ function getResolvedVisualizationLayerElementId(input: {
   );
 }
 
+/**
+ * Recover the previous save's generated-geometry record from the document.
+ *
+ * The client rebuilds projectState from scratch on every save and page
+ * reload, so it cannot tell us which visualization elements / overlay
+ * instances earlier saves created. Without that memory, stale overlay
+ * instances (including dangling ones whose source element was replaced)
+ * never match the cleanup filters and linger in the assembly forever.
+ * The record is persisted as fuzzycad-generated-geometry.json — read it back.
+ */
+async function loadPreviousGeneratedGeometry(input: {
+  server: string;
+  documentId: string;
+  workspaceId: string;
+  accessToken: string;
+  elements: unknown;
+}): Promise<UnknownRecord | null> {
+  const element = findLatestElementByName(
+    input.elements,
+    GENERATED_GEOMETRY_FILENAME,
+  );
+  const elementId = element ? getElementId(element) : null;
+
+  if (!elementId) {
+    return null;
+  }
+
+  const endpoint = `${input.server}/api/blobelements/d/${input.documentId}/w/${input.workspaceId}/e/${elementId}`;
+
+  const res = await onshapeFetch(
+    endpoint,
+    {
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        Accept: "application/json,text/plain,*/*",
+      },
+    },
+    {
+      route: "/api/fuzzycad/save-project",
+      operation: "load-previous-generated-geometry",
+    },
+  );
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const data = await parseJsonOrText(res);
+
+  return isRecord(data) ? data : null;
+}
+
 function buildGeneratedGeometryPayload(input: {
   projectState: UnknownRecord;
   annotatedSelectionStlResult: UpsertBlobResult | null;
@@ -2044,6 +2096,34 @@ export async function POST(req: NextRequest) {
       },
       { status: elementsResult.status },
     );
+  }
+
+  /**
+   * Restore the previous save's generated-geometry memory (visualization
+   * element ids + selection signature) before making any overlay decisions.
+   * The client-side projectState never carries this — it only lives in the
+   * document's fuzzycad-generated-geometry.json blob.
+   */
+  const clientGeneratedGeometry = isRecord(projectState.generatedGeometry)
+    ? projectState.generatedGeometry
+    : null;
+  const clientHasGeneratedGeometryMemory =
+    clientGeneratedGeometry !== null &&
+    isRecord(clientGeneratedGeometry.visualizationLayer);
+
+  if (!clientHasGeneratedGeometryMemory) {
+    const previousGeneratedGeometry = await loadPreviousGeneratedGeometry({
+      server,
+      documentId,
+      workspaceId,
+      accessToken,
+      elements: elementsResult.data,
+    });
+
+    if (previousGeneratedGeometry) {
+      (projectState as UnknownRecord).generatedGeometry =
+        previousGeneratedGeometry;
+    }
   }
 
   const annotatedSelectionStlResult = annotatedSelectionStl
