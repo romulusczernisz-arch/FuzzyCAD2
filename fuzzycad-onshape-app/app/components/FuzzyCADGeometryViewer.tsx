@@ -728,7 +728,7 @@ function AngleArcOverlay({
   const { camera, gl } = useThree();
   const [dragging, setDragging] = useState(false);
 
-  const { line1Geo, line2Geo, arcGeo, line2End, thetaPos } = useMemo(() => {
+  const { line1Geo, line2Geo, arcGeo, line2End } = useMemo(() => {
     // line2Dir = line1Dir rotated by angleDeg around normalAxis
     const q = new THREE.Quaternion().setFromAxisAngle(
       normalAxis,
@@ -863,26 +863,26 @@ function AngleArcOverlay({
         />
       </Html>
 
-      {/* θ label */}
-      <Html
-        position={[thetaPos.x, thetaPos.y, thetaPos.z]}
-        center
-        distanceFactor={0.8}
-        occlude={false}
-      >
+      {/* θ readout — fixed to the corner of the viewport so it never covers
+          the parts being angled. */}
+      <Html fullscreen style={{ pointerEvents: "none" }}>
         <div
           style={{
+            position: "absolute",
+            top: 14,
+            left: 14,
             fontFamily: "Arial, sans-serif",
-            fontSize: 12,
+            fontSize: 13,
             fontWeight: 700,
             color: "#172033",
             pointerEvents: "none",
             userSelect: "none",
-            background: "rgba(255,255,255,0.88)",
-            padding: "2px 7px",
-            borderRadius: 6,
+            background: "rgba(255,255,255,0.92)",
+            padding: "4px 10px",
+            borderRadius: 8,
             border: "1px solid rgba(43,108,255,0.35)",
             boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
+            whiteSpace: "nowrap",
           }}
         >
           θ = {Math.abs(angleDeg).toFixed(1)}°

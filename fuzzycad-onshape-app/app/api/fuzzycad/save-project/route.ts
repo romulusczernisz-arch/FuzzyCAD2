@@ -481,6 +481,13 @@ async function getAssemblyDefinitionForOverlay(input: {
   assemblyElementId: string;
   accessToken: string;
 }) {
+  /**
+   * force: true is critical in the save path. Overlay skip/replace/insert
+   * decisions are made from this assembly definition; a stale cached copy
+   * (primed while the panel was interacting) can list overlay instances that
+   * were deleted — silently skipping insertion — or miss ones that exist.
+   * Save is an explicit user action, so one fresh read here is acceptable.
+   */
   return getCachedAssembly({
     server: input.server,
     documentId: input.documentId,
@@ -488,6 +495,7 @@ async function getAssemblyDefinitionForOverlay(input: {
     assemblyElementId: input.assemblyElementId,
     accessToken: input.accessToken,
     route: "/api/fuzzycad/save-project",
+    force: true,
   });
 }
 
@@ -800,6 +808,9 @@ async function findExistingFuzzyCadOverlayBeforeImport(input: {
     workspaceId: input.workspaceId,
     accessToken: input.accessToken,
     route: "/api/fuzzycad/save-project",
+    // Fresh read: stale elements can hide previously imported visualization
+    // layers, which corrupts the skip/replace decision below.
+    force: true,
   });
 
   if (!elementsResult.ok || !Array.isArray(elementsResult.data)) {
@@ -984,6 +995,22 @@ async function deleteAssemblyInstance(input: {
         attempts,
       };
     }
+  }
+
+  // If every endpoint said 404 the instance is already gone (e.g. the user
+  // deleted it manually) — treat that as success so the save can proceed.
+  const allNotFound = attempts.every(
+    (attempt) => typeof attempt.status === "number" && attempt.status === 404,
+  );
+
+  if (allNotFound && attempts.length > 0) {
+    return {
+      ok: true,
+      status: 404,
+      mode: "instance-already-deleted",
+      instanceId: input.instanceId,
+      attempts,
+    };
   }
 
   return {
