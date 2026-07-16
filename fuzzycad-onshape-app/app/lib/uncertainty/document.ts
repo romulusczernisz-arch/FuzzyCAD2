@@ -20,7 +20,24 @@ export type FuzzyCADUncertaintySource = {
 
 export type FuzzyCADUncertaintyAnnotation =
   | SizeUncertaintyAnnotation
-  | AngleUncertaintyAnnotation;
+  | AngleUncertaintyAnnotation
+  | BendUncertaintyAnnotation;
+
+/**
+ * Discriminated pivot union so angle-like tools can share one schema:
+ * - "vertex": rotation around a hinge axis through a snapped mesh vertex
+ *   (two-part angle tool).
+ * - "line": rotation of part of a mesh around an explicit crease line
+ *   (single-part bend tool).
+ * All coordinates are in Onshape assembly space.
+ */
+export type AnglePivot =
+  | { kind: "vertex"; point: [number, number, number] }
+  | {
+      kind: "line";
+      start: [number, number, number];
+      end: [number, number, number];
+    };
 
 export type SizeUncertaintyAnnotation = {
   id: string;
@@ -62,8 +79,44 @@ export type AngleUncertaintyAnnotation = {
    */
   face1Normal?: [number, number, number];
   face2Normal?: [number, number, number];
-  /** Click point on face1 used as the rotation pivot (Onshape space). */
+  /**
+   * Legacy pivot field (Onshape space). Kept for backwards compatibility
+   * with previously saved documents; new saves also populate `pivot`.
+   */
   pivotPoint?: [number, number, number];
+  /** Structured pivot. Preferred over pivotPoint when present. */
+  pivot?: AnglePivot;
+  comment?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * Bend uncertainty: a single part gets a crease line drawn across it; the
+ * mesh on one side of the crease plane rotates around the crease by
+ * `deltaDeg`. Models parts with an internal angle and no selectable vertex
+ * (e.g. a prosthetic running blade).
+ *
+ * All geometry is stored in Onshape assembly space.
+ */
+export type BendUncertaintyAnnotation = {
+  id: string;
+  type: "bend";
+  target: {
+    pathKey: string;
+  };
+  /** Bend adjustment relative to the part's current shape, in degrees. */
+  deltaDeg: number;
+  /** Crease line endpoints on the part surface. */
+  creaseStart: [number, number, number];
+  creaseEnd: [number, number, number];
+  /**
+   * Normal of the cutting plane through the crease line
+   * (creaseDir × surfaceNormal). Vertices are split by this plane.
+   */
+  planeNormal: [number, number, number];
+  /** +1 or -1: which side of the plane (along planeNormal) bends. */
+  bendSideSign: 1 | -1;
   comment?: string;
   createdAt: string;
   updatedAt: string;
@@ -88,6 +141,21 @@ export function makeAngleAnnotationId(
   part2PathKey: string,
 ) {
   return `angle:${[part1PathKey, part2PathKey].sort().join("|")}`;
+}
+
+/**
+ * Bend id includes the crease location so a part can carry multiple bends
+ * at different creases; editing the same crease updates in place.
+ */
+export function makeBendAnnotationId(
+  pathKey: string,
+  creaseStart: [number, number, number],
+  creaseEnd: [number, number, number],
+) {
+  const key = [...creaseStart, ...creaseEnd]
+    .map((value) => value.toFixed(4))
+    .join(",");
+  return `bend:${pathKey}:${key}`;
 }
 
 function normalizePathKeys(pathKeys: string[]) {
@@ -214,6 +282,7 @@ export function addAngleAnnotation(
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
     pivotPoint?: [number, number, number];
+    pivot?: AnglePivot;
     comment?: string;
   },
 ): FuzzyCADUncertaintyDocument {
@@ -236,6 +305,7 @@ export function addAngleAnnotation(
     face1Normal: input.face1Normal ?? existing?.face1Normal,
     face2Normal: input.face2Normal ?? existing?.face2Normal,
     pivotPoint: input.pivotPoint ?? existing?.pivotPoint,
+    pivot: input.pivot ?? existing?.pivot,
     comment: input.comment ?? existing?.comment,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -244,6 +314,52 @@ export function addAngleAnnotation(
   return {
     ...document,
     annotations: [...document.annotations.filter((a) => a.id !== id), annotation],
+  };
+}
+
+export function addBendAnnotation(
+  document: FuzzyCADUncertaintyDocument,
+  input: {
+    pathKey: string;
+    deltaDeg: number;
+    creaseStart: [number, number, number];
+    creaseEnd: [number, number, number];
+    planeNormal: [number, number, number];
+    bendSideSign: 1 | -1;
+    comment?: string;
+  },
+): FuzzyCADUncertaintyDocument {
+  const now = new Date().toISOString();
+  const id = makeBendAnnotationId(
+    input.pathKey,
+    input.creaseStart,
+    input.creaseEnd,
+  );
+
+  const existing = document.annotations.find(
+    (a): a is BendUncertaintyAnnotation => a.id === id && a.type === "bend",
+  );
+
+  const annotation: BendUncertaintyAnnotation = {
+    id,
+    type: "bend",
+    target: { pathKey: input.pathKey },
+    deltaDeg: input.deltaDeg,
+    creaseStart: input.creaseStart,
+    creaseEnd: input.creaseEnd,
+    planeNormal: input.planeNormal,
+    bendSideSign: input.bendSideSign,
+    comment: input.comment ?? existing?.comment,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  return {
+    ...document,
+    annotations: [
+      ...document.annotations.filter((a) => a.id !== id),
+      annotation,
+    ],
   };
 }
 

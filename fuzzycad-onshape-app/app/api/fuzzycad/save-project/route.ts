@@ -1112,7 +1112,15 @@ async function hideAngleAnnotationOriginals(input: {
       typeof (a.target as UnknownRecord).part2PathKey === "string",
   );
 
-  if (angleAnnotations.length === 0) {
+  const bendAnnotations = annotations.filter(
+    (a): a is UnknownRecord =>
+      isRecord(a) &&
+      a.type === "bend" &&
+      isRecord(a.target) &&
+      typeof (a.target as UnknownRecord).pathKey === "string",
+  );
+
+  if (angleAnnotations.length === 0 && bendAnnotations.length === 0) {
     return { ok: true, mode: "no-angle-annotations", hidden: [] };
   }
 
@@ -1140,6 +1148,12 @@ async function hideAngleAnnotationOriginals(input: {
     for (const relatedKey of relatedKeys) {
       addPathKeyToHide(relatedKey);
     }
+  }
+
+  // Bend annotations: hide the original (unbent) part.
+  for (const annotation of bendAnnotations) {
+    const target = annotation.target as UnknownRecord;
+    addPathKeyToHide(target.pathKey as string);
   }
 
   if (occurrencesToHide.length === 0) {
@@ -1182,6 +1196,70 @@ async function hideAngleAnnotationOriginals(input: {
 
   const data = await parseJsonOrText(res);
 
+  /**
+   * Onshape can accept the occurrencetransforms call (200) without actually
+   * honoring isHidden. Verify by force re-reading the assembly and checking
+   * the occurrences' hidden flags, so the client log tells the truth.
+   */
+  let verification: UnknownRecord | null = null;
+
+  if (res.ok) {
+    clearAssemblyCache();
+
+    const assemblyAfter = await getCachedAssembly({
+      server: input.server,
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      assemblyElementId: input.assemblyElementId,
+      accessToken: input.accessToken,
+      route: "/api/fuzzycad/save-project",
+      force: true,
+    });
+
+    if (assemblyAfter.ok && isRecord(assemblyAfter.data)) {
+      const rootAssembly = isRecord(assemblyAfter.data.rootAssembly)
+        ? assemblyAfter.data.rootAssembly
+        : null;
+      const occurrences = Array.isArray(rootAssembly?.occurrences)
+        ? rootAssembly.occurrences
+        : [];
+
+      const wantedPaths = new Set(
+        occurrencesToHide.map((path) => path.join("/")),
+      );
+
+      const hiddenStates: { path: string; hidden: unknown }[] = [];
+
+      for (const occurrence of occurrences) {
+        if (!isRecord(occurrence)) continue;
+        const path = Array.isArray(occurrence.path)
+          ? occurrence.path.join("/")
+          : null;
+        if (path && wantedPaths.has(path)) {
+          hiddenStates.push({ path, hidden: occurrence.hidden });
+        }
+      }
+
+      const allHidden =
+        hiddenStates.length > 0 &&
+        hiddenStates.every((state) => state.hidden === true);
+
+      verification = {
+        checked: hiddenStates.length,
+        allHidden,
+        hiddenStates,
+        mode: allHidden
+          ? "verified-originals-hidden"
+          : "hide-call-accepted-but-not-applied",
+      };
+    } else {
+      verification = {
+        mode: "failed-to-verify-hidden-state",
+        status: assemblyAfter.status,
+      };
+    }
+  }
+
   return {
     ok: res.ok,
     status: res.status,
@@ -1191,6 +1269,7 @@ async function hideAngleAnnotationOriginals(input: {
     endpoint,
     hiddenCount: occurrencesToHide.length,
     hidden: occurrencesToHide,
+    verification,
     data,
   };
 }
@@ -1707,19 +1786,32 @@ function buildAnnotatedSelectionManifest(projectState: UnknownRecord) {
           ? annotation.angleDeg.toFixed(2)
           : "0.00";
 
-      if (part1PathKey) {
-        includedObjects.push({
-          annotationId,
-          pathKey: `${part1PathKey}@angle-part1`,
-          type: "angle",
-        });
-      }
-
+      // part1 is intentionally NOT part of the overlay anymore: only the
+      // rotated part2 gets exported. part1PathKey still contributes to the
+      // signature so re-selecting a different fixed part triggers replacement.
       if (part2PathKey) {
         includedObjects.push({
           annotationId,
-          pathKey: `${part2PathKey}@angle-part2:${angleDeg}`,
+          pathKey: `${part2PathKey}@angle-part2:${angleDeg}${
+            part1PathKey ? `:ref=${part1PathKey}` : ""
+          }`,
           type: "angle",
+        });
+      }
+    } else if (annotation.type === "bend") {
+      const target = isRecord(annotation.target) ? annotation.target : null;
+      const pathKey =
+        typeof target?.pathKey === "string" ? target.pathKey : null;
+      const deltaDeg =
+        typeof annotation.deltaDeg === "number"
+          ? annotation.deltaDeg.toFixed(2)
+          : "0.00";
+
+      if (pathKey) {
+        includedObjects.push({
+          annotationId,
+          pathKey: `${pathKey}@bend:${deltaDeg}`,
+          type: "bend",
         });
       }
     }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   AngleUncertaintyAnnotation,
+  BendUncertaintyAnnotation,
   FuzzyCADUncertaintyAnnotation,
   FuzzyCADUncertaintyDocument,
   SizeUncertaintyAnnotation,
@@ -13,6 +14,11 @@ type PendingAngle = {
   part1PathKey: string;
   part2PathKey: string;
   angleDeg: number;
+};
+
+type PendingBend = {
+  pathKey: string;
+  deltaDeg: number;
 };
 
 type UncertaintyMarksPanelProps = {
@@ -30,11 +36,18 @@ type UncertaintyMarksPanelProps = {
   onPendingAngleValueChange?: (angleDeg: number) => void;
   onSaveAngle?: () => void;
   onCancelAngle?: () => void;
+  pendingBend?: PendingBend | null;
+  pendingBendComment?: string;
+  onPendingBendCommentChange?: (comment: string) => void;
+  onPendingBendValueChange?: (deltaDeg: number) => void;
+  onSaveBend?: () => void;
+  onCancelBend?: () => void;
 };
 
 function getAnnotationTitle(annotation: FuzzyCADUncertaintyAnnotation) {
   if (annotation.type === "size") return "Size uncertainty";
   if (annotation.type === "angle") return "Angle uncertainty";
+  if (annotation.type === "bend") return "Bend uncertainty";
   return "Uncertainty";
 }
 
@@ -180,64 +193,77 @@ function AngleAnnotationCard({
 }
 
 /**
- * Isolated sub-component so it can hold local draft state for the angle input.
- * Using local state prevents the controlled-input / toFixed reformat problem
- * where every keystroke resets the field, making it impossible to type.
+ * Shared pending-mark editor for value-based tools (angle θ, bend Δ).
+ *
+ * Isolated sub-component so it can hold local draft state for the numeric
+ * input. Using local state prevents the controlled-input / toFixed reformat
+ * problem where every keystroke resets the field, making it impossible to
+ * type.
  */
-function PendingAnglePanel({
-  pendingAngle,
-  pendingAngleComment = "",
-  onPendingAngleValueChange,
-  onPendingAngleCommentChange,
-  onSaveAngle,
-  onCancelAngle,
+function PendingValuePanel({
+  title,
+  symbol,
+  value,
+  min,
+  max,
+  comment = "",
+  onValueChange,
+  onCommentChange,
+  onSave,
+  onCancel,
 }: {
-  pendingAngle: PendingAngle;
-  pendingAngleComment?: string;
-  onPendingAngleValueChange?: (angleDeg: number) => void;
-  onPendingAngleCommentChange?: (comment: string) => void;
-  onSaveAngle?: () => void;
-  onCancelAngle?: () => void;
+  title: string;
+  symbol: string;
+  value: number;
+  min: number;
+  max: number;
+  comment?: string;
+  onValueChange?: (value: number) => void;
+  onCommentChange?: (comment: string) => void;
+  onSave?: () => void;
+  onCancel?: () => void;
 }) {
   // Local draft keeps what the user is currently typing.
-  const [draft, setDraft] = useState(pendingAngle.angleDeg.toFixed(1));
+  const [draft, setDraft] = useState(value.toFixed(1));
 
-  // Track the last externally-set angleDeg so we can sync when arc drag updates it.
-  const lastExternalDeg = useRef(pendingAngle.angleDeg);
+  // Track the last externally-set value so we can sync when a viewer drag updates it.
+  const lastExternal = useRef(value);
   useEffect(() => {
-    if (pendingAngle.angleDeg !== lastExternalDeg.current) {
-      lastExternalDeg.current = pendingAngle.angleDeg;
-      setDraft(pendingAngle.angleDeg.toFixed(1));
+    if (value !== lastExternal.current) {
+      lastExternal.current = value;
+      setDraft(value.toFixed(1));
     }
-  }, [pendingAngle.angleDeg]);
+  }, [value]);
 
   return (
     <div className={styles.pendingAngle}>
       <div className={styles.pendingAngleHeader}>
-        <span className={styles.pendingAngleLabel}>Angle uncertainty</span>
+        <span className={styles.pendingAngleLabel}>{title}</span>
       </div>
       <div className={styles.pendingAngleRow}>
-        <span className={styles.pendingAngleSymbol}>θ =</span>
+        <span className={styles.pendingAngleSymbol}>{symbol}</span>
         <input
           type="number"
           className={styles.pendingAngleInput}
           value={draft}
-          min={0}
-          max={179}
+          min={min}
+          max={max}
           step={0.5}
           onChange={(e) => {
             setDraft(e.target.value);
-            const v = parseFloat(e.target.value);
-            if (!isNaN(v)) {
-              const clamped = Math.max(0, Math.min(179, v));
-              lastExternalDeg.current = clamped;
-              onPendingAngleValueChange?.(clamped);
+            const parsed = parseFloat(e.target.value);
+            if (!isNaN(parsed)) {
+              const clamped = Math.max(min, Math.min(max, parsed));
+              lastExternal.current = clamped;
+              onValueChange?.(clamped);
             }
           }}
           onBlur={() => {
             // Clean up display on blur
-            const v = parseFloat(draft);
-            const clamped = isNaN(v) ? pendingAngle.angleDeg : Math.max(0, Math.min(179, v));
+            const parsed = parseFloat(draft);
+            const clamped = isNaN(parsed)
+              ? value
+              : Math.max(min, Math.min(max, parsed));
             setDraft(clamped.toFixed(1));
           }}
         />
@@ -245,19 +271,80 @@ function PendingAnglePanel({
       </div>
       <textarea
         className={styles.comment}
-        value={pendingAngleComment}
+        value={comment}
         placeholder="Add a comment..."
-        onChange={(e) => onPendingAngleCommentChange?.(e.target.value)}
+        onChange={(e) => onCommentChange?.(e.target.value)}
       />
       <div className={styles.actions}>
-        <button type="button" className={styles.editButton} onClick={onSaveAngle}>
+        <button type="button" className={styles.editButton} onClick={onSave}>
           Save mark
         </button>
-        <button type="button" className={styles.deleteButton} onClick={onCancelAngle}>
+        <button type="button" className={styles.deleteButton} onClick={onCancel}>
           Cancel
         </button>
       </div>
     </div>
+  );
+}
+
+function BendAnnotationCard({
+  annotation,
+  selected,
+  onSelect,
+  onDelete,
+  onCommentChange,
+}: {
+  annotation: BendUncertaintyAnnotation;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onCommentChange: (comment: string) => void;
+}) {
+  return (
+    <article
+      className={`${styles.card} ${selected ? styles.cardSelected : ""}`}
+      onClick={onSelect}
+    >
+      <div className={styles.cardHeader}>
+        <div
+          className={`${styles.cardTitle} ${
+            selected ? styles.cardTitleSelected : ""
+          }`}
+        >
+          {getAnnotationTitle(annotation)}
+        </div>
+
+        <div
+          className={`${styles.scopeBadge} ${
+            selected ? styles.scopeBadgeSelected : ""
+          }`}
+        >
+          Δ = {annotation.deltaDeg >= 0 ? "+" : ""}
+          {annotation.deltaDeg.toFixed(1)}°
+        </div>
+      </div>
+
+      <textarea
+        className={styles.comment}
+        value={annotation.comment ?? ""}
+        placeholder="Add a comment..."
+        onClick={(event) => event.stopPropagation()}
+        onChange={(event) => onCommentChange(event.target.value)}
+      />
+
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className={styles.deleteButton}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </article>
   );
 }
 
@@ -275,6 +362,12 @@ export default function UncertaintyMarksPanel({
   onPendingAngleValueChange,
   onSaveAngle,
   onCancelAngle,
+  pendingBend,
+  pendingBendComment = "",
+  onPendingBendCommentChange,
+  onPendingBendValueChange,
+  onSaveBend,
+  onCancelBend,
 }: UncertaintyMarksPanelProps) {
   const annotations = document.annotations;
 
@@ -311,20 +404,39 @@ export default function UncertaintyMarksPanel({
         </div>
 
         {pendingAngle ? (
-          <PendingAnglePanel
-            pendingAngle={pendingAngle}
-            pendingAngleComment={pendingAngleComment}
-            onPendingAngleValueChange={onPendingAngleValueChange}
-            onPendingAngleCommentChange={onPendingAngleCommentChange}
-            onSaveAngle={onSaveAngle}
-            onCancelAngle={onCancelAngle}
+          <PendingValuePanel
+            title="Angle uncertainty"
+            symbol="θ ="
+            value={pendingAngle.angleDeg}
+            min={0}
+            max={179}
+            comment={pendingAngleComment}
+            onValueChange={onPendingAngleValueChange}
+            onCommentChange={onPendingAngleCommentChange}
+            onSave={onSaveAngle}
+            onCancel={onCancelAngle}
           />
         ) : null}
 
-        {annotations.length === 0 && !pendingAngle ? (
+        {pendingBend ? (
+          <PendingValuePanel
+            title="Bend uncertainty"
+            symbol="Δ ="
+            value={pendingBend.deltaDeg}
+            min={-179}
+            max={179}
+            comment={pendingBendComment}
+            onValueChange={onPendingBendValueChange}
+            onCommentChange={onPendingBendCommentChange}
+            onSave={onSaveBend}
+            onCancel={onCancelBend}
+          />
+        ) : null}
+
+        {annotations.length === 0 && !pendingAngle && !pendingBend ? (
           <div className={styles.emptyState}>
-            Use the Size or Angle tools to add an uncertainty mark. Each mark
-            will appear here as a card.
+            Use the Size, Angle, or Bend tools to add an uncertainty mark.
+            Each mark will appear here as a card.
           </div>
         ) : null}
 
@@ -351,6 +463,21 @@ export default function UncertaintyMarksPanel({
             if (annotation.type === "angle") {
               return (
                 <AngleAnnotationCard
+                  key={annotation.id}
+                  annotation={annotation}
+                  selected={selected}
+                  onSelect={() => onSelectAnnotation(annotation.id)}
+                  onDelete={() => onDeleteAnnotation(annotation.id)}
+                  onCommentChange={(comment) =>
+                    onCommentChange(annotation.id, comment)
+                  }
+                />
+              );
+            }
+
+            if (annotation.type === "bend") {
+              return (
+                <BendAnnotationCard
                   key={annotation.id}
                   annotation={annotation}
                   selected={selected}

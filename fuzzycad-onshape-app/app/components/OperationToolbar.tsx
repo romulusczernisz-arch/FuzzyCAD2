@@ -68,6 +68,17 @@ function AngleIcon() {
   );
 }
 
+function BendIcon() {
+  return (
+    <svg viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M5 10H16" />
+      <path d="M16 10L26 20" />
+      <path d="M16 6V14" strokeDasharray="2 2" />
+      <path d="M21 10C21 13 20 15 18 16" />
+    </svg>
+  );
+}
+
 function MoveIcon() {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true">
@@ -111,10 +122,15 @@ const tools: ToolItem[] = [
   {
     id: "angle",
     label: "Angle",
-    title: "Adjust support arm angle",
+    title: "Adjust the angle between two parts",
     icon: <AngleIcon />,
   },
- 
+  {
+    id: "bend",
+    label: "Bend",
+    title: "Draw a crease line on one part and bend it",
+    icon: <BendIcon />,
+  },
 ];
 
 export default function OperationToolbar({

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   addAngleAnnotation,
+  addBendAnnotation,
   createEmptyUncertaintyDocument,
   removeSizeAnnotationsForPathKeys,
   removeUncertaintyAnnotationById,
@@ -107,10 +108,25 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
     pivotPoint?: [number, number, number];
+    pivot?: import("../lib/uncertainty/document").AnglePivot;
     comment?: string;
   }) {
     setUncertaintyDocument((previous) =>
       addAngleAnnotation({ ...previous, source }, input),
+    );
+  }
+
+  function saveBendMark(input: {
+    pathKey: string;
+    deltaDeg: number;
+    creaseStart: [number, number, number];
+    creaseEnd: [number, number, number];
+    planeNormal: [number, number, number];
+    bendSideSign: 1 | -1;
+    comment?: string;
+  }) {
+    setUncertaintyDocument((previous) =>
+      addBendAnnotation({ ...previous, source }, input),
     );
   }
 
@@ -125,5 +141,6 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     deleteAnnotation,
     updateAnnotationComment,
     saveAngleMark,
+    saveBendMark,
   };
 }

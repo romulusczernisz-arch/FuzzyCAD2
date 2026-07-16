@@ -6,7 +6,11 @@ import {
   type PartPlacement,
 } from "../../components/viewer/placement";
 import { prepareRenderableMeshes } from "../../components/viewer/materials";
-import type { FuzzyCADUncertaintyAnnotation } from "../uncertainty/document";
+import type {
+  BendUncertaintyAnnotation,
+  FuzzyCADUncertaintyAnnotation,
+} from "../uncertainty/document";
+import { bendGeometryInPlace } from "./bendDeform";
 
 function getAnnotatedPathKeys(annotations: FuzzyCADUncertaintyAnnotation[]) {
   const pathKeys = new Set<string>();
@@ -34,8 +38,13 @@ function buildAngleRotationTransform(annotation: {
   face1Normal?: [number, number, number];
   face2Normal?: [number, number, number];
   pivotPoint?: [number, number, number];
+  pivot?: { kind: string; point?: [number, number, number] };
 }): THREE.Matrix4 | null {
-  const { face1Normal, face2Normal, pivotPoint } = annotation;
+  const { face1Normal, face2Normal } = annotation;
+  // Prefer the structured pivot; fall back to the legacy pivotPoint field.
+  const pivotPoint =
+    (annotation.pivot?.kind === "vertex" ? annotation.pivot.point : undefined) ??
+    annotation.pivotPoint;
   if (!face1Normal || !face2Normal || !pivotPoint) return null;
 
   const n1 = new THREE.Vector3(...face1Normal).normalize();
@@ -152,6 +161,60 @@ function cloneObjectInWorldSpace(
   return clone;
 }
 
+/**
+ * Clone an object with a crease-bend deformation applied.
+ *
+ * The clone's geometry is baked into world (Onshape assembly) space first,
+ * then bent with the shared bendDeform math — the same formula the viewer
+ * preview uses, just in Onshape space instead of viewer space.
+ */
+function cloneObjectWithBend(
+  object: THREE.Object3D,
+  annotation: BendUncertaintyAnnotation,
+): THREE.Object3D | null {
+  object.updateWorldMatrix(true, true);
+
+  const group = new THREE.Group();
+  group.name = `FuzzyCAD_Bent__${object.name || annotation.id}`;
+  group.userData = {
+    fuzzycadGenerated: true,
+    sourcePathKey: object.userData?.fuzzyPathKey ?? null,
+  };
+
+  const spec = {
+    creaseStart: new THREE.Vector3(...annotation.creaseStart),
+    creaseEnd: new THREE.Vector3(...annotation.creaseEnd),
+    planeNormal: new THREE.Vector3(...annotation.planeNormal),
+    bendSideSign: annotation.bendSideSign,
+    deltaRad: (annotation.deltaDeg * Math.PI) / 180,
+  };
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+
+    // Bake the mesh into world space so the bend spec (stored in Onshape
+    // assembly space) applies directly.
+    const geometry = child.geometry.clone();
+    geometry.applyMatrix4(child.matrixWorld);
+
+    bendGeometryInPlace(geometry, new THREE.Matrix4(), spec);
+
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: 0xb8beca,
+        roughness: 0.85,
+        metalness: 0,
+        side: THREE.DoubleSide,
+      }),
+    );
+
+    group.add(mesh);
+  });
+
+  return group.children.length > 0 ? group : null;
+}
+
 function exportSceneToBinaryStl(root: THREE.Object3D) {
   const exporter = new STLExporter();
 
@@ -198,12 +261,16 @@ export async function exportAnnotatedSelectionStl(input: {
 }) {
   const sizePathKeys = getAnnotatedPathKeys(input.annotations);
 
-  // Collect angle-annotated parts: include part1 as-is, part2 with rotation
+  /**
+   * Angle annotations: export ONLY the rotated part2 (+ its rigid group).
+   * Part 1 stays untouched in the source assembly, and the original part2
+   * occurrence gets hidden by the save route — so the user can toggle
+   * visibility between the original and adjusted angle.
+   */
   const angleAnnotations = input.annotations.filter(
     (a): a is import("../uncertainty/document").AngleUncertaintyAnnotation =>
       a.type === "angle",
   );
-  const anglePart1Keys = new Set(angleAnnotations.map((a) => a.target.part1PathKey));
   const anglePart2Keys = new Set(
     angleAnnotations.flatMap((a) => [
       a.target.part2PathKey,
@@ -211,11 +278,18 @@ export async function exportAnnotatedSelectionStl(input: {
     ]),
   );
 
-  const allStaticPathKeys = [
-    ...new Set([...sizePathKeys, ...anglePart1Keys]),
-  ];
+  // Bend annotations: export a deformed copy of the single target part.
+  const bendAnnotations = input.annotations.filter(
+    (a): a is import("../uncertainty/document").BendUncertaintyAnnotation =>
+      a.type === "bend",
+  );
 
-  const hasContent = allStaticPathKeys.length > 0 || anglePart2Keys.size > 0;
+  const allStaticPathKeys = [...new Set(sizePathKeys)];
+
+  const hasContent =
+    allStaticPathKeys.length > 0 ||
+    anglePart2Keys.size > 0 ||
+    bendAnnotations.length > 0;
   if (!hasContent) return null;
 
   const loader = new GLTFLoader();
@@ -238,7 +312,7 @@ export async function exportAnnotatedSelectionStl(input: {
   const exportRoot = new THREE.Group();
   exportRoot.name = "FuzzyCAD_Annotated_Selection";
 
-  // Static objects (size annotations + angle part1): clone as-is
+  // Static objects (size annotations): clone as-is
   const staticObjects = findTopLevelAnnotatedObjects(scene, allStaticPathKeys);
   for (const object of staticObjects) {
     exportRoot.add(cloneObjectInWorldSpace(object));
@@ -260,6 +334,21 @@ export async function exportAnnotatedSelectionStl(input: {
       const clone = cloneObjectInWorldSpace(object, transform ?? undefined);
       clone.name = `FuzzyCAD_AngleRotated__${object.name || annotation.id}`;
       exportRoot.add(clone);
+    }
+  }
+
+  // Bend objects: clone with per-vertex crease deformation applied.
+  for (const annotation of bendAnnotations) {
+    const bendObjects = findTopLevelAnnotatedObjects(scene, [
+      annotation.target.pathKey,
+    ]);
+
+    for (const object of bendObjects) {
+      const bent = cloneObjectWithBend(object, annotation);
+      if (bent) {
+        bent.name = `FuzzyCAD_Bent__${object.name || annotation.id}`;
+        exportRoot.add(bent);
+      }
     }
   }
 

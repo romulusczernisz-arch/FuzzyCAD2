@@ -27,21 +27,47 @@ function buildAdjacency(edges: MateGraphEdge[]): Map<string, string[]> {
 }
 
 /**
+ * Mate types that connect two occurrences into one rigid body. Motion applied
+ * to one side must carry the other side along.
+ *
+ * Everything else (REVOLUTE, SLIDER, CYLINDRICAL, PLANAR, BALL, PIN_SLOT,
+ * PARALLEL, TANGENT, ...) leaves at least one degree of freedom, so the joint
+ * absorbs the motion and propagation stops there.
+ */
+const RIGID_MATE_TYPES = new Set(["FASTENED", "FIXED", "GROUP", "RIGID"]);
+
+function isRigidMateType(mateType: string | null | undefined) {
+  if (typeof mateType !== "string" || mateType.length === 0) {
+    // Unknown mate type: treat as rigid so we fail toward "moves together",
+    // matching the previous all-mates-rigid behavior for unlabeled edges.
+    return true;
+  }
+  return RIGID_MATE_TYPES.has(mateType.toUpperCase());
+}
+
+/**
  * Find all occurrence pathKeys reachable from `startPathKey` via mate edges,
  * without crossing `excludePathKey` (the fixed reference part).
  *
  * Returns the connected group (excluding startPathKey itself and excludePathKey).
  *
- * Uses BFS over all mate types — physically models the scenario where the
- * entire rigid body group connected to part2 moves together when the angle
- * changes.
+ * By default only rigid mate types propagate (see RIGID_MATE_TYPES) — a part
+ * fastened to part2 rotates with it, but a part connected via a revolute or
+ * slider joint does not, because that joint absorbs the motion. Pass
+ * `options.allMateTypes: true` to restore the old propagate-everything
+ * behavior.
  */
 export function findMateConnectedParts(
   startPathKey: string,
   excludePathKey: string,
   edges: MateGraphEdge[],
+  options?: { allMateTypes?: boolean },
 ): string[] {
-  const adj = buildAdjacency(edges);
+  const usableEdges = options?.allMateTypes
+    ? edges
+    : edges.filter((edge) => isRigidMateType(edge.mateType));
+
+  const adj = buildAdjacency(usableEdges);
   const visited = new Set<string>([startPathKey, excludePathKey]);
   const queue: string[] = [startPathKey];
   const result: string[] = [];

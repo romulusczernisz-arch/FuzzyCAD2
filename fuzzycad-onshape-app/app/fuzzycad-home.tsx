@@ -195,8 +195,19 @@ export default function FuzzyCADHome() {
   const [angleCandidateOpen, setAngleCandidateOpen] = useState(false);
   /** [part2PathKey, ...similar part2 pathKeys] */
   const [angleCandidatePart2Keys, setAngleCandidatePart2Keys] = useState<string[]>([]);
-  /** Incremented to tell the viewer to clear its angle selection + preview. */
+  /** Incremented to tell the viewer to clear its angle/bend selection + preview. */
   const [angleResetNonce, setAngleResetNonce] = useState(0);
+
+  const [pendingBend, setPendingBend] = useState<{
+    pathKey: string;
+    deltaDeg: number;
+    /** Crease + plane in viewer world space (converted on save). */
+    creaseStartViewer: [number, number, number];
+    creaseEndViewer: [number, number, number];
+    planeNormalViewer: [number, number, number];
+    bendSideSign: 1 | -1;
+  } | null>(null);
+  const [pendingBendComment, setPendingBendComment] = useState("");
 
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
@@ -253,6 +264,7 @@ export default function FuzzyCADHome() {
     replaceUncertaintyDocument,
     updateAnnotationComment,
     saveAngleMark,
+    saveBendMark,
   } = useUncertaintyDocument(currentUncertaintySource);
 
   const assemblyElements = useMemo(() => {
@@ -739,6 +751,8 @@ export default function FuzzyCADHome() {
         mateEdges,
       );
 
+      const pivotPoint = viewerToOnshape(pendingAngle.pivotViewer);
+
       saveAngleMark({
         part1PathKey: pendingAngle.part1PathKey,
         part2PathKey,
@@ -746,12 +760,43 @@ export default function FuzzyCADHome() {
         angleDeg: pendingAngle.angleDeg,
         face1Normal: viewerToOnshape(pendingAngle.face1NormalViewer),
         face2Normal: viewerToOnshape(pendingAngle.face2NormalViewer),
-        pivotPoint: viewerToOnshape(pendingAngle.pivotViewer),
+        pivotPoint,
+        pivot: pivotPoint ? { kind: "vertex", point: pivotPoint } : undefined,
         comment: pendingAngleComment || undefined,
       });
     }
 
     finishPendingAngle();
+    setActiveTool("select");
+  }
+
+  /** Clear pending-bend UI state and reset the viewer's bend selection + preview. */
+  function finishPendingBend() {
+    setPendingBend(null);
+    setPendingBendComment("");
+    setAngleResetNonce((nonce) => nonce + 1);
+  }
+
+  function commitPendingBend() {
+    if (!pendingBend) return;
+
+    const creaseStart = viewerToOnshape(pendingBend.creaseStartViewer);
+    const creaseEnd = viewerToOnshape(pendingBend.creaseEndViewer);
+    const planeNormal = viewerToOnshape(pendingBend.planeNormalViewer);
+
+    if (!creaseStart || !creaseEnd || !planeNormal) return;
+
+    saveBendMark({
+      pathKey: pendingBend.pathKey,
+      deltaDeg: pendingBend.deltaDeg,
+      creaseStart,
+      creaseEnd,
+      planeNormal,
+      bendSideSign: pendingBend.bendSideSign,
+      comment: pendingBendComment || undefined,
+    });
+
+    finishPendingBend();
     setActiveTool("select");
   }
 
@@ -780,9 +825,13 @@ async function saveProjectStateToOnshape() {
     uncertaintyDocumentWithCurrentSource.annotations.filter(
       (annotation) => annotation.type === "angle",
     ).length;
+  const bendAnnotationCount =
+    uncertaintyDocumentWithCurrentSource.annotations.filter(
+      (annotation) => annotation.type === "bend",
+    ).length;
 
   console.log(
-    `[FuzzyCAD] Save to Onshape: ${uncertaintyDocumentWithCurrentSource.annotations.length} annotation(s) (${angleAnnotationCount} angle). STL: ${
+    `[FuzzyCAD] Save to Onshape: ${uncertaintyDocumentWithCurrentSource.annotations.length} annotation(s) (${angleAnnotationCount} angle, ${bendAnnotationCount} bend). STL: ${
       annotatedSelectionStl ? `${annotatedSelectionStl.size} bytes` : "none generated"
     }`,
   );
@@ -1009,6 +1058,43 @@ if (result.ok && result.state) {
               return next;
             });
           }}
+          bendDeltaDeg={
+            activeTool === "bend" ? pendingBend?.deltaDeg ?? null : null
+          }
+          onBendSelection={({
+            pathKey,
+            deltaDeg,
+            creaseStart,
+            creaseEnd,
+            planeNormal,
+            bendSideSign,
+          }) => {
+            setPendingBend((previous) => {
+              if (
+                previous &&
+                previous.pathKey === pathKey &&
+                previous.bendSideSign === bendSideSign &&
+                Math.abs(previous.deltaDeg - deltaDeg) < 1e-4 &&
+                previous.creaseStartViewer.every(
+                  (value, index) => Math.abs(value - creaseStart[index]) < 1e-9,
+                ) &&
+                previous.creaseEndViewer.every(
+                  (value, index) => Math.abs(value - creaseEnd[index]) < 1e-9,
+                )
+              ) {
+                return previous;
+              }
+
+              return {
+                pathKey,
+                deltaDeg,
+                creaseStartViewer: creaseStart,
+                creaseEndViewer: creaseEnd,
+                planeNormalViewer: planeNormal,
+                bendSideSign,
+              };
+            });
+          }}
         />
 
         <OperationToolbar
@@ -1019,12 +1105,19 @@ if (result.ok && result.state) {
               startHeightUncertainty();
               setPendingAngle(null);
               setPendingAngleComment("");
+              setPendingBend(null);
+              setPendingBendComment("");
               return;
             }
 
             if (tool !== "angle") {
               setPendingAngle(null);
               setPendingAngleComment("");
+            }
+
+            if (tool !== "bend") {
+              setPendingBend(null);
+              setPendingBendComment("");
             }
 
             setActiveTool(tool);
@@ -1069,6 +1162,16 @@ if (result.ok && result.state) {
             commitPendingAngle([pendingAngle.part2PathKey]);
           }}
           onCancelAngle={finishPendingAngle}
+          pendingBend={activeTool === "bend" ? pendingBend : null}
+          pendingBendComment={pendingBendComment}
+          onPendingBendCommentChange={setPendingBendComment}
+          onPendingBendValueChange={(deltaDeg) => {
+            if (pendingBend) {
+              setPendingBend({ ...pendingBend, deltaDeg });
+            }
+          }}
+          onSaveBend={commitPendingBend}
+          onCancelBend={finishPendingBend}
           onPendingAngleValueChange={(deg) => {
             if (pendingAngle) {
               setPendingAngle({ ...pendingAngle, angleDeg: deg });

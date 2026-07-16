@@ -4,4 +4,5 @@ export type OperationTool =
   | "height"
   | "extend"
   | "angle"
+  | "bend"
   | "move";

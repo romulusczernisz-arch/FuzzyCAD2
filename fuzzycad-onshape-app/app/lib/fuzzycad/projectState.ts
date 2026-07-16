@@ -89,11 +89,19 @@ export type FuzzyCADGeneratedGeometryManifest = {
 export type FuzzyCADGeneratedVisualObject = {
   id: string;
   annotationId: string;
-  kind: "blur-shell" | "direction-arrow" | "dashed-line" | "placeholder-mesh" | "angle-rotated-part";
+  kind:
+    | "blur-shell"
+    | "direction-arrow"
+    | "dashed-line"
+    | "placeholder-mesh"
+    | "angle-rotated-part"
+    | "bent-part";
   targetPathKeys: string[];
   axis?: "x" | "y" | "z";
   /** For angle-rotated-part: the target angle in degrees. */
   angleDeg?: number;
+  /** For bent-part: the bend adjustment in degrees. */
+  deltaDeg?: number;
 };
 
 export function createEmptyGeneratedGeometryState(): FuzzyCADGeneratedGeometryState {
@@ -211,6 +219,15 @@ export function buildGeneratedGeometryManifest(
           annotation.target.part2PathKey,
         ],
         angleDeg: annotation.angleDeg,
+      });
+    } else if (annotation.type === "bend") {
+      // Bend annotation: represent as a crease-deformed copy of the part
+      visualObjects.push({
+        id: `${annotation.id}:bent-part`,
+        annotationId: annotation.id,
+        kind: "bent-part",
+        targetPathKeys: [annotation.target.pathKey],
+        deltaDeg: annotation.deltaDeg,
       });
     }
   }

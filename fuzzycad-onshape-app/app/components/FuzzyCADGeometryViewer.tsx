@@ -43,6 +43,7 @@ import {
   findMateConnectedParts,
   type MateGraphEdge,
 } from "../lib/fuzzycad/mateGraph";
+import { bendGeometryInPlace } from "../lib/fuzzycad/bendDeform";
 import SizingHandle from "./viewer/SizingHandle";
 import AngleHandle from "./viewer/AngleHandle";
 import {
@@ -126,6 +127,18 @@ type FuzzyCADGeometryViewerProps = {
     face2Normal?: [number, number, number];
     /** Snapped pivot vertex (viewer world space). */
     pivot?: [number, number, number];
+  }) => void;
+  /** Externally-controlled bend delta (deg) for the bend tool. */
+  bendDeltaDeg?: number | null;
+  onBendSelection?: (data: {
+    pathKey: string;
+    /** Bend adjustment relative to the current shape, in degrees. */
+    deltaDeg: number;
+    /** Crease + plane in Three.js viewer world space. */
+    creaseStart: [number, number, number];
+    creaseEnd: [number, number, number];
+    planeNormal: [number, number, number];
+    bendSideSign: 1 | -1;
   }) => void;
 };
 
@@ -971,6 +984,8 @@ function Model({
   angleMateEdges,
   angleResetNonce,
   onAngleSelection,
+  bendDeltaDeg: bendDeltaDegExternal,
+  onBendSelection,
 }: {
   url: string;
   placements?: PartPlacement[];
@@ -1003,6 +1018,15 @@ function Model({
     face1Normal?: [number, number, number];
     face2Normal?: [number, number, number];
     pivot?: [number, number, number];
+  }) => void;
+  bendDeltaDeg?: number | null;
+  onBendSelection?: (data: {
+    pathKey: string;
+    deltaDeg: number;
+    creaseStart: [number, number, number];
+    creaseEnd: [number, number, number];
+    planeNormal: [number, number, number];
+    bendSideSign: 1 | -1;
   }) => void;
 }) {
   const gltf = useGLTF(url);
@@ -1564,6 +1588,196 @@ function Model({
     invalidate,
   ]);
 
+  // ── Bend tool: two-click crease + side pick + live mesh deformation ──────
+
+  type BendPointSelection = {
+    pathKey: string;
+    /** Surface point in viewer world space. */
+    point: THREE.Vector3;
+    /** Face normal at the click, viewer world space. */
+    faceNormal: THREE.Vector3;
+  };
+
+  const [bendP1, setBendP1] = useState<BendPointSelection | null>(null);
+  const [bendP2, setBendP2] = useState<BendPointSelection | null>(null);
+  const [bendSidePoint, setBendSidePoint] = useState<THREE.Vector3 | null>(null);
+  const [bendDeltaDeg, setBendDeltaDeg] = useState(0);
+
+  /**
+   * Live-preview state: per-mesh cloned geometry + pristine position arrays,
+   * so any bend delta can be re-applied from scratch and fully reverted.
+   */
+  const bendPreviewRef = useRef<{
+    meshes: { mesh: THREE.Mesh; original: Float32Array }[];
+  } | null>(null);
+
+  const resetBendPreview = useCallback(() => {
+    const preview = bendPreviewRef.current;
+    if (preview) {
+      for (const { mesh, original } of preview.meshes) {
+        const position = mesh.geometry.attributes.position;
+        (position.array as Float32Array).set(original);
+        position.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+      }
+    }
+    bendPreviewRef.current = null;
+    invalidate();
+  }, [invalidate]);
+
+  const resetBendSelection = useCallback(() => {
+    resetBendPreview();
+    setBendP1(null);
+    setBendP2(null);
+    setBendSidePoint(null);
+    setBendDeltaDeg(0);
+  }, [resetBendPreview]);
+
+  useEffect(() => {
+    if (activeTool !== "bend") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      resetBendSelection();
+    }
+  }, [activeTool, resetBendSelection]);
+
+  useEffect(() => {
+    if (angleResetNonce !== undefined && angleResetNonce > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      resetBendSelection();
+    }
+  }, [angleResetNonce, resetBendSelection]);
+
+  useEffect(() => {
+    bendPreviewRef.current = null;
+  }, [scene]);
+
+  // Sync bend delta from the sidebar panel's numeric input.
+  useEffect(() => {
+    if (bendDeltaDegExternal == null || !bendSidePoint) return;
+    const clamped = Math.max(-179, Math.min(179, bendDeltaDegExternal));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBendDeltaDeg((current) =>
+      Math.abs(clamped - current) > 1e-4 ? clamped : current,
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bendDeltaDegExternal]);
+
+  // Crease geometry: cutting plane through the crease line, oriented by the
+  // surface normals at the two clicks.
+  const bendConfig = useMemo(() => {
+    if (!bendP1 || !bendP2) return null;
+
+    const creaseDir = bendP2.point.clone().sub(bendP1.point);
+    if (creaseDir.lengthSq() < 1e-12) return null;
+    creaseDir.normalize();
+
+    let surfaceNormal = bendP1.faceNormal
+      .clone()
+      .add(bendP2.faceNormal)
+      .multiplyScalar(0.5);
+    if (surfaceNormal.lengthSq() < 1e-8) {
+      surfaceNormal = bendP1.faceNormal.clone();
+    }
+
+    let planeNormal = new THREE.Vector3().crossVectors(
+      creaseDir,
+      surfaceNormal,
+    );
+    if (planeNormal.lengthSq() < 1e-8) {
+      // Degenerate (clicks along the normal direction): pick any
+      // perpendicular to the crease.
+      planeNormal =
+        Math.abs(creaseDir.y) < 0.9
+          ? new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), creaseDir)
+          : new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), creaseDir);
+    }
+    planeNormal.normalize();
+
+    const bendSideSign: 1 | -1 = bendSidePoint
+      ? bendSidePoint.clone().sub(bendP1.point).dot(planeNormal) >= 0
+        ? 1
+        : -1
+      : 1;
+
+    return {
+      pathKey: bendP1.pathKey,
+      creaseStart: bendP1.point.clone(),
+      creaseEnd: bendP2.point.clone(),
+      creaseDir,
+      planeNormal,
+      bendSideSign,
+      sideChosen: bendSidePoint !== null,
+    };
+  }, [bendP1, bendP2, bendSidePoint]);
+
+  // Live bend preview: restore pristine positions, then re-apply the current
+  // delta with the shared bendDeform math (same formula the export uses).
+  useEffect(() => {
+    if (activeTool !== "bend" || !bendConfig || !bendConfig.sideChosen) {
+      return;
+    }
+
+    let preview = bendPreviewRef.current;
+
+    if (!preview) {
+      const objects = findTopLevelObjectsByPathKeys(scene, [bendConfig.pathKey]);
+      const meshes: { mesh: THREE.Mesh; original: Float32Array }[] = [];
+
+      for (const object of objects) {
+        object.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
+          // Clone geometry so shared instances / the GLTF cache stay pristine.
+          child.geometry = child.geometry.clone();
+          const position = child.geometry.attributes.position;
+          if (!position) return;
+          meshes.push({
+            mesh: child,
+            original: new Float32Array(position.array as Float32Array),
+          });
+        });
+      }
+
+      if (meshes.length === 0) return;
+
+      preview = { meshes };
+      bendPreviewRef.current = preview;
+    }
+
+    const spec = {
+      creaseStart: bendConfig.creaseStart,
+      creaseEnd: bendConfig.creaseEnd,
+      planeNormal: bendConfig.planeNormal,
+      bendSideSign: bendConfig.bendSideSign,
+      deltaRad: THREE.MathUtils.degToRad(bendDeltaDeg),
+    };
+
+    for (const { mesh, original } of preview.meshes) {
+      const position = mesh.geometry.attributes.position;
+      (position.array as Float32Array).set(original);
+      // Imperative Three.js mutation is intentional here — the ref exists to
+      // manage live GPU geometry outside React's render cycle.
+      // eslint-disable-next-line react-hooks/immutability
+      position.needsUpdate = true;
+      mesh.updateWorldMatrix(true, false);
+      bendGeometryInPlace(mesh.geometry, mesh.matrixWorld, spec);
+    }
+
+    invalidate();
+  }, [activeTool, bendConfig, bendDeltaDeg, scene, invalidate]);
+
+  // Notify parent when the bend selection is complete or the delta changes.
+  useEffect(() => {
+    if (!bendConfig || !bendConfig.sideChosen) return;
+    onBendSelection?.({
+      pathKey: bendConfig.pathKey,
+      deltaDeg: bendDeltaDeg,
+      creaseStart: bendConfig.creaseStart.toArray() as [number, number, number],
+      creaseEnd: bendConfig.creaseEnd.toArray() as [number, number, number],
+      planeNormal: bendConfig.planeNormal.toArray() as [number, number, number],
+      bendSideSign: bendConfig.bendSideSign,
+    });
+  }, [bendConfig, bendDeltaDeg, onBendSelection]);
+
   useEffect(() => {
     appliedValueRef.current = 0;
   }, [handleConfig]);
@@ -1679,6 +1893,43 @@ function Model({
         setAngleFace2(null);
         setAngleMeasuredDeg(null);
         setAngleArcDeg(45);
+      }
+      return;
+    }
+
+    // Bend tool: two clicks define the crease, third click picks the side.
+    if (activeTool === "bend" && selectedPathKey) {
+      let faceNormal = new THREE.Vector3(0, 1, 0);
+      if (event.face) {
+        const localNormal = event.face.normal.clone();
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(
+          event.object.matrixWorld,
+        );
+        faceNormal = localNormal.applyMatrix3(normalMatrix).normalize();
+      }
+
+      const pointSelection = {
+        pathKey: selectedPathKey,
+        point: event.point.clone(),
+        faceNormal,
+      };
+
+      if (!bendP1) {
+        setBendP1(pointSelection);
+      } else if (!bendP2) {
+        if (selectedPathKey !== bendP1.pathKey) return; // crease stays on one part
+        setBendP2(pointSelection);
+      } else if (!bendSidePoint) {
+        if (selectedPathKey !== bendP1.pathKey) return; // side pick on same part
+        setBendSidePoint(event.point.clone());
+        setBendDeltaDeg(0);
+      } else {
+        // Selection complete: restart with a fresh first crease point.
+        resetBendPreview();
+        setBendP1(pointSelection);
+        setBendP2(null);
+        setBendSidePoint(null);
+        setBendDeltaDeg(0);
       }
       return;
     }
@@ -1834,6 +2085,101 @@ function Model({
           );
         })}
 
+      {/* Bend tool: crease line + endpoint/side markers + Δ dial */}
+      {activeTool === "bend" && bendP1 ? (
+        <>
+          {[bendP1.point, bendP2?.point ?? null, bendSidePoint].map(
+            (point, index) => {
+              if (!point) return null;
+              const colors = ["#f59e0b", "#f59e0b", "#16a34a"];
+              return (
+                <Html
+                  key={`bend-marker-${index}`}
+                  position={[point.x, point.y, point.z]}
+                  center
+                  distanceFactor={0.8}
+                  occlude={false}
+                >
+                  <div
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: "50%",
+                      background: colors[index],
+                      border: "2px solid white",
+                      boxShadow: `0 2px 8px ${colors[index]}99`,
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    }}
+                  />
+                </Html>
+              );
+            },
+          )}
+
+          {bendP2 ? (
+            <primitive
+              object={
+                new THREE.Line(
+                  new THREE.BufferGeometry().setFromPoints([
+                    bendP1.point,
+                    bendP2.point,
+                  ]),
+                  new THREE.LineBasicMaterial({ color: "#f59e0b" }),
+                )
+              }
+            />
+          ) : null}
+
+          {bendConfig?.sideChosen && bendP2 ? (
+            <AngleHandle
+              pivotWorld={bendP1.point
+                .clone()
+                .add(bendP2.point)
+                .multiplyScalar(0.5)}
+              value={bendDeltaDeg}
+              label={`Δ ${bendDeltaDeg >= 0 ? "+" : ""}${bendDeltaDeg.toFixed(1)}°`}
+              onChange={(value) =>
+                setBendDeltaDeg(Math.max(-179, Math.min(179, value)))
+              }
+              onDragStateChange={handleDragStateChange}
+            />
+          ) : null}
+        </>
+      ) : null}
+
+      {/* Bend tool: step-by-step prompt */}
+      {activeTool === "bend" ? (
+        <Html fullscreen style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              position: "absolute",
+              top: 14,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: "rgba(255,255,255,0.93)",
+              padding: "5px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              fontFamily: "Arial, sans-serif",
+              color: "#172033",
+              fontWeight: 500,
+              border: "1px solid rgba(245,158,11,0.45)",
+              boxShadow: "0 4px 14px rgba(15,23,42,0.12)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {!bendP1
+              ? "Step 1/3 — Click the part where the crease line starts"
+              : !bendP2
+                ? "Step 2/3 — Click the same part where the crease line ends"
+                : !bendSidePoint
+                  ? "Step 3/3 — Click the side of the part that should bend"
+                  : "Drag the dial or edit Δ in the panel, then Save mark"}
+          </div>
+        </Html>
+      ) : null}
+
       {/* Angle tool: step-by-step prompt */}
       {activeTool === "angle" ? (
         <Html fullscreen style={{ pointerEvents: "none" }}>
@@ -1892,6 +2238,8 @@ export default function FuzzyCADGeometryViewer({
   angleMateEdges,
   angleResetNonce,
   onAngleSelection,
+  bendDeltaDeg,
+  onBendSelection,
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
   const [manipulationDragging, setManipulationDragging] = useState(false);
@@ -1958,6 +2306,8 @@ export default function FuzzyCADGeometryViewer({
                   angleMateEdges={angleMateEdges}
                   angleResetNonce={angleResetNonce}
                   onAngleSelection={onAngleSelection}
+                  bendDeltaDeg={bendDeltaDeg}
+                  onBendSelection={onBendSelection}
                 />
               </Bounds>
             </Suspense>
