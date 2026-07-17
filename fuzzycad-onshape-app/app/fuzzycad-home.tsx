@@ -191,10 +191,6 @@ export default function FuzzyCADHome() {
     pivotViewer?: [number, number, number];
   } | null>(null);
   const [pendingAngleComment, setPendingAngleComment] = useState("");
-  /** Similar-part candidates for part2 when the angle popup is open. */
-  const [angleCandidateOpen, setAngleCandidateOpen] = useState(false);
-  /** [part2PathKey, ...similar part2 pathKeys] */
-  const [angleCandidatePart2Keys, setAngleCandidatePart2Keys] = useState<string[]>([]);
   /** Incremented to tell the viewer to clear its angle/bend selection + preview. */
   const [angleResetNonce, setAngleResetNonce] = useState(0);
 
@@ -732,8 +728,6 @@ export default function FuzzyCADHome() {
   function finishPendingAngle() {
     setPendingAngle(null);
     setPendingAngleComment("");
-    setAngleCandidateOpen(false);
-    setAngleCandidatePart2Keys([]);
     setAngleResetNonce((nonce) => nonce + 1);
   }
 
@@ -1154,23 +1148,7 @@ if (result.ok && result.state) {
           onPendingAngleCommentChange={setPendingAngleComment}
           onSaveAngle={() => {
             if (!pendingAngle) return;
-
-            // Check for similar instances of part2 to offer "apply to all".
-            // This happens at save time so the user can adjust the angle and
-            // comment first.
-            const part2Summary = objectSummaries.find(
-              (summary) => summary.pathKey === pendingAngle.part2PathKey,
-            );
-            const candidates = part2Summary
-              ? buildSizeCandidatePathKeys(part2Summary, objectSummaries)
-              : [pendingAngle.part2PathKey];
-
-            if (candidates.length > 1) {
-              setAngleCandidatePart2Keys(candidates);
-              setAngleCandidateOpen(true);
-              return;
-            }
-
+            // Save only the rotated part — no "apply to related parts" prompt.
             commitPendingAngle([pendingAngle.part2PathKey]);
           }}
           onCancelAngle={finishPendingAngle}
@@ -1190,50 +1168,6 @@ if (result.ok && result.state) {
             }
           }}
         />
-
-        {angleCandidateOpen && pendingAngle ? (
-          <OperationPreviewPanel
-            operation="height"
-            title="Modify related components?"
-            description={
-              angleCandidatePart2Keys.length > 1
-                ? `${
-                    angleCandidatePart2Keys.length - 1 === 1
-                      ? "1 similar component was"
-                      : `${angleCandidatePart2Keys.length - 1} similar components were`
-                  } found. Apply this angle annotation to all of them, or just the selected one.`
-                : "No similar components found. Continuing will annotate only the selected part."
-            }
-            suggestedObjects={
-              angleCandidatePart2Keys.length > 1
-                ? angleCandidatePart2Keys
-                    .map((pk) => objectSummaries.find((s) => s.pathKey === pk))
-                    .filter(Boolean)
-                    .map((s) => getObjectDisplayName(s!))
-                : undefined
-            }
-            confirmLabel={angleCandidatePart2Keys.length > 1 ? "Apply to all" : "Continue"}
-            secondaryConfirmLabel={angleCandidatePart2Keys.length > 1 ? "Selected only" : undefined}
-            cancelLabel="Cancel"
-            onConfirm={() => {
-              // "Apply to all": save one annotation per similar part2 instance
-              commitPendingAngle(angleCandidatePart2Keys);
-            }}
-            onSecondaryConfirm={
-              angleCandidatePart2Keys.length > 1
-                ? () => {
-                    // "Selected only": annotate just the originally-clicked part2
-                    commitPendingAngle([pendingAngle.part2PathKey]);
-                  }
-                : undefined
-            }
-            onCancel={() => {
-              // Back to editing — keep the pending mark and viewer preview.
-              setAngleCandidateOpen(false);
-              setAngleCandidatePart2Keys([]);
-            }}
-          />
-        ) : null}
 
         {heightCandidateOpen ? (
           <OperationPreviewPanel

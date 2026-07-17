@@ -1148,6 +1148,9 @@ function Model({
   const [angleVertex, setAngleVertex] = useState<VertexSelection | null>(null);
   const [angleFace1, setAngleFace1] = useState<FaceSelection | null>(null);
   const [angleFace2, setAngleFace2] = useState<FaceSelection | null>(null);
+  /** Hover feedback: part under the cursor + the vertex a click would snap to. */
+  const [angleHoverPathKey, setAngleHoverPathKey] = useState<string | null>(null);
+  const [angleHoverVertex, setAngleHoverVertex] = useState<THREE.Vector3 | null>(null);
   /** Measured angle between the two face normals at click time (deg). */
   const [angleMeasuredDeg, setAngleMeasuredDeg] = useState<number | null>(null);
   /** Target angle the user is editing toward (deg). */
@@ -1157,10 +1160,16 @@ function Model({
     // When the angle tool is active, highlight whichever parts have been selected
     // for the angle measurement so it's clear what's being compared.
     if (activeTool === "angle") {
-      const angleKeys = [angleFace1?.pathKey ?? null, angleFace2?.pathKey ?? null].filter(
-        (k): k is string => k !== null,
+      const angleKeys = [
+        angleFace1?.pathKey ?? null,
+        angleFace2?.pathKey ?? null,
+        // Hovered part glows too so users see what a click would target.
+        angleHoverPathKey,
+      ].filter((k): k is string => k !== null);
+      applyPathHighlight(
+        scene,
+        angleKeys.length > 0 ? Array.from(new Set(angleKeys)) : null,
       );
-      applyPathHighlight(scene, angleKeys.length > 0 ? angleKeys : null);
       invalidate();
       return;
     }
@@ -1172,7 +1181,7 @@ function Model({
 
     applyPathHighlight(scene, activeHighlights);
     invalidate();
-  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleFace1, angleFace2, invalidate]);
+  }, [scene, highlightedPathKey, selectedPathKeys, activeTool, angleFace1, angleFace2, angleHoverPathKey, invalidate]);
 
   useEffect(() => {
     applyFuzzyConfidence(
@@ -1449,6 +1458,8 @@ function Model({
     setAngleFace2(null);
     setAngleMeasuredDeg(null);
     setAngleArcDeg(45);
+    setAngleHoverPathKey(null);
+    setAngleHoverVertex(null);
   }, [resetAnglePreview]);
 
   // Reset selection when leaving angle tool or when the parent forces a reset
@@ -1827,6 +1838,37 @@ function Model({
     onManipulationDragStateChange?.(dragging);
   }
 
+  /**
+   * Hover feedback for the angle tool: highlight the part under the cursor,
+   * and during the vertex step show a ghost marker at the exact vertex a
+   * click would snap to — no more blind clicking.
+   */
+  function handlePointerMove(event: ThreeEvent<PointerEvent>) {
+    if (activeTool !== "angle") {
+      return;
+    }
+
+    const pathKey = findFuzzyPathKey(event.object);
+
+    setAngleHoverPathKey((previous) => (previous === pathKey ? previous : pathKey));
+
+    if (!angleVertex && pathKey) {
+      const snapped = snapToNearestVertexWorld(event);
+      setAngleHoverVertex((previous) =>
+        previous && previous.distanceToSquared(snapped) < 1e-12
+          ? previous
+          : snapped,
+      );
+    } else {
+      setAngleHoverVertex((previous) => (previous === null ? previous : null));
+    }
+  }
+
+  function handlePointerOut() {
+    setAngleHoverPathKey((previous) => (previous === null ? previous : null));
+    setAngleHoverVertex((previous) => (previous === null ? previous : null));
+  }
+
   function handlePointerDown(event: ThreeEvent<PointerEvent>) {
     event.stopPropagation();
 
@@ -1942,7 +1984,12 @@ function Model({
 
   return (
     <>
-      <primitive object={scene} onPointerDown={handlePointerDown} />
+      <primitive
+        object={scene}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerOut={handlePointerOut}
+      />
 
       {roleBadges.map((badge) => (
         <RoleBadge
@@ -2011,6 +2058,32 @@ function Model({
           radius={angleOverlayConfig.radius}
           onDrag={setAngleArcDeg}
         />
+      ) : null}
+
+      {/* Angle tool: hover ghost marker — where a click would snap */}
+      {activeTool === "angle" && !angleVertex && angleHoverVertex ? (
+        <Html
+          position={[
+            angleHoverVertex.x,
+            angleHoverVertex.y,
+            angleHoverVertex.z,
+          ]}
+          center
+          distanceFactor={0.8}
+          occlude={false}
+        >
+          <div
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: "50%",
+              background: "rgba(245,158,11,0.25)",
+              border: "2px dashed #f59e0b",
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          />
+        </Html>
       ) : null}
 
       {/* Angle tool: pivot vertex marker */}
