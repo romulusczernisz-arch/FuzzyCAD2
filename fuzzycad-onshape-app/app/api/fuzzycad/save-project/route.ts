@@ -1203,7 +1203,15 @@ async function hideAngleAnnotationOriginals(input: {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ suppressionStates }),
+      /**
+       * Onshape's modify schema documents two suppression forms:
+       * a suppressInstances id array and a suppressionStates map.
+       * Send both so whichever form this deployment honors takes effect.
+       */
+      body: JSON.stringify({
+        suppressInstances: Object.keys(suppressionStates),
+        suppressionStates,
+      }),
     },
     {
       route: "/api/fuzzycad/save-project",
