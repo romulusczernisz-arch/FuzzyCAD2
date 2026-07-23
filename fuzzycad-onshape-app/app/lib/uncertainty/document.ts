@@ -117,6 +117,14 @@ export type BendUncertaintyAnnotation = {
   planeNormal: [number, number, number];
   /** +1 or -1: which side of the plane (along planeNormal) bends. */
   bendSideSign: 1 | -1;
+  /**
+   * Bend profile:
+   * - "sharp": rigid rotation with a visible crease (default).
+   * - "radius": sheet-metal-style bend distributed smoothly over bandWidth.
+   */
+  profile?: "sharp" | "radius";
+  /** For radius profile: distance (world units) over which the bend ramps up. */
+  bandWidth?: number;
   comment?: string;
   createdAt: string;
   updatedAt: string;
@@ -326,6 +334,8 @@ export function addBendAnnotation(
     creaseEnd: [number, number, number];
     planeNormal: [number, number, number];
     bendSideSign: 1 | -1;
+    profile?: "sharp" | "radius";
+    bandWidth?: number;
     comment?: string;
   },
 ): FuzzyCADUncertaintyDocument {
@@ -349,6 +359,8 @@ export function addBendAnnotation(
     creaseEnd: input.creaseEnd,
     planeNormal: input.planeNormal,
     bendSideSign: input.bendSideSign,
+    profile: input.profile ?? existing?.profile ?? "sharp",
+    bandWidth: input.bandWidth ?? existing?.bandWidth,
     comment: input.comment ?? existing?.comment,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,

@@ -130,6 +130,8 @@ type FuzzyCADGeometryViewerProps = {
   }) => void;
   /** Externally-controlled bend delta (deg) for the bend tool. */
   bendDeltaDeg?: number | null;
+  /** Bend profile: sharp crease or smooth radius band. */
+  bendProfile?: "sharp" | "radius";
   onBendSelection?: (data: {
     pathKey: string;
     /** Bend adjustment relative to the current shape, in degrees. */
@@ -139,6 +141,8 @@ type FuzzyCADGeometryViewerProps = {
     creaseEnd: [number, number, number];
     planeNormal: [number, number, number];
     bendSideSign: 1 | -1;
+    /** Auto-computed radius-band width (world units, ~25% of part size). */
+    bandWidth: number;
   }) => void;
 };
 
@@ -858,7 +862,6 @@ function AngleArcOverlay({
       <Html
         position={[line2End.x, line2End.y, line2End.z]}
         center
-        distanceFactor={0.8}
         occlude={false}
       >
         <div
@@ -903,6 +906,39 @@ function AngleArcOverlay({
       </Html>
     </>
   );
+}
+
+/**
+ * Deduplicated corner positions of a geometry (local space), cached on the
+ * mesh. Triangle meshes repeat each corner once per adjacent triangle; the
+ * dedupe collapses those so screen-space snapping iterates real corners only.
+ * Very large geometries return an empty list (callers fall back to
+ * hit-triangle snapping).
+ */
+function getSnapCandidates(mesh: THREE.Mesh): THREE.Vector3[] {
+  const cached = mesh.userData.fuzzySnapCandidates as
+    | THREE.Vector3[]
+    | undefined;
+  if (cached) return cached;
+
+  const position = mesh.geometry?.attributes?.position;
+  const candidates: THREE.Vector3[] = [];
+
+  if (position && position.count <= 20000) {
+    const seen = new Set<string>();
+    for (let index = 0; index < position.count; index++) {
+      const x = position.getX(index);
+      const y = position.getY(index);
+      const z = position.getZ(index);
+      const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(new THREE.Vector3(x, y, z));
+    }
+  }
+
+  mesh.userData.fuzzySnapCandidates = candidates;
+  return candidates;
 }
 
 /**
@@ -985,6 +1021,7 @@ function Model({
   angleResetNonce,
   onAngleSelection,
   bendDeltaDeg: bendDeltaDegExternal,
+  bendProfile = "sharp",
   onBendSelection,
 }: {
   url: string;
@@ -1020,6 +1057,7 @@ function Model({
     pivot?: [number, number, number];
   }) => void;
   bendDeltaDeg?: number | null;
+  bendProfile?: "sharp" | "radius";
   onBendSelection?: (data: {
     pathKey: string;
     deltaDeg: number;
@@ -1027,6 +1065,7 @@ function Model({
     creaseEnd: [number, number, number];
     planeNormal: [number, number, number];
     bendSideSign: 1 | -1;
+    bandWidth: number;
   }) => void;
 }) {
   const gltf = useGLTF(url);
@@ -1710,6 +1749,11 @@ function Model({
         : -1
       : 1;
 
+    // Radius-band width: ~25% of the part's principal axis length, so the
+    // smooth bend scales with the part instead of needing manual input.
+    const summary = objectSummaries.find((s) => s.pathKey === bendP1.pathKey);
+    const bandWidth = Math.max((summary?.axisLength ?? 0.1) * 0.25, 0.005);
+
     return {
       pathKey: bendP1.pathKey,
       creaseStart: bendP1.point.clone(),
@@ -1717,9 +1761,10 @@ function Model({
       creaseDir,
       planeNormal,
       bendSideSign,
+      bandWidth,
       sideChosen: bendSidePoint !== null,
     };
-  }, [bendP1, bendP2, bendSidePoint]);
+  }, [bendP1, bendP2, bendSidePoint, objectSummaries]);
 
   // Live bend preview: restore pristine positions, then re-apply the current
   // delta with the shared bendDeform math (same formula the export uses).
@@ -1760,6 +1805,8 @@ function Model({
       planeNormal: bendConfig.planeNormal,
       bendSideSign: bendConfig.bendSideSign,
       deltaRad: THREE.MathUtils.degToRad(bendDeltaDeg),
+      profile: bendProfile,
+      bandWidth: bendConfig.bandWidth,
     };
 
     for (const { mesh, original } of preview.meshes) {
@@ -1774,7 +1821,7 @@ function Model({
     }
 
     invalidate();
-  }, [activeTool, bendConfig, bendDeltaDeg, scene, invalidate]);
+  }, [activeTool, bendConfig, bendDeltaDeg, bendProfile, scene, invalidate]);
 
   // Notify parent when the bend selection is complete or the delta changes.
   useEffect(() => {
@@ -1786,6 +1833,7 @@ function Model({
       creaseEnd: bendConfig.creaseEnd.toArray() as [number, number, number],
       planeNormal: bendConfig.planeNormal.toArray() as [number, number, number],
       bendSideSign: bendConfig.bendSideSign,
+      bandWidth: bendConfig.bandWidth,
     });
   }, [bendConfig, bendDeltaDeg, onBendSelection]);
 
@@ -1839,29 +1887,95 @@ function Model({
   }
 
   /**
-   * Hover feedback for the angle tool: highlight the part under the cursor,
-   * and during the vertex step show a ghost marker at the exact vertex a
-   * click would snap to — no more blind clicking.
+   * Screen-space vertex snapping: among the hovered mesh's corner vertices
+   * that project within SNAP_SCREEN_RADIUS_PX of the cursor, pick the one
+   * closest in 3D to the raycast hit (the 3D tie-break disambiguates front
+   * corners from back corners that overlap on screen). Falls back to the
+   * hit-triangle snap for very large meshes or when nothing is in range.
    */
+  const SNAP_SCREEN_RADIUS_PX = 36;
+
+  function pickSnapVertex(event: ThreeEvent<PointerEvent>): THREE.Vector3 {
+    const mesh = event.object as THREE.Mesh;
+    const candidates = getSnapCandidates(mesh);
+
+    if (candidates.length === 0) {
+      return snapToNearestVertexWorld(event);
+    }
+
+    const rect = gl.domElement.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+    const radiusSq = SNAP_SCREEN_RADIUS_PX * SNAP_SCREEN_RADIUS_PX;
+
+    mesh.updateWorldMatrix(true, false);
+
+    const world = new THREE.Vector3();
+    let best: THREE.Vector3 | null = null;
+    let bestHitDistance = Infinity;
+
+    for (const local of candidates) {
+      world.copy(local).applyMatrix4(mesh.matrixWorld);
+
+      const screen = projectToScreen(world, camera, rect);
+      if (!screen) continue;
+
+      const dx = screen.x - pointerX;
+      const dy = screen.y - pointerY;
+      if (dx * dx + dy * dy > radiusSq) continue;
+
+      const hitDistance = world.distanceToSquared(event.point);
+      if (hitDistance < bestHitDistance) {
+        bestHitDistance = hitDistance;
+        best = world.clone();
+      }
+    }
+
+    return best ?? snapToNearestVertexWorld(event);
+  }
+
+  /**
+   * Hover feedback for the angle tool.
+   * - Vertex step: show only the snap ghost marker (no part glow — it was
+   *   drowning out the dot).
+   * - Face steps: glow the hovered part so it's clear what a click selects.
+   * Updates are throttled to ~30fps to avoid re-render churn.
+   */
+  const hoverThrottleRef = useRef(0);
+
   function handlePointerMove(event: ThreeEvent<PointerEvent>) {
     if (activeTool !== "angle") {
       return;
     }
 
+    const now = performance.now();
+    if (now - hoverThrottleRef.current < 33) {
+      return;
+    }
+    hoverThrottleRef.current = now;
+
     const pathKey = findFuzzyPathKey(event.object);
 
-    setAngleHoverPathKey((previous) => (previous === pathKey ? previous : pathKey));
+    if (!angleVertex) {
+      // Vertex step: ghost marker only.
+      setAngleHoverPathKey((previous) => (previous === null ? previous : null));
 
-    if (!angleVertex && pathKey) {
-      const snapped = snapToNearestVertexWorld(event);
-      setAngleHoverVertex((previous) =>
-        previous && previous.distanceToSquared(snapped) < 1e-12
-          ? previous
-          : snapped,
-      );
-    } else {
-      setAngleHoverVertex((previous) => (previous === null ? previous : null));
+      if (pathKey) {
+        const snapped = pickSnapVertex(event);
+        setAngleHoverVertex((previous) =>
+          previous && previous.distanceToSquared(snapped) < 1e-12
+            ? previous
+            : snapped,
+        );
+      } else {
+        setAngleHoverVertex((previous) => (previous === null ? previous : null));
+      }
+      return;
     }
+
+    // Face steps: part glow only.
+    setAngleHoverVertex((previous) => (previous === null ? previous : null));
+    setAngleHoverPathKey((previous) => (previous === pathKey ? previous : pathKey));
   }
 
   function handlePointerOut() {
@@ -1887,8 +2001,11 @@ function Model({
       if (!angleVertex) {
         setAngleVertex({
           pathKey: selectedPathKey,
-          point: snapToNearestVertexWorld(event),
+          // Same picker as the hover ghost so the click lands exactly where
+          // the ghost marker showed.
+          point: angleHoverVertex?.clone() ?? pickSnapVertex(event),
         });
+        setAngleHoverVertex(null);
         return;
       }
 
@@ -1929,7 +2046,7 @@ function Model({
         resetAnglePreview();
         setAngleVertex({
           pathKey: selectedPathKey,
-          point: snapToNearestVertexWorld(event),
+          point: pickSnapVertex(event),
         });
         setAngleFace1(null);
         setAngleFace2(null);
@@ -2069,7 +2186,6 @@ function Model({
             angleHoverVertex.z,
           ]}
           center
-          distanceFactor={0.8}
           occlude={false}
         >
           <div
@@ -2095,7 +2211,6 @@ function Model({
             angleVertex.point.z,
           ]}
           center
-          distanceFactor={0.8}
           occlude={false}
         >
           <div
@@ -2130,7 +2245,6 @@ function Model({
               key={pathKey}
               position={pos}
               center
-              distanceFactor={0.8}
               occlude={false}
             >
               <div
@@ -2170,7 +2284,6 @@ function Model({
                   key={`bend-marker-${index}`}
                   position={[point.x, point.y, point.z]}
                   center
-                  distanceFactor={0.8}
                   occlude={false}
                 >
                   <div
@@ -2312,6 +2425,7 @@ export default function FuzzyCADGeometryViewer({
   angleResetNonce,
   onAngleSelection,
   bendDeltaDeg,
+  bendProfile,
   onBendSelection,
 }: FuzzyCADGeometryViewerProps) {
   const [lassoPolygon, setLassoPolygon] = useState<ScreenPoint[] | null>(null);
@@ -2380,6 +2494,7 @@ export default function FuzzyCADGeometryViewer({
                   angleResetNonce={angleResetNonce}
                   onAngleSelection={onAngleSelection}
                   bendDeltaDeg={bendDeltaDeg}
+                  bendProfile={bendProfile}
                   onBendSelection={onBendSelection}
                 />
               </Bounds>

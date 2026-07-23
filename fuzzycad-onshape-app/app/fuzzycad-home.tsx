@@ -202,8 +202,12 @@ export default function FuzzyCADHome() {
     creaseEndViewer: [number, number, number];
     planeNormalViewer: [number, number, number];
     bendSideSign: 1 | -1;
+    bandWidth?: number;
   } | null>(null);
   const [pendingBendComment, setPendingBendComment] = useState("");
+  const [pendingBendProfile, setPendingBendProfile] = useState<
+    "sharp" | "radius"
+  >("radius");
 
   const [pendingHeightRolePreview, setPendingHeightRolePreview] =
     useState<RolePreviewPlan | null>(null);
@@ -787,6 +791,8 @@ export default function FuzzyCADHome() {
       creaseEnd,
       planeNormal,
       bendSideSign: pendingBend.bendSideSign,
+      profile: pendingBendProfile,
+      bandWidth: pendingBend.bandWidth,
       comment: pendingBendComment || undefined,
     });
 
@@ -1067,6 +1073,7 @@ if (result.ok && result.state) {
           bendDeltaDeg={
             activeTool === "bend" ? pendingBend?.deltaDeg ?? null : null
           }
+          bendProfile={pendingBendProfile}
           onBendSelection={({
             pathKey,
             deltaDeg,
@@ -1074,6 +1081,7 @@ if (result.ok && result.state) {
             creaseEnd,
             planeNormal,
             bendSideSign,
+            bandWidth,
           }) => {
             setPendingBend((previous) => {
               if (
@@ -1098,6 +1106,7 @@ if (result.ok && result.state) {
                 creaseEndViewer: creaseEnd,
                 planeNormalViewer: planeNormal,
                 bendSideSign,
+                bandWidth,
               };
             });
           }}
@@ -1154,6 +1163,8 @@ if (result.ok && result.state) {
           onCancelAngle={finishPendingAngle}
           pendingBend={activeTool === "bend" ? pendingBend : null}
           pendingBendComment={pendingBendComment}
+          pendingBendProfile={pendingBendProfile}
+          onPendingBendProfileChange={setPendingBendProfile}
           onPendingBendCommentChange={setPendingBendComment}
           onPendingBendValueChange={(deltaDeg) => {
             if (pendingBend) {

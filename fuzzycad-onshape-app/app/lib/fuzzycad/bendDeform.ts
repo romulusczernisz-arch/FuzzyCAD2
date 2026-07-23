@@ -24,6 +24,15 @@ export type BendSpec = {
   /** +1 or -1: which side of the plane (along planeNormal) bends. */
   bendSideSign: 1 | -1;
   deltaRad: number;
+  /**
+   * "sharp" (default): rigid rotation of the whole bending side — visible
+   * crease at the line.
+   * "radius": sheet-metal-style bend — the rotation ramps from 0 at the
+   * crease to the full delta at bandWidth away, giving a smooth curve.
+   */
+  profile?: "sharp" | "radius";
+  /** For radius profile: distance over which the rotation ramps up. */
+  bandWidth?: number;
 };
 
 export type BendTransformer = {
@@ -44,12 +53,19 @@ export function makeBendTransformer(spec: BendSpec): BendTransformer {
   axis.normalize();
   normal.normalize();
 
-  const rotation = new THREE.Quaternion().setFromAxisAngle(
+  const fullRotation = new THREE.Quaternion().setFromAxisAngle(
     axis,
     spec.deltaRad,
   );
   const origin = spec.creaseStart.clone();
   const scratch = new THREE.Vector3();
+  const partialRotation = new THREE.Quaternion();
+
+  const useRadius =
+    spec.profile === "radius" &&
+    typeof spec.bandWidth === "number" &&
+    spec.bandWidth > 1e-9;
+  const bandWidth = useRadius ? (spec.bandWidth as number) : 0;
 
   return {
     degenerate: false,
@@ -61,7 +77,16 @@ export function makeBendTransformer(spec: BendSpec): BendTransformer {
         return;
       }
 
-      scratch.applyQuaternion(rotation);
+      if (useRadius && side < bandWidth) {
+        // Inside the bend band: rotation ramps 0 → delta across the band,
+        // producing a smooth curved transition instead of a crease.
+        const t = side / bandWidth;
+        partialRotation.setFromAxisAngle(axis, spec.deltaRad * t);
+        scratch.applyQuaternion(partialRotation);
+      } else {
+        scratch.applyQuaternion(fullRotation);
+      }
+
       point.copy(scratch).add(origin);
     },
   };

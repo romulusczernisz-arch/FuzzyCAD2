@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import styles from "../fuzzycad-home.module.css";
 import type { OperationTool } from "../lib/operations/types";
 
@@ -119,10 +119,18 @@ const tools: ToolItem[] = [
     icon: <SizeIcon />,
     hidden: true,
   },
+];
+
+/**
+ * The Angle entry is a split button: hovering it reveals the two angle
+ * modes — Rotate (two-part vertex + face flow) and Bend (single-part
+ * crease flow).
+ */
+const angleModes: { id: OperationTool; label: string; title: string; icon: ReactNode }[] = [
   {
     id: "angle",
-    label: "Angle",
-    title: "Adjust the angle between two parts",
+    label: "Rotate",
+    title: "Rotate one part relative to another around a pivot vertex",
     icon: <AngleIcon />,
   },
   {
@@ -138,6 +146,12 @@ export default function OperationToolbar({
   disabled = false,
   onToolChange,
 }: OperationToolbarProps) {
+  const [angleMenuOpen, setAngleMenuOpen] = useState(false);
+
+  const angleActive = activeTool === "angle" || activeTool === "bend";
+  const activeAngleMode =
+    angleModes.find((mode) => mode.id === activeTool) ?? angleModes[0];
+
   return (
     <div className={styles.operationToolbarWrap}>
       <div className={styles.operationToolbar} aria-label="FuzzyCAD tools">
@@ -166,6 +180,88 @@ export default function OperationToolbar({
               </button>
             );
           })}
+
+        {/* Angle split button: hover reveals Rotate | Bend */}
+        <div
+          style={{ position: "relative", display: "inline-flex" }}
+          onMouseEnter={() => setAngleMenuOpen(true)}
+          onMouseLeave={() => setAngleMenuOpen(false)}
+        >
+          <button
+            type="button"
+            title="Angle tools — hover for Rotate / Bend"
+            disabled={disabled}
+            className={
+              angleActive
+                ? `${styles.operationToolButton} ${styles.operationToolButtonActive}`
+                : styles.operationToolButton
+            }
+            onClick={() => {
+              // Clicking the main button activates the last-used / default mode.
+              onToolChange(angleActive ? activeAngleMode.id : "angle");
+            }}
+          >
+            <span className={styles.operationToolIcon}>
+              {activeAngleMode.icon}
+            </span>
+            <span className={styles.operationToolLabel}>
+              {angleActive ? activeAngleMode.label : "Angle"}
+            </span>
+          </button>
+
+          {angleMenuOpen && !disabled ? (
+            <div
+              style={{
+                position: "absolute",
+                bottom: "100%",
+                left: "50%",
+                transform: "translateX(-50%)",
+                paddingBottom: 6,
+                zIndex: 30,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  gap: 4,
+                  background: "rgba(255,255,255,0.97)",
+                  border: "1px solid rgba(43,108,255,0.25)",
+                  borderRadius: 10,
+                  padding: 4,
+                  boxShadow: "0 6px 18px rgba(15,23,42,0.16)",
+                }}
+              >
+                {angleModes.map((mode) => {
+                  const modeActive = activeTool === mode.id;
+
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      title={mode.title}
+                      className={
+                        modeActive
+                          ? `${styles.operationToolButton} ${styles.operationToolButtonActive}`
+                          : styles.operationToolButton
+                      }
+                      onClick={() => {
+                        onToolChange(mode.id);
+                        setAngleMenuOpen(false);
+                      }}
+                    >
+                      <span className={styles.operationToolIcon}>
+                        {mode.icon}
+                      </span>
+                      <span className={styles.operationToolLabel}>
+                        {mode.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

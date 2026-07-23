@@ -38,6 +38,8 @@ type UncertaintyMarksPanelProps = {
   onCancelAngle?: () => void;
   pendingBend?: PendingBend | null;
   pendingBendComment?: string;
+  pendingBendProfile?: "sharp" | "radius";
+  onPendingBendProfileChange?: (profile: "sharp" | "radius") => void;
   onPendingBendCommentChange?: (comment: string) => void;
   onPendingBendValueChange?: (deltaDeg: number) => void;
   onSaveBend?: () => void;
@@ -207,6 +209,8 @@ function PendingValuePanel({
   min,
   max,
   comment = "",
+  profile,
+  onProfileChange,
   onValueChange,
   onCommentChange,
   onSave,
@@ -218,6 +222,9 @@ function PendingValuePanel({
   min: number;
   max: number;
   comment?: string;
+  /** When provided, renders a Sharp/Smooth bend-profile toggle. */
+  profile?: "sharp" | "radius";
+  onProfileChange?: (profile: "sharp" | "radius") => void;
   onValueChange?: (value: number) => void;
   onCommentChange?: (comment: string) => void;
   onSave?: () => void;
@@ -269,6 +276,38 @@ function PendingValuePanel({
         />
         <span className={styles.pendingAngleDeg}>°</span>
       </div>
+      {profile && onProfileChange ? (
+        <div style={{ display: "flex", gap: 6, margin: "6px 0" }}>
+          {(
+            [
+              { id: "sharp", label: "Sharp crease" },
+              { id: "radius", label: "Smooth bend" },
+            ] as const
+          ).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onProfileChange(option.id)}
+              style={{
+                flex: 1,
+                padding: "4px 8px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: 6,
+                cursor: "pointer",
+                border:
+                  profile === option.id
+                    ? "1.5px solid #2b6cff"
+                    : "1px solid #cbd5e1",
+                background: profile === option.id ? "#eaf1ff" : "white",
+                color: profile === option.id ? "#1a49c4" : "#475569",
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <textarea
         className={styles.comment}
         value={comment}
@@ -364,6 +403,8 @@ export default function UncertaintyMarksPanel({
   onCancelAngle,
   pendingBend,
   pendingBendComment = "",
+  pendingBendProfile,
+  onPendingBendProfileChange,
   onPendingBendCommentChange,
   onPendingBendValueChange,
   onSaveBend,
@@ -426,6 +467,8 @@ export default function UncertaintyMarksPanel({
             min={-179}
             max={179}
             comment={pendingBendComment}
+            profile={pendingBendProfile}
+            onProfileChange={onPendingBendProfileChange}
             onValueChange={onPendingBendValueChange}
             onCommentChange={onPendingBendCommentChange}
             onSave={onSaveBend}

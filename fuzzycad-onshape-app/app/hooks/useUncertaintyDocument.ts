@@ -123,6 +123,8 @@ export function useUncertaintyDocument(source: FuzzyCADUncertaintySource) {
     creaseEnd: [number, number, number];
     planeNormal: [number, number, number];
     bendSideSign: 1 | -1;
+    profile?: "sharp" | "radius";
+    bandWidth?: number;
     comment?: string;
   }) {
     setUncertaintyDocument((previous) =>
